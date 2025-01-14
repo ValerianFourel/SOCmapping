@@ -514,3 +514,5 @@ Data/Coordinates1Mil/StaticValue/Elevation/coordinates.npy
 .git/objects/pack/pack-abbea78bcedd08e4b1622a56f47994d6834ed100.pack
 *.pth
 3DCNN/best_model.pth
+
+FoundationalModels/models

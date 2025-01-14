@@ -1,0 +1,10 @@
+torch>=1.9.0
+numpy>=1.19.0
+scipy>=1.7.0
+transformers>=4.0.0
+
+[dev]
+pytest>=6.0
+pytest-cov>=2.0
+black>=21.0
+isort>=5.0
