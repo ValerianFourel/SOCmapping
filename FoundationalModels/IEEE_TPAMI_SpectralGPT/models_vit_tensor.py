@@ -199,6 +199,63 @@ class VisionTransformer(nn.Module):
 
 
         return x
+    
+    def forward_encoder(self, x):
+        x = torch.unsqueeze(x, dim=1)
+        x = self.patch_embed(x)
+        N, T, L, C = x.shape  # T: temporal; L: spatial
+
+        x = x.view([N, T * L, C])
+
+        # append cls token
+        if self.cls_embed:
+            cls_token = self.cls_token
+            cls_tokens = cls_token.expand(x.shape[0], -1, -1)
+            x = torch.cat((cls_tokens, x), dim=1)
+
+        if self.sep_pos_embed:
+            pos_embed = self.pos_embed_spatial.repeat(
+                1, self.input_size[0], 1
+            ) + torch.repeat_interleave(
+                self.pos_embed_temporal,
+                self.input_size[1] * self.input_size[2],
+                dim=1,
+            )
+            if self.cls_embed:
+                pos_embed = torch.cat(
+                    [
+                        self.pos_embed_class.expand(pos_embed.shape[0], -1, -1),
+                        pos_embed,
+                    ],
+                    1,
+                )
+        else:
+            pos_embed = self.pos_embed[:, :, :]
+        x = x + pos_embed
+
+        requires_t_shape = (
+            len(self.blocks) > 0  # support empty decoder
+            and hasattr(self.blocks[0].attn, "requires_t_shape")
+            and self.blocks[0].attn.requires_t_shape
+        )
+        if requires_t_shape:
+            x = x.view([N, T, L, C])
+
+        # apply Transformer blocks
+        for blk in self.blocks:
+            x = blk(x)
+
+        if requires_t_shape:
+            x = x.view([N, T * L, C])
+
+        # Get embedding
+        x = x[:, 1:, :].mean(dim=1)  # global pool
+        x = self.norm(x)
+        x = self.dropout(x)
+
+        # Return embedding instead of classification
+        return x
+
 
 
 # def vit_base_patch16(**kwargs):

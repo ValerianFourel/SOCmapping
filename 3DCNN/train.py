@@ -8,7 +8,7 @@ import pandas as pd
 import numpy as np
 from tqdm import tqdm
 from pathlib import Path
-from config import   TIME_BEGINNING ,TIME_END , seasons, years_padded  , SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, DataYearly, SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, DataSeasonally ,file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC 
+from config import   window_size, TIME_BEGINNING ,TIME_END , YEARS_BACK, seasons, years_padded  , SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, DataYearly, SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, DataSeasonally ,file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC 
 from XGBoost_map.mapping import  create_prediction_visualizations , parallel_predict
 
 import matplotlib.pyplot as plt
@@ -19,6 +19,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 
+print(years_padded)
 
 
 ##################################################################
@@ -77,16 +78,16 @@ data_array_path = list(dict.fromkeys(data_array_path))
 
 
 # Create dataset and dataloader
-dataset = MultiRasterDataset(samples_coordinates_array_path ,  data_array_path , df)
+dataset = MultiRasterDataset(samples_coordinates_array_path ,  data_array_path , df,YEARS_BACK, seasons, years_padded )
 
 print("Dataset length:", len(df))
 # If using a custom dataset, verify the data is loaded correctly
 
 # Example parameters for soil data
-input_channels = 6    # Number of soil properties or spectral bands
+input_channels = 16    # Number of soil properties or spectral bands
 input_depth = 1     # Soil depth layers
-input_height = 17    # Spatial dimension height
-input_width = 17     # Spatial dimension width
+input_height = window_size*4    # Spatial dimension height
+input_width = window_size*4     # Spatial dimension width
 batch_size = 256       # Number of samples to process at once
 
 dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
@@ -102,13 +103,13 @@ coordinates = []  # To store longitude and latitude
 # Initialize model
 model = SOCPredictor3DCNN(input_channels, input_depth, input_height, input_width)
 criterion = nn.MSELoss()  # L2 loss
-optimizer = optim.Adam(model.parameters(), lr=0.1)
+optimizer = optim.Adam(model.parameters(), lr=0.01)
 
 # Move model to GPU if available
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = model.to(device)
 
-num_epochs = 100
+num_epochs = 5
 best_loss = float('inf')
 
 for epoch in range(num_epochs):
@@ -153,6 +154,6 @@ for epoch in range(num_epochs):
     # Save best model
     if epoch_loss < best_loss:
         best_loss = epoch_loss
-        torch.save(model.state_dict(), 'best_model.pth')
+        torch.save(model.state_dict(), 'best_model_5epoch.pth')
 
 print('Training finished!')

@@ -1,0 +1,17 @@
+{"time":"2025-01-14T21:59:03.22489374+01:00","level":"INFO","msg":"stream: starting","core version":"0.19.3","symlink path":"/lustre/home/vfourel/SOCProject/SOCmapping/FoundationalModels/wandb/run-20250114_215902-htjb906s/logs/debug-core.log"}
+{"time":"2025-01-14T21:59:03.449805688+01:00","level":"INFO","msg":"created new stream","id":"htjb906s"}
+{"time":"2025-01-14T21:59:03.449852628+01:00","level":"INFO","msg":"stream: started","id":"htjb906s"}
+{"time":"2025-01-14T21:59:03.449959629+01:00","level":"INFO","msg":"handler: started","stream_id":"htjb906s"}
+{"time":"2025-01-14T21:59:03.450819231+01:00","level":"INFO","msg":"writer: Do: started","stream_id":"htjb906s"}
+{"time":"2025-01-14T21:59:03.451522963+01:00","level":"INFO","msg":"sender: started","stream_id":"htjb906s"}
+{"time":"2025-01-14T21:59:03.627943211+01:00","level":"ERROR","msg":"HTTP error","status":403,"method":"POST","url":"https://api.wandb.ai/graphql"}
+{"time":"2025-01-14T21:59:03.628785063+01:00","level":"ERROR","msg":"sender: upsertRun:","error":"failed to upsert bucket: returned error 403 Forbidden: {\"errors\":[{\"message\":\"permission denied\",\"path\":[\"upsertBucket\"],\"extensions\":{\"code\":\"PERMISSION_ERROR\"}}],\"data\":{\"upsertBucket\":null}}"}
+{"time":"2025-01-14T21:59:03.643063018+01:00","level":"INFO","msg":"stream: closing","id":"htjb906s"}
+{"time":"2025-01-14T21:59:03.643166988+01:00","level":"ERROR","msg":"sender: upsertConfig: RunRecord is nil"}
+{"time":"2025-01-14T21:59:03.819465716+01:00","level":"ERROR","msg":"HTTP error","status":404,"method":"POST","url":"https://api.wandb.ai/graphql"}
+{"time":"2025-01-14T21:59:03.819539996+01:00","level":"ERROR","msg":"runfiles: CreateRunFiles returned error: returned error 404 Not Found: {\"errors\":[{\"message\":\"project mae-sentinel/bigearthnet_finetune not found during createRunFiles\",\"path\":[\"createRunFiles\"]}],\"data\":{\"createRunFiles\":null}}"}
+{"time":"2025-01-14T21:59:03.823935518+01:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-01-14T21:59:03.823998408+01:00","level":"INFO","msg":"handler: closed","stream_id":"htjb906s"}
+{"time":"2025-01-14T21:59:03.824025708+01:00","level":"INFO","msg":"writer: Close: closed","stream_id":"htjb906s"}
+{"time":"2025-01-14T21:59:03.824113318+01:00","level":"INFO","msg":"sender: closed","stream_id":"htjb906s"}
+{"time":"2025-01-14T21:59:03.82514947+01:00","level":"INFO","msg":"stream: closed","id":"htjb906s"}

@@ -1,0 +1,4 @@
+
+
+We can try to use this on SpectralGPT: python main_finetune.py --wandb bigearthnet_finetune --batch_size 16 --accum_iter 8 --blr 0.0002 --epochs 150 --num_workers 16 --input_size 128 --patch_size 16  --weight_decay 0.05 --drop_path 0.2 --reprob 0.25 --mixup 0.8 --cutmix 1.0 --model_type tensor --model vit_base_patch8_128 --dataset_type euro_sat --dropped_bands 10 --output_dir /home/vfourel/SOCProject/SOCmapping/FoundationalModels/experiments/finetune/BEN --log_dir ./experiments/finetune/BEN
+
