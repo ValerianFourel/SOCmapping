@@ -84,8 +84,8 @@ print("Dataset length:", len(df))
 # If using a custom dataset, verify the data is loaded correctly
 
 # Example parameters for soil data
-input_channels = 16    # Number of soil properties or spectral bands
-input_depth = 1     # Soil depth layers
+input_channels = YEARS_BACK    # Number of soil properties or spectral bands
+input_depth = 6     # Soil depth layers
 input_height = window_size*4    # Spatial dimension height
 input_width = window_size*4     # Spatial dimension width
 batch_size = 256       # Number of samples to process at once
@@ -123,8 +123,9 @@ for epoch in range(num_epochs):
         # Reshape batch_features to include the extra dimension
 
         # Move data to device
-        batch_features = batch_features.to(device).float().unsqueeze(2)  # Now shape is [4, 6, 1, 17, 17]
+        batch_features = batch_features.to(device).float()#.unsqueeze(2)  # Now shape is [4, 6, 1, 17, 17]
         batch_targets = batch_targets.to(device).float()
+        print(' batch_features.shape   ', batch_features.shape)
 
         # Zero the gradients
         optimizer.zero_grad()

@@ -352,15 +352,62 @@ class MultiRasterDataset(Dataset):
         extended_array = self.extend_filtered_array(filtered_array,self.YEARS_BACK)
 
         tensors = []
-        # print(' filtered_array   ',filtered_array)
+        #print(' extended_array   ',extended_array)
+                # Dictionary to store tensors by path
+        path_tensors = {}
+
+        # First, collect all tensors
         for path in extended_array:
             last_three = self.get_last_three_folders(path)
             id_num, x, y = self.find_coordinates_index(last_three, longitude, latitude)
             tensor = self.datasets[last_three].get_tensor_by_location(id_num, x, y)
             if tensor is not None:
-                tensors.append(tensor)
+                path_tensors[path] = tensor
 
-        return longitude, latitude, torch.stack(tensors), oc
+        # Group paths by type
+        elevation_paths = [p for p in extended_array if 'Elevation' in p]
+        modis_paths = [p for p in extended_array if 'MODIS_NPP' in p]
+        seasonal_paths = [p for p in extended_array if not ('Elevation' in p or 'MODIS_NPP' in p)]
+
+        # Get unique last subfolders from seasonal paths
+        time_steps = sorted(set(p.split('/')[-1] for p in seasonal_paths))
+        print(extended_array)
+        final_tensors = []
+
+        # Process each unique time step
+        for time_step in time_steps:
+            features = []
+
+            # Add Elevation (static)
+            for path in elevation_paths:
+                if path in path_tensors:
+                    print(path)
+                    features.append(path_tensors[path].unsqueeze(-1))
+
+            # Add corresponding MODIS_NPP (based on year in time_step)
+            year = time_step[:4]  # Get year from time step
+            for path in modis_paths:
+                print('2:   ',path)
+                if path.split('/')[-1] == year and path in path_tensors:
+                    print('1:   ',path)
+                    features.append(path_tensors[path].unsqueeze(-1))
+
+            # Add seasonal data for this time step
+            for base_path in seasonal_paths:
+                if base_path.split('/')[-1] == time_step and base_path in path_tensors:
+                    print(base_path)
+                    features.append(path_tensors[base_path].unsqueeze(-1))
+
+            # Stack features for this time step
+            if features:
+                time_step_tensor = torch.cat(features, dim=-1)  # Assuming last dimension is for bands
+                final_tensors.append(time_step_tensor)
+                #print('time_step_tensor     ',time_step_tensor.shape)
+
+        # Stack all time steps together
+        final_tensor = torch.stack(final_tensors)  # Shape: (num_years*4, H, W, bands)
+        #print('final_tensor  ',final_tensor.shape)
+        return longitude, latitude, final_tensor, oc
     
     def filter_by_season_or_year(self, season,year,Season_or_year):
 

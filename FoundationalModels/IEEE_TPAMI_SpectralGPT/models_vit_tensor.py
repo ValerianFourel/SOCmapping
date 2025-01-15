@@ -321,13 +321,13 @@ def vit_base_patch8(**kwargs):
 def vit_base_patch8_128(**kwargs):
     model = VisionTransformer(
         img_size=128,
-        in_chans=1,
+        in_chans=2,
         patch_size=8,
         embed_dim=768,
         depth=12,
         num_heads=12,
         mlp_ratio=4,
-        num_frames=12,
+        num_frames=18,
         t_patch_size=3,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
         **kwargs,
@@ -425,8 +425,8 @@ def vit_base_patch8_120(**kwargs):
     )
     return model
 if __name__ == '__main__':
-    input = torch.rand(2, 12, 128, 128)
+    input = torch.rand(2, 18, 128, 128)
     model = vit_base_patch8_128()
-    output = model(input)
+    output = model.forward_encoder(input)
     print(output.shape)
 

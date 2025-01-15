@@ -11,7 +11,7 @@ YEARS_BACK = 3
 
 
 MAX_OC = 500
-window_size = 15
+window_size = 32
 
 def generate_seasonal_list():
     seasons = ['winter', 'spring', 'summer', 'autumn']  # Reordered with winter first
