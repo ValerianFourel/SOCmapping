@@ -19,8 +19,6 @@ import torch.nn as nn
 import torch.optim as optim
 
 
-print(years_padded)
-
 
 ##################################################################
 
@@ -76,7 +74,7 @@ data_array_path = flatten_paths(data_array_path)
 samples_coordinates_array_path = list(dict.fromkeys(samples_coordinates_array_path))
 data_array_path = list(dict.fromkeys(data_array_path))
 
-
+#print(samples_coordinates_array_path ,  data_array_path)
 # Create dataset and dataloader
 dataset = MultiRasterDataset(samples_coordinates_array_path ,  data_array_path , df,YEARS_BACK, seasons, years_padded )
 
@@ -84,10 +82,10 @@ print("Dataset length:", len(df))
 # If using a custom dataset, verify the data is loaded correctly
 
 # Example parameters for soil data
-input_channels = YEARS_BACK    # Number of soil properties or spectral bands
+input_channels = 10   # Number of soil properties or spectral bands
 input_depth = 6     # Soil depth layers
-input_height = window_size*4    # Spatial dimension height
-input_width = window_size*4     # Spatial dimension width
+input_height = window_size*4   +1 # Spatial dimension height
+input_width = window_size*4  +1   # Spatial dimension width
 batch_size = 256       # Number of samples to process at once
 
 dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
@@ -109,7 +107,7 @@ optimizer = optim.Adam(model.parameters(), lr=0.01)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = model.to(device)
 
-num_epochs = 5
+num_epochs = 100
 best_loss = float('inf')
 
 for epoch in range(num_epochs):
@@ -155,6 +153,6 @@ for epoch in range(num_epochs):
     # Save best model
     if epoch_loss < best_loss:
         best_loss = epoch_loss
-        torch.save(model.state_dict(), 'best_model_5epoch.pth')
+        torch.save(model.state_dict(), 'best_model_5epoch_2015_10yb.pth')
 
 print('Training finished!')

@@ -5,9 +5,9 @@ base_path_data = '/home/vfourel/SOCProject/SOCmapping/Data'
 file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC = f"{base_path_data}/LUCAS_LFU_Lfl_00to23_Bavaria_OC.xlsx"
 
 
-TIME_BEGINNING = '2006'
-TIME_END = '2023'
-YEARS_BACK = 3
+TIME_BEGINNING = '2014'
+TIME_END = '2016 '
+YEARS_BACK = 10
 
 
 MAX_OC = 500

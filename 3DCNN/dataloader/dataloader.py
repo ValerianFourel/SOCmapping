@@ -46,7 +46,7 @@ class RasterTensorDataset(Dataset):
         self.folder_path = base_path
         self.resolution = resolution
         self.window_size = window_size  # This is for 1km resolution
-        self.target_size = window_size * 4  # Final tensor size (250m resolution)
+        self.target_size = window_size * 4 + 1  # Final tensor size (250m resolution)
 
         # Calculate expansion factor based on resolution
         self.expansion_factor = {
@@ -82,27 +82,27 @@ class RasterTensorDataset(Dataset):
             raise ValueError(f"ID {id_num} not found in dataset")
 
         # Scale coordinates based on resolution
-        scaled_x = int(x / self.expansion_factor)
-        scaled_y = int(y / self.expansion_factor)
+        #scaled_x = int(x / self.expansion_factor)
+        #scaled_y = int(y / self.expansion_factor)
 
         # Get the data array
         data = self.data_cache.get(id_num, np.load(self.id_to_file[id_num]))
 
         # Calculate window boundaries for input resolution
         half_window = self.input_window_size // 2
-        x_start = int(max(0, scaled_x - half_window))
-        x_end = int(min(data.shape[0], scaled_x + half_window + 1))
-        y_start = int(max(0, scaled_y - half_window))
-        y_end = int(min(data.shape[1], scaled_y + half_window + 1))
+        x_start = int(max(0, x - half_window))
+        x_end = int(min(data.shape[0], x + half_window + 1))
+        y_start = int(max(0, y - half_window))
+        y_end = int(min(data.shape[1], y + half_window + 1))
 
         # Extract window
         window = data[x_start:x_end, y_start:y_end]
-
+        #print(x_start,x_end, y_start,y_end,window.shape,self.resolution )
         # Pad if necessary
         if window.shape != (self.input_window_size, self.input_window_size):
             padded_window = np.zeros((self.input_window_size, self.input_window_size))
-            x_offset = int(half_window - (scaled_x - x_start))
-            y_offset = int(half_window - (scaled_y - y_start))
+            x_offset = int(half_window - (x - x_start))
+            y_offset = int(half_window - (y - y_start))
 
             # Ensure all indices are within bounds
             x_start_pad = max(0, x_offset)
@@ -129,9 +129,9 @@ class RasterTensorDataset(Dataset):
         window_tensor = torch.from_numpy(window).float()
 
         # Expand to target size based on resolution
-        if self.resolution != '250m':
+        if self.resolution != '250m' or window_tensor.shape[0] != self.target_size:
             window_tensor = window_tensor.unsqueeze(0).unsqueeze(0)  # Add batch and channel dimensions
-
+            #print(window_tensor.shape)
             # Use nearest neighbor for pixel expansion
             resized_tensor = torch.nn.functional.interpolate(
                 window_tensor,
@@ -139,7 +139,6 @@ class RasterTensorDataset(Dataset):
                 mode='nearest'
             )
             window_tensor = resized_tensor.squeeze(0).squeeze(0)  # Remove batch and channel dimensions
-
         return window_tensor
 
     def _create_id_mapping(self):
@@ -363,16 +362,42 @@ class MultiRasterDataset(Dataset):
             tensor = self.datasets[last_three].get_tensor_by_location(id_num, x, y)
             if tensor is not None:
                 path_tensors[path] = tensor
+            
 
         # Group paths by type
         elevation_paths = [p for p in extended_array if 'Elevation' in p]
         modis_paths = [p for p in extended_array if 'MODIS_NPP' in p]
         seasonal_paths = [p for p in extended_array if not ('Elevation' in p or 'MODIS_NPP' in p)]
 
+
+
         # Get unique last subfolders from seasonal paths
         time_steps = sorted(set(p.split('/')[-1] for p in seasonal_paths))
-        print(extended_array)
+        #print(extended_array)
         final_tensors = []
+
+        # Extract years and their corresponding paths
+        years_and_paths = [(int(path.split("/")[-1]), path) for path in modis_paths]
+
+        # Find the path with the smallest year
+        smallest_year, smallest_year_path = min(years_and_paths, key=lambda x: x[0])
+        max_year, max_year_path = max(years_and_paths, key=lambda x: x[0])
+
+        # Get the base path (excluding the year) of the smallest year's path
+        base_path = "/".join(smallest_year_path.split("/")[:-1])
+
+        # Construct the new path with smallest_year - 1
+        new_year = smallest_year - 1
+        new_path = f"{base_path}/{new_year}"
+
+        # Add the new path to the list
+        modis_paths.append(new_path)
+                # Construct the new path with smallest_year - 1
+        new_year = max_year + 1
+        new_path = f"{base_path}/{new_year}"
+
+        # Add the new path to the list
+        modis_paths.append(new_path)
 
         # Process each unique time step
         for time_step in time_steps:
@@ -381,21 +406,21 @@ class MultiRasterDataset(Dataset):
             # Add Elevation (static)
             for path in elevation_paths:
                 if path in path_tensors:
-                    print(path)
                     features.append(path_tensors[path].unsqueeze(-1))
 
             # Add corresponding MODIS_NPP (based on year in time_step)
             year = time_step[:4]  # Get year from time step
             for path in modis_paths:
-                print('2:   ',path)
-                if path.split('/')[-1] == year and path in path_tensors:
-                    print('1:   ',path)
-                    features.append(path_tensors[path].unsqueeze(-1))
+                #print('2:   ',path)
+                if path.split('/')[-1] == year: #and path in path_tensors:
+                    #print('1:   ',path)
+                    last_three = self.get_last_three_folders(path)
+                    id_num, x, y = self.find_coordinates_index(last_three, longitude, latitude)
+                    features.append( self.datasets[last_three].get_tensor_by_location(id_num, x, y).unsqueeze(-1))
 
             # Add seasonal data for this time step
             for base_path in seasonal_paths:
                 if base_path.split('/')[-1] == time_step and base_path in path_tensors:
-                    print(base_path)
                     features.append(path_tensors[base_path].unsqueeze(-1))
 
             # Stack features for this time step
