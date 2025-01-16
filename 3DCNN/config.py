@@ -10,7 +10,7 @@ TIME_END = '2016 '
 YEARS_BACK = 10
 
 
-MAX_OC = 500
+MAX_OC = 100
 window_size = 32
 
 def generate_seasonal_list():
