@@ -5,6 +5,7 @@
 **/prediction_plots/
 *.pth
 **/wandb/
+**/quickViz/
 FoundationalModels/experiments/*
 FoundationalModels/wandb/*
 Data/Coordinates1Mil/coordinates_Bavaria_1mil.csv
