@@ -1,4 +1,82 @@
 import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+
+def plot_output_target_difference(all_outputs, all_targets, epoch, run, save_dir='quickViz'):
+    """
+    Create and save a visualization comparing binned averages of targets and outputs.
+
+    Parameters:
+    -----------
+    all_outputs : array-like
+        Array of output values
+    all_targets : array-like
+        Array of target values
+    epoch : int or str
+        Current epoch number for filename
+    run : int or str
+        Run identifier for filename
+    save_dir : str
+        Directory to save the plot (default: 'quickViz')
+    """
+    # Convert inputs to numpy arrays if they aren't already
+    all_outputs = np.array(all_outputs)
+    all_targets = np.array(all_targets)
+
+    # Create bins
+    n_bins = 50
+    bins = np.linspace(min(all_targets), max(all_targets), n_bins + 1)
+    bin_indices = np.digitize(all_targets, bins) - 1
+
+    # Calculate averages for each bin
+    target_means = np.zeros(n_bins)
+    output_means = np.zeros(n_bins)
+
+    for i in range(n_bins):
+        mask = bin_indices == i
+        if np.any(mask):
+            target_means[i] = np.mean(all_targets[mask])
+            output_means[i] = np.mean(all_outputs[mask])
+
+    # Calculate differences
+    differences = target_means - output_means
+
+    # Create the visualization
+    fig, ax = plt.subplots(figsize=(15, 6))
+
+    # Set the width of each bar and positions
+    width = 0.35
+    x = np.arange(n_bins)
+
+        # Create bars
+    ax.bar(x - width/2, target_means, width, label='Target Averages', color='blue', alpha=0.6)
+    ax.bar(x + width/2, differences, width, label='Difference (Target - Output)', color='red', alpha=0.6)
+
+    # Customize the plot
+    ax.set_xlabel('Target Value (Bin Lower Bound)')
+    ax.set_ylabel('Values')
+    ax.set_title(f'Target Averages and Differences per Bin (Epoch {epoch}, Run {run})')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    # Set x-ticks to show bin lower bounds
+    # Only show every nth tick to prevent overcrowding
+    n_ticks_to_show = 5
+    tick_indices = np.linspace(0, n_bins-1, n_ticks_to_show, dtype=int)
+    ax.set_xticks(tick_indices)
+    ax.set_xticklabels([f'{bins[i]:.2f}' for i in tick_indices], rotation=45)
+
+    # Ensure save directory exists
+    os.makedirs(save_dir, exist_ok=True)
+
+    # Save the plot
+    filename = f'diffOutputTarget3dCNN_epoch_{epoch}_{run}.png'
+    save_path = os.path.join(save_dir, filename)
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()  # Close the figure to free memory
+
+    return save_path  # Return the path where the image was saved
 
 
 def analyze_oc_distribution(df, bins=50, width=60):

@@ -21,7 +21,7 @@ class SOC3DResidualBlock(nn.Module):
             # First 3D convolution layer
             nn.Conv3d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False),
             nn.BatchNorm3d(out_channels),  # Normalize the features
-            nn.ReLU(inplace=True),         # Non-linear activation
+            nn.ELU(inplace=True),         # Non-linear activation
 
             # Second 3D convolution layer
             nn.Conv3d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False),
@@ -37,14 +37,14 @@ class SOC3DResidualBlock(nn.Module):
                 nn.BatchNorm3d(out_channels)
             )
 
-        self.relu = nn.ReLU(inplace=True)
+        self.elu = nn.ELU(inplace=True)
 
     def forward(self, x):
         """Forward pass combining main path with skip connection"""
         residual = x                    # Save input for skip connection
         out = self.conv_block(x)        # Main convolutional path
         out += self.shortcut(residual)  # Add skip connection
-        out = self.relu(out)           # Final activation
+        out = self.elu(out)           # Final activation
         return out
 
 class SOCPredictor3DCNN(nn.Module):
@@ -58,18 +58,18 @@ class SOCPredictor3DCNN(nn.Module):
         self.init_conv = nn.Sequential(
             nn.Conv3d(input_channels, 64, kernel_size=7, stride=2, padding=3, bias=False),
             nn.BatchNorm3d(64),
-            nn.ReLU(inplace=True),
+            nn.ELU(inplace=True),
             nn.MaxPool3d(kernel_size=3, stride=2, padding=1)
         )
 
         # Seven residual layers with increasing feature channels
-        self.layer1 = self._make_layer(64, 64, 2, stride=1)      # Layer 1: Fine features
+        #self.layer1 = self._make_layer(64, 64, 2, stride=1)      # Layer 1: Fine features
         self.layer2 = self._make_layer(64, 128, 2, stride=1)     # Layer 2: Fine-mid features
         self.layer3 = self._make_layer(128, 256, 2, stride=1)    # Layer 3: Mid features
         self.layer4 = self._make_layer(256, 512, 2, stride=2)    # Layer 4: Mid-high features
-        self.layer5 = self._make_layer(512, 512, 2, stride=1)    # Layer 5: High features
-        self.layer6 = self._make_layer(512, 1024, 2, stride=2)   # Layer 6: Complex features
-        self.layer7 = self._make_layer(1024, 1024, 2, stride=1)  # Layer 7: Final features
+        #self.layer5 = self._make_layer(512, 512, 2, stride=1)    # Layer 5: High features
+        self.layer6 = self._make_layer(512, 512, 2, stride=2)   # Layer 6: Complex features
+        #self.layer7 = self._make_layer(1024, 1024, 2, stride=1)  # Layer 7: Final features
 
         # Calculate flattened size for dense layer
         self.flatten_size = self._get_conv_output_size(input_channels, 
@@ -79,22 +79,22 @@ class SOCPredictor3DCNN(nn.Module):
 
         # Dense layer for feature compression
         self.dense = nn.Sequential(
-            nn.Linear(self.flatten_size, 512),  # Increased intermediate features
-            nn.BatchNorm1d(512),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.4)
+            nn.Linear(self.flatten_size, 256),  # Increased intermediate features
+            nn.BatchNorm1d(256),
+            nn.ELU(inplace=True),
+            nn.Dropout(0.1)
         )
 
         # Final MLP for SOC prediction
         self.mlp = nn.Sequential(
-            nn.Linear(512, 256),
-            nn.BatchNorm1d(256),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.4),
-            nn.Linear(256, 64),
+            nn.Linear(256, 128),
+            nn.BatchNorm1d(128),
+            nn.ELU(inplace=True),
+            nn.Dropout(0.1),
+            nn.Linear(128, 64),
             nn.BatchNorm1d(64),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.3),
+            nn.ELU(inplace=True),
+            nn.Dropout(0.1),
             nn.Linear(64, 1)
         )
 
@@ -110,13 +110,13 @@ class SOCPredictor3DCNN(nn.Module):
         """Calculate the size of the flattened features after convolutions"""
         dummy_input = torch.zeros(1, channels, d, h, w)
         x = self.init_conv(dummy_input)
-        x = self.layer1(x)
+        #x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
-        x = self.layer5(x)
+        #x = self.layer5(x)
         x = self.layer6(x)
-        x = self.layer7(x)
+        #x = self.layer7(x)
         return int(torch.prod(torch.tensor(x.shape[1:])))
 
     def forward(self, x):
@@ -124,13 +124,13 @@ class SOCPredictor3DCNN(nn.Module):
         x = self.init_conv(x)
 
         # Process through all 7 residual layers
-        x = self.layer1(x)
+        #x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
-        x = self.layer5(x)
+        #x = self.layer5(x)
         x = self.layer6(x)
-        x = self.layer7(x)
+        #x = self.layer7(x)
 
         x = x.view(x.size(0), -1)
         x = self.dense(x)

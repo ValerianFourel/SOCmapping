@@ -1,6 +1,7 @@
 
 from config import MAX_OC, TIME_BEGINNING ,TIME_END , seasons, years_padded  , SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, DataYearly, SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, DataSeasonally ,file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC 
 import pandas as pd
+import numpy as np
 
 def get_time_range(TIME_BEGINNING= TIME_BEGINNING, TIME_END=TIME_END, seasons=seasons, years_padded=years_padded):
     # Define seasons list for matching
@@ -254,3 +255,82 @@ def filter_dataframe(time_beginning, time_end, max_oc=MAX_OC):
         print(f"OC range: {df['OC'].min()} to {df['OC'].max()}")
 
     return filtered_df
+
+def filter_and_rebalance_dataframe(time_beginning, time_end, max_oc=MAX_OC, n_bins=100, sample_multiplier=5):
+    # Get the filtered dataframe using the original function
+    filtered_df = filter_dataframe(time_beginning, time_end, max_oc)
+
+    if filtered_df.empty:
+        return filtered_df
+
+    # Calculate mean OC value
+    mean_oc = filtered_df['OC'].mean()
+
+    # Split the dataframe into two parts: below and above mean
+    df_below_mean = filtered_df[filtered_df['OC'] <= mean_oc]
+    df_above_mean = filtered_df[filtered_df['OC'] > mean_oc]
+
+    # Create bins separately for below and above mean
+    n_bins_below = int(n_bins * 0.5)  # 50% of bins for below mean
+    n_bins_above = n_bins - n_bins_below  # 50% of bins for above mean
+
+    # Create bins for both parts
+    bins_below = pd.qcut(df_below_mean['OC'], q=n_bins_below, duplicates='drop')
+    bins_above = pd.qcut(df_above_mean['OC'], q=n_bins_above, duplicates='drop')
+
+    # Count samples in each bin
+    bin_counts_below = bins_below.value_counts()
+    bin_counts_above = bins_above.value_counts()
+
+    # Calculate weights for both parts
+    weights_below = (1 / bin_counts_below[bins_below])
+    weights_above = (1 / bin_counts_above[bins_above])
+
+    # Normalize weights separately
+    weights_below = weights_below / weights_below.sum()
+    weights_above = weights_above / weights_above.sum()
+
+    # Calculate number of samples to draw from each part
+    # Ensure equal representation of below and above mean samples
+    n_samples_total = int(len(filtered_df) * sample_multiplier)
+    n_samples_below = n_samples_total // 2
+    n_samples_above = n_samples_total - n_samples_below
+
+    # Sample with replacement for both parts
+    rebalanced_indices_below = np.random.choice(
+        df_below_mean.index,
+        size=n_samples_below,
+        p=weights_below,
+        replace=True
+    )
+
+    rebalanced_indices_above = np.random.choice(
+        df_above_mean.index,
+        size=n_samples_above,
+        p=weights_above,
+        replace=True
+    )
+
+    # Combine the sampled indices
+    rebalanced_indices = np.concatenate([rebalanced_indices_below, rebalanced_indices_above])
+
+    # Create the final rebalanced dataframe
+    rebalanced_df = filtered_df.loc[rebalanced_indices].copy()
+
+    # Shuffle the final dataframe
+    rebalanced_df = rebalanced_df.sample(frac=1).reset_index(drop=True)
+
+    # Print statistics
+    print(f"Original filtered shape: {filtered_df.shape}")
+    print(f"Rebalanced shape: {rebalanced_df.shape}")
+    print("\nDistribution statistics:")
+    print(f"Original mean OC: {filtered_df['OC'].mean():.3f}")
+    print(f"Rebalanced mean OC: {rebalanced_df['OC'].mean():.3f}")
+    print(f"Original median OC: {filtered_df['OC'].median():.3f}")
+    print(f"Rebalanced median OC: {rebalanced_df['OC'].median():.3f}")
+    print("\nSamples below/above mean:")
+    print(f"Original - Below mean: {len(df_below_mean)}, Above mean: {len(df_above_mean)}")
+    print(f"Rebalanced - Below mean: {len(rebalanced_df[rebalanced_df['OC'] <= mean_oc])}, "
+          f"Above mean: {len(rebalanced_df[rebalanced_df['OC'] > mean_oc])}")
+
+    return rebalanced_df
