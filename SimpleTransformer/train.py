@@ -11,12 +11,13 @@ from pathlib import Path
 from config import (window_size, TIME_BEGINNING, TIME_END, YEARS_BACK, seasons, 
                    years_padded, SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, 
                    DataYearly, SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, 
-                   DataSeasonally, file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC,MAX_OC)
+                   DataSeasonally, file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC,MAX_OC,
+                   feature_dim, num_heads, num_layers, hidden_dim, seq_len, spatial_dim, output_dim,learning_rate)
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
-from model import SOCPredictor3DCNN , get_trainable_params
+from model import TransformerForRegression , get_trainable_params
 from visualisation_utils import analyze_oc_distribution , visualize_batch_distributions, plot_output_target_difference
 from losses import ChiSquareLoss, HuberLoss, calculate_losses
 import wandb
@@ -77,10 +78,10 @@ def train_model(args):
     epochs = args.epochs
     # Initialize wandb
     wandb.init(
-        project="soil-prediction",
+        project="soil-prediction-simpleTransformer",
         config={
-            "learning_rate": 0.01,
-            "architecture": "SOCPredictor3DCNN",
+            "learning_rate": learning_rate,
+            "architecture": "TransformerForRegression",
             "epochs": 100,
             "batch_size": 256,
             "loss_function": loss_type
@@ -110,8 +111,8 @@ def train_model(args):
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
     # Initialize model, optimizer, and criterion
-    model = SOCPredictor3DCNN(input_channels, input_depth, input_height, input_width)
-    optimizer = optim.Adam(model.parameters(), lr=0.0005)
+    model =  TransformerForRegression(feature_dim, num_heads, num_layers, hidden_dim, seq_len, spatial_dim, output_dim)
+    optimizer = optim.Adam(model.parameters(), lr=0.005)
     criterion = get_loss_function(loss_type)
 
     # Prepare for distributed training
@@ -141,7 +142,7 @@ def train_model(args):
             optimizer.zero_grad()
             outputs = model(batch_features)
 
-            if epoch >= 4:
+            if epoch >= 80:
                 print(outputs)
 
             epoch_outputs.append(outputs.detach().cpu()) # we want to visuazlie the outputs and targets (Y) value

@@ -57,8 +57,8 @@ class SOCPredictor3DCNN(nn.Module):
         # Initial feature extraction block remains the same
         self.init_conv = nn.Sequential(
             nn.Conv3d(input_channels, 64, kernel_size=7, stride=2, padding=3, bias=False),
-            nn.BatchNorm3d(64),
             nn.ELU(inplace=True),
+            nn.BatchNorm3d(64),
             nn.MaxPool3d(kernel_size=3, stride=2, padding=1)
         )
 
@@ -86,16 +86,17 @@ class SOCPredictor3DCNN(nn.Module):
         )
 
         # Final MLP for SOC prediction
+        # Replace final ELU with linear activation for regression
         self.mlp = nn.Sequential(
             nn.Linear(256, 128),
-            nn.BatchNorm1d(128),
             nn.ELU(inplace=True),
+            nn.BatchNorm1d(128),
             nn.Dropout(0.1),
             nn.Linear(128, 64),
-            nn.BatchNorm1d(64),
             nn.ELU(inplace=True),
+            nn.BatchNorm1d(64),
             nn.Dropout(0.1),
-            nn.Linear(64, 1)
+            nn.Linear(64, 1)  # Remove final ELU for regression
         )
 
     def _make_layer(self, in_channels, out_channels, num_blocks, stride):
@@ -131,7 +132,7 @@ class SOCPredictor3DCNN(nn.Module):
         #x = self.layer5(x)
         x = self.layer6(x)
         #x = self.layer7(x)
-
+        
         x = x.view(x.size(0), -1)
         x = self.dense(x)
         soc_prediction = self.mlp(x)
