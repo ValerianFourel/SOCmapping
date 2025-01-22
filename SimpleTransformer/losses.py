@@ -103,3 +103,22 @@ def calculate_losses(all_outputs, all_targets):
     l2_loss = np.mean(np.square(outputs_flat - targets_flat))
 
     return l1_loss, l2_loss
+
+class InverseHuberLoss(nn.Module):
+    def __init__(self, delta=10.0):
+        super(InverseHuberLoss, self).__init__()
+        self.delta = delta
+
+    def forward(self, y_pred, y_true):
+        residual = y_pred - y_true
+        abs_residual = torch.abs(residual)
+        
+        # L1 for small errors
+        l1_loss = abs_residual
+        
+        # L2 for large errors
+        l2_loss = (residual ** 2) / (2 * self.delta) + (self.delta / 2)
+        
+        # Apply condition
+        loss = torch.where(abs_residual <= self.delta, l1_loss, l2_loss)
+        return loss.mean()

@@ -356,3 +356,85 @@ def filter_and_rebalance_dataframe(time_beginning, time_end, max_oc=MAX_OC, n_bi
           f"Above mean: {len(rebalanced_df[rebalanced_df['OC'] > mean_oc])}")
 
     return rebalanced_df
+
+def filter_and_uniform_sample(time_beginning, time_end, max_oc=MAX_OC, n_bins=100):
+    """
+    Filter dataframe and create a uniform distribution of OC values through bin-based sampling,
+    ensuring all original data points are included and each bin has at least as many elements
+    as the most populated bin from the original data.
+
+    Parameters:
+    -----------
+    time_beginning : datetime
+        Start time for filtering
+    time_end : datetime
+        End time for filtering
+    max_oc : float
+        Maximum OC value for filtering
+    n_bins : int
+        Number of bins to divide the OC range into
+    """
+    # Get the filtered dataframe
+    filtered_df = filter_dataframe(time_beginning, time_end, max_oc)
+
+    if filtered_df.empty:
+        return filtered_df
+
+    # Create bins of equal width across the OC range
+    bins = pd.cut(filtered_df['OC'], bins=n_bins)
+
+    # Count samples in each bin
+    bin_counts = bins.value_counts().sort_index()
+
+    # Get non-empty bins
+    non_empty_bins = bin_counts[bin_counts > 0]
+
+    # Get the maximum count from original bins
+    max_bin_count = bin_counts.max()
+
+    # Initialize list to store sampled dataframes
+    sampled_dfs = []
+
+    # Process each non-empty bin
+    for bin_label in non_empty_bins.index:
+        bin_data = filtered_df[bins == bin_label]
+        original_bin_size = len(bin_data)
+
+        if original_bin_size > 0:
+            # First include all original data points
+            sampled_dfs.append(bin_data)
+
+            # If we need more samples to reach max_bin_count
+            if original_bin_size < max_bin_count:
+                additional_samples = bin_data.sample(
+                    n=(max_bin_count - original_bin_size),
+                    replace=True
+                )
+                sampled_dfs.append(additional_samples)
+
+    # Combine all sampled data
+    rebalanced_df = pd.concat(sampled_dfs, axis=0)
+
+    # Shuffle the final dataframe
+    rebalanced_df = rebalanced_df.sample(frac=1).reset_index(drop=True)
+
+    # Print statistics
+    print(f"Original filtered shape: {filtered_df.shape}")
+    print(f"Rebalanced shape: {rebalanced_df.shape}")
+    print(f"Size multiplier achieved: {len(rebalanced_df)/len(filtered_df):.2f}x")
+    print(f"Number of non-empty bins: {len(non_empty_bins)} out of {n_bins}")
+    print(f"Original maximum bin count: {max_bin_count}")
+    print("\nDistribution statistics:")
+    print(f"Original mean OC: {filtered_df['OC'].mean():.3f}")
+    print(f"Rebalanced mean OC: {rebalanced_df['OC'].mean():.3f}")
+    print(f"Original median OC: {filtered_df['OC'].median():.3f}")
+    print(f"Rebalanced median OC: {rebalanced_df['OC'].median():.3f}")
+
+    # Print bin statistics
+    print("\nBin statistics:")
+    print("Original bin counts:")
+    print(bin_counts.describe())
+    print("\nRebalanced bin counts:")
+    print(pd.cut(rebalanced_df['OC'], bins=n_bins).value_counts().sort_index().describe())
+
+    return rebalanced_df

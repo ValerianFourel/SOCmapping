@@ -45,8 +45,8 @@ class RasterTensorDataset(Dataset):
         """
         self.folder_path = base_path
         self.resolution = resolution
-        self.window_size = window_size  # This is for 1km resolution
-        self.target_size = window_size * 4 + 1  # Final tensor size (250m resolution)
+        self.window_size_km = window_size  # This is for 1km resolution
+        self.target_size = window_size * 4  # Final tensor size (250m resolution)
 
         # Calculate expansion factor based on resolution
         self.expansion_factor = {
@@ -55,8 +55,15 @@ class RasterTensorDataset(Dataset):
             '1km': 1    # Each pixel becomes 4x4
         }.get(resolution, 4)
 
+        # Calculate expansion factor based on resolution
+        self.resizing_factor = {
+            '250m': 1,  # Already at target resolution
+            '500m': 2,  # Each pixel becomes 2x2
+            '1km': 4    # Each pixel becomes 4x4
+        }.get(resolution, 4)
+
         # Adjust input window size based on resolution
-        self.input_window_size = self.window_size * self.expansion_factor
+        self.input_window_size = self.window_size_km * self.expansion_factor
 
         # Create ID to filename mapping
         self.id_to_file = self._create_id_mapping()
@@ -82,8 +89,6 @@ class RasterTensorDataset(Dataset):
             raise ValueError(f"ID {id_num} not found in dataset")
 
         # Scale coordinates based on resolution
-        #scaled_x = int(x / self.expansion_factor)
-        #scaled_y = int(y / self.expansion_factor)
 
         # Get the data array
         data = self.data_cache.get(id_num, np.load(self.id_to_file[id_num]))
@@ -91,13 +96,12 @@ class RasterTensorDataset(Dataset):
         # Calculate window boundaries for input resolution
         half_window = self.input_window_size // 2
         x_start = int(max(0, x - half_window))
-        x_end = int(min(data.shape[0], x + half_window + 1))
+        x_end = int(min(data.shape[0], x + half_window ))
         y_start = int(max(0, y - half_window))
-        y_end = int(min(data.shape[1], y + half_window + 1))
+        y_end = int(min(data.shape[1], y + half_window))
 
         # Extract window
         window = data[x_start:x_end, y_start:y_end]
-        #print(x_start,x_end, y_start,y_end,window.shape,self.resolution )
         # Pad if necessary
         if window.shape != (self.input_window_size, self.input_window_size):
             padded_window = np.zeros((self.input_window_size, self.input_window_size))
@@ -128,17 +132,20 @@ class RasterTensorDataset(Dataset):
         # Convert to tensor
         window_tensor = torch.from_numpy(window).float()
 
-        # Expand to target size based on resolution
+        #Expand to target size based on resolution
+        # Instead of interpolate, use this:
         if self.resolution != '250m' or window_tensor.shape[0] != self.target_size:
-            window_tensor = window_tensor.unsqueeze(0).unsqueeze(0)  # Add batch and channel dimensions
-            #print(window_tensor.shape)
-            # Use nearest neighbor for pixel expansion
-            resized_tensor = torch.nn.functional.interpolate(
-                window_tensor,
-                size=(self.target_size, self.target_size),
-                mode='nearest'
-            )
-            window_tensor = resized_tensor.squeeze(0).squeeze(0)  # Remove batch and channel dimensions
+            # Add batch and channel dimensions
+            window_tensor = window_tensor.unsqueeze(0).unsqueeze(0)
+
+            # Repeat each pixel value along both height and width dimensions
+            expanded_tensor = window_tensor.repeat_interleave(self.resizing_factor, dim=2)\
+                                        .repeat_interleave(self.resizing_factor, dim=3)
+
+            window_tensor = expanded_tensor.squeeze(0).squeeze(0)  # Remove batch and channel dimensions
+        
+        
+
         return window_tensor
 
     def _create_id_mapping(self):
@@ -182,12 +189,13 @@ dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
 
 
 class MultiRasterDataset(Dataset):
-    def __init__(self, samples_coordinates_array_subfolders ,  data_array_subfolders , dataframe,YEARS_BACK= YEARS_BACK,seasons = seasons,years_padded = years_padded):
+    def __init__(self, samples_coordinates_array_subfolders ,  data_array_subfolders , dataframe,YEARS_BACK= YEARS_BACK,seasons = seasons,years_padded = years_padded , bands_final = ['LAI','LST','SoilEvaporation','MODIS_NPP','Elevation','TotalEvapotranspiration']):
         """
         Parameters:
         subfolders: list of str, names of subfolders to include
         dataframe: pandas.DataFrame, contains columns GPS_LONG, GPS_LAT, and OC (target variable)
         """
+        self.bands = bands_final
         self.data_array_subfolders = data_array_subfolders
         self.seasonalityBased = self.check_seasonality(data_array_subfolders)
 
@@ -298,10 +306,7 @@ class MultiRasterDataset(Dataset):
                     # Extract band type (LAI, LST, etc.) and current year_season
                     band_type = path.split('SeasonalValue/')[1].split('/')[0]
                     current_year_season = path.split('/')[-1]  # e.g., "2009_summer"
-                    #current_year = int(current_year_season.split('_')[0])
-                    #current_season = current_year_season.split('_')[1]
-                    #print(current_year_season)
-
+                   
                     # Find index of current season in seasons list
                     season_idx = self.seasons.index(current_year_season)
 
@@ -315,9 +320,7 @@ class MultiRasterDataset(Dataset):
                     # Extract band type (LAI, LST, etc.) and current year_season
                     band_type = path.split('YearlyValue/')[1].split('/')[0]
                     current_year_season = path.split('/')[-1]  # e.g., "2009_summer"
-                    #current_year = int(current_year_season.split('_')[0])
-                    #current_season = current_year_season.split('_')[1]
-                    # print(current_year_season)
+                 
 
                     # Find index of current season in seasons list
                     years_idx = self.years_padded.index(current_year_season)
@@ -349,19 +352,11 @@ class MultiRasterDataset(Dataset):
 
         filtered_array = self.filter_by_season_or_year(row['season'], row['year'], self.seasonalityBased)
         extended_array = self.extend_filtered_array(filtered_array,self.YEARS_BACK)
-
-        tensors = []
-        #print(' extended_array   ',extended_array)
                 # Dictionary to store tensors by path
-        path_tensors = {}
-
         # First, collect all tensors
-        for path in extended_array:
-            last_three = self.get_last_three_folders(path)
-            id_num, x, y = self.find_coordinates_index(last_three, longitude, latitude)
-            tensor = self.datasets[last_three].get_tensor_by_location(id_num, x, y)
-            if tensor is not None:
-                path_tensors[path] = tensor
+        extended_array = [p for p in extended_array if any(band in p for band in self.bands)]
+
+
             
 
         # Group paths by type
@@ -371,15 +366,16 @@ class MultiRasterDataset(Dataset):
 
 
 
+
         # Get unique last subfolders from seasonal paths
         time_steps = sorted(set(p.split('/')[-1] for p in seasonal_paths))
-        #print(extended_array)
         final_tensors = []
 
         # Extract years and their corresponding paths
-        years_and_paths = [(int(path.split("/")[-1]), path) for path in modis_paths]
-
+        years_and_paths = [(int(path.split("/")[-1]), path) for path in seasonal_paths ]
         # Find the path with the smallest year
+        if years_and_paths == []:
+            years_and_paths = [2015]
         smallest_year, smallest_year_path = min(years_and_paths, key=lambda x: x[0])
         max_year, max_year_path = max(years_and_paths, key=lambda x: x[0])
 
@@ -405,29 +401,32 @@ class MultiRasterDataset(Dataset):
 
             # Add Elevation (static)
             for path in elevation_paths:
-                if path in path_tensors:
-                    features.append(path_tensors[path].unsqueeze(-1))
+                last_three = self.get_last_three_folders(path)
+                id_num, x, y = self.find_coordinates_index(last_three, longitude, latitude)
+                tensor_elevation = self.datasets[last_three].get_tensor_by_location(id_num, x, y).unsqueeze(-1)
+                features.append(tensor_elevation)
 
             # Add corresponding MODIS_NPP (based on year in time_step)
             year = time_step[:4]  # Get year from time step
             for path in modis_paths:
-                #print('2:   ',path)
                 if path.split('/')[-1] == year: #and path in path_tensors:
-                    #print('1:   ',path)
                     last_three = self.get_last_three_folders(path)
                     id_num, x, y = self.find_coordinates_index(last_three, longitude, latitude)
-                    features.append( self.datasets[last_three].get_tensor_by_location(id_num, x, y).unsqueeze(-1))
+                    tensor_modis = self.datasets[last_three].get_tensor_by_location(id_num, x, y).unsqueeze(-1)
+                    features.append( tensor_modis)
 
             # Add seasonal data for this time step
             for base_path in seasonal_paths:
-                if base_path.split('/')[-1] == time_step and base_path in path_tensors:
-                    features.append(path_tensors[base_path].unsqueeze(-1))
+                if base_path.split('/')[-1] == time_step:
+                    last_three = self.get_last_three_folders(base_path)
+                    id_num, x, y = self.find_coordinates_index(last_three, longitude, latitude)
+                    tensor_seasonal = self.datasets[last_three].get_tensor_by_location(id_num, x, y).unsqueeze(-1)
+                    features.append(tensor_seasonal)
 
             # Stack features for this time step
             if features:
                 time_step_tensor = torch.cat(features, dim=-1)  # Assuming last dimension is for bands
                 final_tensors.append(time_step_tensor)
-                #print('time_step_tensor     ',time_step_tensor.shape)
 
         # Stack all time steps together
         # Min-Max scaling for each band independently

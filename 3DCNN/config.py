@@ -4,14 +4,15 @@ base_path_data = '/home/vfourel/SOCProject/SOCmapping/Data'
 
 file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC = f"{base_path_data}/LUCAS_LFU_Lfl_00to23_Bavaria_OC.xlsx"
 
+bands = ['LAI','LST','SoilEvaporation','MODIS_NPP','Elevation','TotalEvapotranspiration']
 
 TIME_BEGINNING = '2014'
 TIME_END = '2016 '
-YEARS_BACK = 10
+YEARS_BACK = 1
 
 
 MAX_OC = 100
-window_size = 8
+window_size = 6
 
 def generate_seasonal_list():
     seasons = ['winter', 'spring', 'summer', 'autumn']  # Reordered with winter first

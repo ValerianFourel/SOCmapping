@@ -80,23 +80,21 @@ class SOCPredictor3DCNN(nn.Module):
         # Dense layer for feature compression
         self.dense = nn.Sequential(
             nn.Linear(self.flatten_size, 256),  # Increased intermediate features
-            nn.BatchNorm1d(256),
-            nn.ELU(inplace=True),
-            nn.Dropout(0.1)
+            #nn.BatchNorm1d(256),
+            nn.SiLU(inplace=True),
+            nn.Dropout(0.0)
         )
 
         # Final MLP for SOC prediction
         # Replace final ELU with linear activation for regression
         self.mlp = nn.Sequential(
-            nn.Linear(256, 128),
-            nn.ELU(inplace=True),
-            nn.BatchNorm1d(128),
-            nn.Dropout(0.1),
-            nn.Linear(128, 64),
-            nn.ELU(inplace=True),
-            nn.BatchNorm1d(64),
-            nn.Dropout(0.1),
-            nn.Linear(64, 1)  # Remove final ELU for regression
+            nn.Linear(256, 128,bias=False),
+            nn.SiLU(inplace=True),
+            nn.Dropout(0.0),
+            nn.Linear(128, 64,bias=False),
+            nn.SiLU(inplace=True),
+            nn.Dropout(0.0),
+            nn.Linear(64, 1, bias=False) # Remove final ELU for regression
         )
 
     def _make_layer(self, in_channels, out_channels, num_blocks, stride):
