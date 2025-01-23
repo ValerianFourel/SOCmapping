@@ -8,14 +8,17 @@ import pandas as pd
 import numpy as np
 from tqdm import tqdm
 from pathlib import Path
-from config import   TIME_BEGINNING ,TIME_END , seasons, years_padded  , SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, DataYearly, SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, DataSeasonally ,file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC 
+from config import  (TIME_BEGINNING ,TIME_END , INFERENCE_TIME , seasons,
+ SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, DataYearly,
+  SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, DataSeasonally , 
+  file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC ,  years_padded )
 from XGBoost_map.mapping import  create_prediction_visualizations , parallel_predict
 
 import matplotlib.pyplot as plt
 from torch.utils.data import Dataset, DataLoader
 
 
-def modify_matrix_coordinates(MatrixCoordinates_1mil_Yearly=MatrixCoordinates_1mil_Yearly, MatrixCoordinates_1mil_Seasonally = MatrixCoordinates_1mil_Seasonally, TIME_END= TIME_END):
+def modify_matrix_coordinates(MatrixCoordinates_1mil_Yearly=MatrixCoordinates_1mil_Yearly, MatrixCoordinates_1mil_Seasonally = MatrixCoordinates_1mil_Seasonally, INFERENCE_TIME= INFERENCE_TIME):
     # For MatrixCoordinates_1mil_Seasonally
     for path in MatrixCoordinates_1mil_Seasonally:
         folders = path.split('/')
@@ -24,14 +27,14 @@ def modify_matrix_coordinates(MatrixCoordinates_1mil_Yearly=MatrixCoordinates_1m
         if last_folder == 'Elevation':
             continue  # Skip Elevation folders
         elif last_folder == 'MODIS_NPP':
-            # Add just the year (first 4 characters of TIME_END)
-            new_path = f"{path}/{TIME_END[:4]}"
+            # Add just the year (first 4 characters of INFERENCE_TIME)
+            new_path = f"{path}/{INFERENCE_TIME[:4]}"
         else:
-            # Add full TIME_END
-            new_path = f"{path}/{TIME_END}"
+            # Add full INFERENCE_TIME
+            new_path = f"{path}/{INFERENCE_TIME}"
 
         folders = path.split('/')
-        folders.append(TIME_END if last_folder != 'MODIS_NPP' else TIME_END[:4])
+        folders.append(INFERENCE_TIME if last_folder != 'MODIS_NPP' else INFERENCE_TIME[:4])
         new_path = '/'.join(folders)
         MatrixCoordinates_1mil_Seasonally[MatrixCoordinates_1mil_Seasonally.index(path)] = new_path
 
@@ -44,7 +47,7 @@ def modify_matrix_coordinates(MatrixCoordinates_1mil_Yearly=MatrixCoordinates_1m
             continue  # Skip Elevation folders
         else:
             # Add just the year (first 4 characters of TIME_END)
-            folders.append(TIME_END[:4])
+            folders.append(INFERENCE_TIME[:4])
             new_path = '/'.join(folders)
             MatrixCoordinates_1mil_Yearly[MatrixCoordinates_1mil_Yearly.index(path)] = new_path
 
@@ -84,7 +87,7 @@ def get_top_sampling_years(file_path, top_n=3):
         print(f"Error reading file: {str(e)}")
 
 
-df = filter_dataframe(TIME_BEGINNING,TIME_END,150)
+df = filter_dataframe(TIME_BEGINNING,TIME_END,MAX_OC)
 
 
 
@@ -225,4 +228,4 @@ plt.grid(True)
 plt.show()
 
 save_path = '/home/vfourel/SOCProject/SOCmapping/predictions_plots'
-create_prediction_visualizations(TIME_END, coordinates, predictions, save_path)
+create_prediction_visualizations(INFERENCE_TIME, coordinates, predictions, save_path)

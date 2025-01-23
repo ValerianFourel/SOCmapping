@@ -4,7 +4,8 @@ import xgboost as xgb
 import matplotlib.pyplot as plt
 from scipy.interpolate import griddata
 import geopandas as gpd
-from config import base_path_data , file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC
+from config import (base_path_data , file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC , MAX_OC ,
+ TIME_BEGINNING , TIME_END , INFERENCE_TIME)
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataloader.dataloaderMapping import MultiRasterDatasetMapping
@@ -75,7 +76,7 @@ def create_prediction_visualizations(year,coordinates, predictions, save_path):
 
     # Function to generate filename with timestamp
     def get_filename(base_name):
-        return f"{base_name}_{timestamp}.png"
+        return f"{base_name}_MAX_OC_{str(MAX_OC)}_Beginning_{TIME_BEGINNING}_End_{TIME_END}__InferenceTime{INFERENCE_TIME}_{timestamp}.png"
 
     # 1. Interpolated surface
     fig_interp, ax_interp = plt.subplots(**plot_params)

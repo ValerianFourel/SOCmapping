@@ -13,39 +13,12 @@ from config import (TIME_BEGINNING, TIME_END, seasons, years_padded,
                    SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, 
                    DataYearly, SamplesCoordinates_Seasonally, 
                    MatrixCoordinates_1mil_Seasonally, DataSeasonally,
-                   file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC)
+                   file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC, MAX_OC)
 from torch.utils.data import Dataset, DataLoader
+from modelCNN import SmallCNN
 
-# Define the CNN model
-class SmallCNN(nn.Module):
-    def __init__(self, input_channels=6):
-        super(SmallCNN, self).__init__()
-        self.conv1 = nn.Conv2d(input_channels, 16, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.fc1 = nn.Linear(32 * 4 * 4, 64)
-        self.fc2 = nn.Linear(64, 1)
-        self.relu = nn.ReLU()
 
-    def forward(self, x):
-        x = self.pool(self.relu(self.conv1(x)))
-        x = self.pool(self.relu(self.conv2(x)))
-        x = x.view(x.size(0), -1)
-        x = self.relu(self.fc1(x))
-        x = self.fc2(x)
-        return x.squeeze()
-
-def modify_matrix_coordinates(MatrixCoordinates_1mil_Yearly=MatrixCoordinates_1mil_Yearly, 
-                            MatrixCoordinates_1mil_Seasonally=MatrixCoordinates_1mil_Seasonally, 
-                            TIME_END=TIME_END):
-    # [Previous modify_matrix_coordinates function remains the same]
-    pass
-
-def get_top_sampling_years(file_path, top_n=3):
-    # [Previous get_top_sampling_years function remains the same]
-    pass
-
-def train_model(model, dataloader, num_epochs=10, device='cuda' if torch.cuda.is_available() else 'cpu'):
+def train_model(model, dataloader, num_epochs=100, device='cuda' if torch.cuda.is_available() else 'cpu'):
     model = model.to(device)
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
@@ -145,7 +118,7 @@ def train_model(model, dataloader, num_epochs=10, device='cuda' if torch.cuda.is
 # Main execution
 if __name__ == "__main__":
     # Data preparation
-    df = filter_dataframe(TIME_BEGINNING, TIME_END, 150)
+    df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
     samples_coordinates_array_path, data_array_path = separate_and_add_data()
 
     # Flatten and remove duplicates
@@ -164,12 +137,13 @@ if __name__ == "__main__":
     # Create dataset and dataloader
     dataset = MultiRasterDataset(samples_coordinates_array_path, data_array_path, df)
     print("Dataset length:", len(df))
-    dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=256, shuffle=True)
 
     # Initialize and train the model
     model = SmallCNN(input_channels=6)  # Adjust input_channels based on your data
+    print(model.count_parameters())
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model, all_outputs, all_targets = train_model(model, dataloader, num_epochs=10, device=device)
+    model, all_outputs, all_targets = train_model(model, dataloader, num_epochs=100, device=device)
 
     # Save the model
     torch.save(model.state_dict(), 'cnn_model.pth')

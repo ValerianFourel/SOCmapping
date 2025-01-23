@@ -3,28 +3,14 @@
 base_path_data = '/home/vfourel/SOCProject/SOCmapping/Data'
 
 file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC = f"{base_path_data}/LUCAS_LFU_Lfl_00to23_Bavaria_OC.xlsx"
+
+
+TIME_BEGINNING = '2002'
+TIME_END = '2023'
 bands_list_order = ['Elevation','LAI','LST','MODIS_NPP','SoilEvaporation','TotalEvapotranspiration']
+MAX_OC = 150
+INFERENCE_TIME = '2015'
 
-
-TIME_BEGINNING = '2014'
-TIME_END = '2016 '
-YEARS_BACK = 10
-
-
-MAX_OC = 100
-window_size = 3
-
-
-# Example instantiation
-feature_dim = 6          # Number of features
-num_heads = 4            # Number of attention heads
-num_layers = 3           # Number of transformer layers
-hidden_dim = 128         # Hidden dimension of transformer
-seq_len = YEARS_BACK             # Temporal sequence length
-spatial_dim = window_size*4+1         # Spatial dimensions (32x32 grid)
-output_dim = 1           # Single regression output
-
-# learning_rate = 0.001
 
 def generate_seasonal_list():
     seasons = ['winter', 'spring', 'summer', 'autumn']  # Reordered with winter first
@@ -53,12 +39,12 @@ years_padded = [f"{year:04d}" for year in range(2000, 2024)]
 #######################################################################
 # YEARLY PATH
 
-elevationBandMatrixCoordinates_Yearly = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates_v2/StaticValue/Elevation'
-LAIBandMatrixCoordinates_Yearly = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates_v2/YearlyValue/LAI'
-LSTBandMatrixCoordinates_Yearly = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates_v2/YearlyValue/LST'
-MODIS_NPPBandMatrixCoordinates_Yearly = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates_v2/YearlyValue/MODIS_NPP'
-SoilEvaporationBandMatrixCoordinates_Yearly = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates_v2/YearlyValue/SoilEvaporation'
-TotalEvapotranspirationBandMatrixCoordinates_Yearly = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates_v2/YearlyValue/TotalEvapotranspiration'
+elevationBandMatrixCoordinates_Yearly = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates/StaticValue/Elevation'
+LAIBandMatrixCoordinates_Yearly = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates/YearlyValue/LAI'
+LSTBandMatrixCoordinates_Yearly = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates/YearlyValue/LST'
+MODIS_NPPBandMatrixCoordinates_Yearly = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates/YearlyValue/MODIS_NPP'
+SoilEvaporationBandMatrixCoordinates_Yearly = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates/YearlyValue/SoilEvaporation'
+TotalEvapotranspirationBandMatrixCoordinates_Yearly = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates/YearlyValue/TotalEvapotranspiration'
 
 SamplesCoordinates_Yearly = [elevationBandMatrixCoordinates_Yearly,  LAIBandMatrixCoordinates_Yearly,  LSTBandMatrixCoordinates_Yearly, MODIS_NPPBandMatrixCoordinates_Yearly , SoilEvaporationBandMatrixCoordinates_Yearly, TotalEvapotranspirationBandMatrixCoordinates_Yearly ]
 
@@ -83,12 +69,12 @@ DataYearly = [elevationTensorData , LAITensorDataYearly , LSTTensorDataYearly, M
 #######################################################################
 #SEASON PATHS
 
-elevationBandMatrixCoordinates_Seasonally = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates_v2/StaticValue/Elevation'
-LAIBandMatrixCoordinates_Seasonally = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates_v2/SeasonalValue/LAI'
-LSTBandMatrixCoordinates_Seasonally = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates_v2/SeasonalValue/LST'
-MODIS_NPPBandMatrixCoordinates_Seasonally = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates_v2/YearlyValue/MODIS_NPP'
-SoilEvaporationBandMatrixCoordinates_Seasonally = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates_v2/SeasonalValue/SoilEvaporation'
-TotalEvapotranspirationBandMatrixCoordinates_Seasonally = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates_v2/SeasonalValue/TotalEvapotranspiration'
+elevationBandMatrixCoordinates_Seasonally = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates/StaticValue/Elevation'
+LAIBandMatrixCoordinates_Seasonally = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates/SeasonalValue/LAI'
+LSTBandMatrixCoordinates_Seasonally = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates/SeasonalValue/LST'
+MODIS_NPPBandMatrixCoordinates_Seasonally = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates/YearlyValue/MODIS_NPP'
+SoilEvaporationBandMatrixCoordinates_Seasonally = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates/SeasonalValue/SoilEvaporation'
+TotalEvapotranspirationBandMatrixCoordinates_Seasonally = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates/SeasonalValue/TotalEvapotranspiration'
 
 SamplesCoordinates_Seasonally = [elevationBandMatrixCoordinates_Seasonally , LAIBandMatrixCoordinates_Seasonally, LSTBandMatrixCoordinates_Seasonally, MODIS_NPPBandMatrixCoordinates_Seasonally, SoilEvaporationBandMatrixCoordinates_Seasonally, TotalEvapotranspirationBandMatrixCoordinates_Seasonally ]
 
