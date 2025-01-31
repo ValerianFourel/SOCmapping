@@ -79,11 +79,6 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
     print(f"Original data size: {len(df)}")
     print(f"Training set size: {len(training_df)}")
     print(f"Validation set size: {len(validation_df)}")
-    mean_value = training_df['OC'].mean()
-    variance_value = training_df['OC'].var()
-
-    print("Mean:", mean_value)
-    print("Varianz:", variance_value)
 
     return training_df, validation_df
 
