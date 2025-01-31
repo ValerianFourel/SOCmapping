@@ -1,5 +1,5 @@
 
-from config import  TIME_BEGINNING ,TIME_END , seasons, years_padded  , SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, DataYearly, SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, DataSeasonally ,file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC 
+from config import LOADING_TIME_BEGINNING, TIME_BEGINNING ,TIME_END , seasons, years_padded  , SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, DataYearly, SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, DataSeasonally ,file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC 
 import pandas as pd
 import numpy as np
 
@@ -112,20 +112,20 @@ def create_path_arrays(SamplesCoordinates_Seasonally, DataSeasonally, selected_s
 
 
 
-def separate_and_add_data(TIME_BEGINNING=TIME_BEGINNING, TIME_END=TIME_END, seasons=seasons, years_padded=years_padded, 
+def separate_and_add_data(LOADING_TIME_BEGINNING=LOADING_TIME_BEGINNING, TIME_END=TIME_END, seasons=seasons, years_padded=years_padded, 
                          SamplesCoordinates_Yearly=SamplesCoordinates_Yearly, DataYearly=DataYearly,
                          SamplesCoordinates_Seasonally=SamplesCoordinates_Seasonally, DataSeasonally=DataSeasonally):
 
     # Define seasons list for matching
     seasons_list = ['winter', 'spring', 'summer', 'autumn']
 
-    # Check if TIME_BEGINNING is a season
-    is_season = any(season in TIME_BEGINNING.lower() for season in seasons_list)
+    # Check if LOADING_TIME_BEGINNING is a season
+    is_season = any(season in LOADING_TIME_BEGINNING.lower() for season in seasons_list)
 
     if is_season:
         # Handle seasons case
         start_idx = next(i for i, season in enumerate(seasons) 
-                        if TIME_BEGINNING.lower() in season.lower())
+                        if LOADING_TIME_BEGINNING.lower() in season.lower())
         end_idx = next(i for i, season in enumerate(seasons) 
                       if TIME_END.lower() in season.lower())
 
@@ -136,7 +136,7 @@ def separate_and_add_data(TIME_BEGINNING=TIME_BEGINNING, TIME_END=TIME_END, seas
         # Add seasonal data pairs
         return create_path_arrays(SamplesCoordinates_Seasonally, DataSeasonally, selected_seasons)
     else:
-        start_idx = years_padded.index(TIME_BEGINNING)
+        start_idx = years_padded.index(LOADING_TIME_BEGINNING)
         end_idx = years_padded.index(TIME_END)
         selected_years = years_padded[start_idx:end_idx + 1]
         return create_path_arrays_yearly(SamplesCoordinates_Yearly, DataYearly, selected_years)

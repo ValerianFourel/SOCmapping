@@ -1,26 +1,24 @@
-import numpy as np
 import torch
 import torch.nn as nn
 
-
-class SmallCNN(nn.Module):
+class Small3DCNN(nn.Module):
     def __init__(self, input_channels=6, dropout_rate=0.3):
-        super(SmallCNN, self).__init__()
+        super(Small3DCNN, self).__init__()
 
         # Convolutional layers
-        self.conv1 = nn.Conv2d(input_channels, 16, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        self.conv1 = nn.Conv3d(input_channels, 16, kernel_size=2, padding=1)
+        self.conv2 = nn.Conv3d(16, 32, kernel_size=2, padding=1)
+        self.conv3 = nn.Conv3d(32, 64, kernel_size=2, padding=1)
 
         # Pooling layer
-        self.pool = nn.MaxPool2d(2, 2)
+        self.pool = nn.MaxPool3d(2, 2)
 
         # Dropout layers
-        self.dropout_conv = nn.Dropout2d(p=dropout_rate)  # For convolutional layers
+        self.dropout_conv = nn.Dropout3d(p=dropout_rate)  # For convolutional layers
         self.dropout_fc = nn.Dropout(p=dropout_rate)      # For fully connected layers
 
         # Fully connected layers
-        self.fc1 = nn.Linear(32 * 2 * 4, 64)
+        self.fc1 = nn.Linear(576, 64)  # Adjusted based on the output size after pooling
         self.fc2 = nn.Linear(64, 1)
 
         # Activation
@@ -56,4 +54,3 @@ class SmallCNN(nn.Module):
 
     def count_parameters(self):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
-

@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
-from dataloader.dataloader import MultiRasterDataset 
+from dataloader.dataloaderMultiYears import MultiRasterDatasetMultiYears 
 from dataloader.dataloaderMapping import MultiRasterDatasetMapping
 from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data
 import pandas as pd
@@ -16,7 +16,7 @@ from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,
                    MatrixCoordinates_1mil_Seasonally, DataSeasonally,
                    file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC)
 from torch.utils.data import Dataset, DataLoader
-from modelCNN import SmallCNN
+from modelCNNMultiYear import Small3DCNN
 
 def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
     """
@@ -155,7 +155,7 @@ def train_model(model, train_loader, val_loader, num_epochs=100,
     mae = np.mean(np.abs(np.array(val_outputs) - np.array(val_targets)))
 
     # Save statistics to text file
-    with open('model_statistics.txt', 'w') as f:
+    with open('model_statisticsMultiYear.txt', 'w') as f:
         f.write(f'Final Statistics:\n')
         f.write(f'Correlation: {final_correlation:.4f}\n')
         f.write(f'R²: {final_r_squared:.4f}\n')
@@ -191,18 +191,27 @@ if __name__ == "__main__":
     print(f"Validation set size: {len(val_df)}")
 
     # Create datasets and dataloaders
-    train_dataset = MultiRasterDataset(samples_coordinates_array_path, data_array_path, train_df)
-    val_dataset = MultiRasterDataset(samples_coordinates_array_path, data_array_path, val_df)
+    train_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
+    val_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df)
 
     train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
+        # Iterate through the DataLoader to get the first batch
+    for batch in train_loader:
+        _ , _ , first_batch , _ = batch 
+        break
+
+    # Get the size of the first batch
+    first_batch_size = first_batch.shape  # Assuming the first element is the input data
+
+    print("Size of the first batch:", first_batch_size)
     val_loader = DataLoader(val_dataset, batch_size=256, shuffle=False)
 
     # Initialize and train the model
-    model = SmallCNN(input_channels=6)  # Adjust input_channels based on your data
+    model = Small3DCNN(input_channels=6)  # Adjust input_channels based on your data
     print(f"Model parameters: {model.count_parameters()}")
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model,  val_outputs, val_targets = train_model(model, train_loader, val_loader, num_epochs=200, device=device)
+    model,  val_outputs, val_targets = train_model(model, train_loader, val_loader, num_epochs=500, device=device)
 
     # Save the model
     torch.save(model.state_dict(), 
