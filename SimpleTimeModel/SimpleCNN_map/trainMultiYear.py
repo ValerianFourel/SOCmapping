@@ -12,9 +12,9 @@ from pathlib import Path
 from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,
                    seasons, years_padded, 
                    SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, 
-                   DataYearly, SamplesCoordinates_Seasonally, 
-                   MatrixCoordinates_1mil_Seasonally, DataSeasonally,
-                   file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC)
+                   DataYearly, SamplesCoordinates_Seasonally, bands_list_order,
+                   MatrixCoordinates_1mil_Seasonally, DataSeasonally, window_size,
+                   file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC, time_before)
 from torch.utils.data import Dataset, DataLoader
 from modelCNNMultiYear import Small3DCNN
 
@@ -207,11 +207,11 @@ if __name__ == "__main__":
     val_loader = DataLoader(val_dataset, batch_size=256, shuffle=False)
 
     # Initialize and train the model
-    model = Small3DCNN(input_channels=6)  # Adjust input_channels based on your data
+    model = Small3DCNN(input_channels=len(bands_list_order),input_height = window_size ,input_width = window_size, input_time = time_before)  # Adjust input_channels based on your data
     print(f"Model parameters: {model.count_parameters()}")
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model,  val_outputs, val_targets = train_model(model, train_loader, val_loader, num_epochs=500, device=device)
+    model,  val_outputs, val_targets = train_model(model, train_loader, val_loader, num_epochs=100, device=device)
 
     # Save the model
     torch.save(model.state_dict(), 

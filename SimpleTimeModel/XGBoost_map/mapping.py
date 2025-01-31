@@ -188,7 +188,7 @@ def process_batch(df_chunk, model_copy, bands_yearly, batch_size):
 
     return chunk_coordinates, chunk_predictions
 
-def parallel_predict(df_full, xgb_model, bands_yearly, batch_size=4, num_threads=4):
+def parallel_predict(df_full, model, bands_yearly, batch_size=4, num_threads=4):
     # Shuffle the DataFrame
     df_shuffled = df_full.sample(frac=1, random_state=42).reset_index(drop=True)
 
@@ -209,7 +209,7 @@ def parallel_predict(df_full, xgb_model, bands_yearly, batch_size=4, num_threads
             executor.submit(
                 process_batch, 
                 chunk, 
-                copy.deepcopy(xgb_model),
+                copy.deepcopy(model),
                 bands_yearly,
                 batch_size
             ) for chunk in df_chunks
