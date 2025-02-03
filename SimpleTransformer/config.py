@@ -3,28 +3,17 @@
 base_path_data = '/home/vfourel/SOCProject/SOCmapping/Data'
 
 file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC = f"{base_path_data}/LUCAS_LFU_Lfl_00to23_Bavaria_OC.xlsx"
+
+
+time_before  = 4
+window_size = 33
+TIME_BEGINNING = '2007'
+LOADING_TIME_BEGINNING = str(int(TIME_BEGINNING)-time_before)
+TIME_END = '2023'
+INFERENCE_TIME = '2015'
 bands_list_order = ['Elevation','LAI','LST','MODIS_NPP','SoilEvaporation','TotalEvapotranspiration']
+MAX_OC = 150
 
-
-TIME_BEGINNING = '2014'
-TIME_END = '2016 '
-YEARS_BACK = 10
-
-
-MAX_OC = 100
-window_size = 3
-
-
-# Example instantiation
-feature_dim = 6          # Number of features
-num_heads = 4            # Number of attention heads
-num_layers = 3           # Number of transformer layers
-hidden_dim = 128         # Hidden dimension of transformer
-seq_len = YEARS_BACK             # Temporal sequence length
-spatial_dim = window_size*4+1         # Spatial dimensions (32x32 grid)
-output_dim = 1           # Single regression output
-
-# learning_rate = 0.001
 
 def generate_seasonal_list():
     seasons = ['winter', 'spring', 'summer', 'autumn']  # Reordered with winter first

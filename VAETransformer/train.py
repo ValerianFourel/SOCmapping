@@ -9,14 +9,16 @@ from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data
 import pandas as pd
 from tqdm import tqdm
 from pathlib import Path
+from skimage.metrics import structural_similarity as ssim
+
 from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,
-                   seasons, years_padded,
+                   seasons, years_padded, 
                    SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, 
                    DataYearly, SamplesCoordinates_Seasonally, bands_list_order,
                    MatrixCoordinates_1mil_Seasonally, DataSeasonally, window_size,
                    file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC, time_before)
 from torch.utils.data import Dataset, DataLoader
-from modelSimpleTransformer import SimpleTransformer
+from modelTransformerVAE import TransformerVAE
 
 def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
     """
@@ -85,9 +87,8 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
 def train_model(model, train_loader, val_loader, num_epochs=100, 
                 device='cuda' if torch.cuda.is_available() else 'cpu'):
     model = model.to(device)
-    criterion = nn.MSELoss()
-    lr = 0.005
-    optimizer = optim.Adam(model.parameters(), lr=lr)
+    reconstruction_criterion = nn.L1Loss()
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
 
     best_val_loss = float('inf')
     best_model = None
@@ -96,24 +97,44 @@ def train_model(model, train_loader, val_loader, num_epochs=100,
         # Training phase
         model.train()
         running_loss = 0.0
+        running_recon_loss = 0.0
+        running_kld_loss = 0.0
 
         for longitudes, latitudes, features, targets in tqdm(train_loader):
             features = features.to(device)
             targets = targets.to(device).float()
 
             optimizer.zero_grad()
-            outputs = model(features)
-            loss = criterion(outputs, targets)
+
+            # Forward pass through VAE
+            reconstruction, mu, log_var = model(features)
+
+            # Calculate reconstruction loss (L1)
+            recon_loss = reconstruction_criterion(reconstruction, features)
+
+            # Calculate KL divergence loss
+            kld_loss = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp())
+
+            # Total loss (with KLD weight)
+            kld_weight = 0.01  # Adjust this weight as needed
+            loss = recon_loss + kld_weight * kld_loss
+
             loss.backward()
             optimizer.step()
 
             running_loss += loss.item()
+            running_recon_loss += recon_loss.item()
+            running_kld_loss += kld_loss.item()
 
         train_loss = running_loss / len(train_loader)
+        train_recon_loss = running_recon_loss / len(train_loader)
+        train_kld_loss = running_kld_loss / len(train_loader)
 
         # Validation phase
         model.eval()
         val_loss = 0.0
+        val_recon_loss = 0.0
+        val_kld_loss = 0.0
 
         # Only collect outputs and targets in the last epoch
         if epoch == num_epochs - 1:
@@ -125,16 +146,25 @@ def train_model(model, train_loader, val_loader, num_epochs=100,
                 features = features.to(device)
                 targets = targets.to(device).float()
 
-                outputs = model(features)
-                loss = criterion(outputs, targets)
+                reconstruction, mu, log_var = model(features)
+
+                # Calculate losses
+                recon_loss = reconstruction_criterion(reconstruction, features)
+                kld_loss = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp())
+                loss = recon_loss + kld_weight * kld_loss
+
                 val_loss += loss.item()
+                val_recon_loss += recon_loss.item()
+                val_kld_loss += kld_loss.item()
 
                 # Only collect outputs and targets in the last epoch
                 if epoch == num_epochs - 1:
-                    val_outputs.extend(outputs.cpu().numpy())
-                    val_targets.extend(targets.cpu().numpy())
+                    val_outputs.extend(reconstruction.cpu().numpy())
+                    val_targets.extend(features.cpu().numpy())
 
         val_loss = val_loss / len(val_loader)
+        val_recon_loss = val_recon_loss / len(val_loader)
+        val_kld_loss = val_kld_loss / len(val_loader)
 
         # Save best model
         if val_loss < best_val_loss:
@@ -142,29 +172,40 @@ def train_model(model, train_loader, val_loader, num_epochs=100,
             best_model = model.state_dict().copy()
 
         print(f'Epoch {epoch+1}:')
-        print(f'Training Loss: {train_loss:.4f}')
-        print(f'Validation Loss: {val_loss:.4f}\n')
+        print(f'Training Loss: {train_loss:.4f} (Recon: {train_recon_loss:.4f}, KLD: {train_kld_loss:.4f})')
+        print(f'Validation Loss: {val_loss:.4f} (Recon: {val_recon_loss:.4f}, KLD: {val_kld_loss:.4f})\n')
 
     # Load best model
     model.load_state_dict(best_model)
 
-    # Calculate final statistics only for the last epoch
-    final_correlation = np.corrcoef(val_outputs, val_targets)[0, 1]
-    final_r_squared = final_correlation ** 2
-    mse = np.mean((np.array(val_outputs) - np.array(val_targets)) ** 2)
-    rmse = np.sqrt(mse)
-    mae = np.mean(np.abs(np.array(val_outputs) - np.array(val_targets)))
+        # Calculate final statistics only for the last epoch
+    val_outputs = np.array(val_outputs)
+    val_targets = np.array(val_targets)
+
+    # Calculate reconstruction quality metrics
+    reconstruction_mse = np.mean((val_outputs - val_targets) ** 2)
+    reconstruction_rmse = np.sqrt(reconstruction_mse)
+    reconstruction_mae = np.mean(np.abs(val_outputs - val_targets))
+
+    # Calculate PSNR (Peak Signal-to-Noise Ratio)
+    max_pixel = np.max(val_targets)
+    psnr = 20 * np.log10(max_pixel) - 10 * np.log10(reconstruction_mse)
 
     # Save statistics to text file
-    with open(f'model_statisticsMultiYear_Transformer_epoch{num_epochs}_lr{str(lr)}.txt', 'w') as f:
-        f.write(f'Final Statistics:\n')
-        f.write(f'Correlation: {final_correlation:.4f}\n')
-        f.write(f'R²: {final_r_squared:.4f}\n')
-        f.write(f'MSE: {mse:.4f}\n')
-        f.write(f'RMSE: {rmse:.4f}\n')
-        f.write(f'MAE: {mae:.4f}\n')
+    with open('model_statisticsMultiYear_VAETransformer.txt', 'w') as f:
+        f.write(f'Final Reconstruction Statistics:\n')
+        f.write(f'Mean Squared Error (MSE): {reconstruction_mse:.4f}\n')
+        f.write(f'Root Mean Squared Error (RMSE): {reconstruction_rmse:.4f}\n')
+        f.write(f'Mean Absolute Error (MAE): {reconstruction_mae:.4f}\n')
+        f.write(f'Peak Signal-to-Noise Ratio (PSNR): {psnr:.4f} dB\n')
+        f.write(f'Best Validation Loss: {best_val_loss:.4f}\n')
+        f.write(f'\nTraining Details:\n')
+        f.write(f'Final Reconstruction Loss: {val_recon_loss:.4f}\n')
+        f.write(f'Final KL Divergence Loss: {val_kld_loss:.4f}\n')
 
     return model, val_outputs, val_targets
+
+
 
 
 # Main execution
@@ -208,11 +249,13 @@ if __name__ == "__main__":
     val_loader = DataLoader(val_dataset, batch_size=256, shuffle=False)
 
     # Initialize and train the model
-    model = SimpleTransformer(input_channels=6, input_height=33, input_width=33, input_time=4, num_heads=4, num_layers=2, dropout_rate=0.3)  # Adjust input_channels based on your data
+    #model = SimpleTransformer(input_channels=6, input_height=33, input_width=33, input_time=4, num_heads=4, num_layers=2, dropout_rate=0.3)  # Adjust input_channels based on your data
+    model = TransformerVAE()
+
     print(f"Model parameters: {model.count_parameters()}")
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model,  val_outputs, val_targets = train_model(model, train_loader, val_loader, num_epochs=20, device=device)
+    model,  val_outputs, val_targets = train_model(model, train_loader, val_loader, num_epochs=10, device=device)
 
     # Save the model
     torch.save(model.state_dict(), 

@@ -1,0 +1,47 @@
+# Workflow Outline: SpectralGPT+ Encoding to Causal Forest Analysis
+
+1. **Data Preparation**
+   - Load existing tensors
+   - Organize data by year and band
+   - Ensure proper tensor format compatibility
+
+2. **SpectralGPT+ Setup**
+   - Install SpectralGPT+ dependencies
+   - Load pre-trained SpectralGPT+ model
+   - Configure model parameters for inference
+
+3. **Tensor Encoding Process**
+   - Iterate through temporal data:
+     - Process each year
+     - Handle each spectral band
+   - Apply SpectralGPT+ encoding
+   - Store encoded representations
+
+4. **Data Storage**
+   - Structure encoded outputs
+   - Save to Parquet format:
+     - Organize by year
+     - Maintain band information
+     - Include variable encodings
+
+5. **Causal Forest Preparation**
+   - Load encoded data from Parquet files
+   - Structure features:
+     - Temporal components
+     - Spectral band encodings
+     - Additional variables
+   - Define treatment and outcome variables
+
+6. **Causal Forest Implementation**
+   - Initialize causal forest model
+   - Train using encoded features
+   - Implement:
+     - Treatment effect estimation
+     - Variable importance analysis
+     - Heterogeneous effect detection
+
+7. **Analysis and Validation**
+   - Evaluate causal forest results
+   - Validate encoding effectiveness
+   - Assess treatment effects
+   - Generate insights from model outputs
