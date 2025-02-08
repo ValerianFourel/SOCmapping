@@ -6,8 +6,7 @@ import matplotlib.pyplot as plt
 from dataloader.dataloaderMultiYears import MultiRasterDatasetMultiYears 
 from dataloader.dataloaderMapping import MultiRasterDatasetMapping
 from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data
-import torch
-import torch.nn as nn
+
 from timm.models.layers import trunc_normal_
 
 from IEEE_TPAMI_SpectralGPT.util import video_vit
@@ -27,6 +26,71 @@ from IEEE_TPAMI_SpectralGPT import models_vit_tensor
 
 import argparse
 import torch
+
+
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+import pandas as pd
+from rich.progress import Progress, TextColumn, BarColumn, TimeRemainingColumn
+from rich.console import Console
+import numpy as np
+from sklearn.metrics import r2_score, mean_squared_error
+import wandb
+
+
+
+def train_epoch(model, train_loader, criterion, optimizer, device, progress):
+    model.train()
+    total_loss = 0
+    task_id = progress.add_task("[red]Training...", total=len(train_loader))
+
+    for batch in train_loader:
+        elevation_emb = batch['elevation_emb'].to(device)
+        channel_time_embs = batch['channel_time_embs'].to(device)
+        coords = batch['coords'].to(device)
+        targets = batch['oc'].to(device).unsqueeze(1)
+
+        optimizer.zero_grad()
+        outputs = model(elevation_emb, channel_time_embs, coords)
+        loss = criterion(outputs, targets)
+
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+        progress.update(task_id, advance=1)
+
+    return total_loss / len(train_loader)
+
+def validate(model, val_loader, criterion, device, progress):
+    model.eval()
+    total_loss = 0
+    all_preds = []
+    all_targets = []
+    task_id = progress.add_task("[green]Validating...", total=len(val_loader))
+
+    with torch.no_grad():
+        for batch in val_loader:
+            elevation_emb = batch['elevation_emb'].to(device)
+            channel_time_embs = batch['channel_time_embs'].to(device)
+            coords = batch['coords'].to(device)
+            targets = batch['oc'].to(device).unsqueeze(1)
+
+            outputs = model(elevation_emb, channel_time_embs, coords)
+            loss = criterion(outputs, targets)
+
+            total_loss += loss.item()
+            all_preds.extend(outputs.cpu().numpy())
+            all_targets.extend(targets.cpu().numpy())
+
+            progress.update(task_id, advance=1)
+
+    r2 = r2_score(all_targets, all_preds)
+    rmse = np.sqrt(mean_squared_error(all_targets, all_preds))
+
+    return total_loss / len(val_loader), r2, rmse
+
 
 
 def parse_args():
@@ -163,215 +227,6 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
 
 
 
-class LatentMLP(nn.Module):
-    def __init__(self, input_dim=1280, hidden_dim=512, dropout=0.1):
-        """
-        Args:
-            input_dim (int): Dimension of input features (1280 from latent)
-            hidden_dim (int): Dimension of hidden layers
-            dropout (float): Dropout rate
-        """
-        super().__init__()
-
-        # First we'll process each token, then aggregate
-        self.token_mlp = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout)
-        )
-
-        # After aggregating tokens, final MLP layers
-        self.final_mlp = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-
-            nn.Linear(hidden_dim, 1)  # Final output dimension of 1
-        )
-
-    def forward(self, latent):
-        """
-        Args:
-            latent: Tensor of shape [batch_size, num_tokens, embedding_dim]
-                   In this case [2, 25, 1280]
-        Returns:
-            output: Tensor of shape [batch_size, 1]
-                   In this case [2, 1]
-        """
-        # Process each token: [2, 25, 1280] -> [2, 25, hidden_dim]
-        token_features = self.token_mlp(latent)
-
-        # Average across tokens: [2, 25, hidden_dim] -> [2, hidden_dim]
-        pooled_features = torch.mean(token_features, dim=1)
-
-        # Final MLP to get output: [2, hidden_dim] -> [2, 1]
-        output = self.final_mlp(pooled_features)
-
-        return output
-
-# Example usage:
-def process_latent(latent, target=None):
-    """
-    Args:
-        latent: Tensor from encoder [2, 25, 1280]
-        target: Optional target values for training [2, 1]
-    """
-    # Initialize model
-    model = LatentMLP(input_dim=1280)
-
-    # Move to GPU if available
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = model.to(device)
-    latent = latent.to(device)
-
-    # Forward pass
-    output = model(latent)
-
-    if target is not None:
-        # Define loss function (MSE for regression)
-        criterion = nn.MSELoss()
-        target = target.to(device)
-        loss = criterion(output, target)
-
-        # Example of backward pass (if training)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
-        loss.backward()
-        optimizer.step()
-        optimizer.zero_grad()
-
-        return output, loss
-
-    return output
-
-# Example of how to use it:
-"""
-# Your latent tensor
-latent = torch.randn(2, 25, 1280)
-
-# For training:
-target = torch.randn(2, 1)  # Example target values
-output, loss = process_latent(latent, target)
-print(f"Output shape: {output.shape}")  # [2, 1]
-print(f"Loss: {loss.item()}")
-
-# For inference:
-output = process_latent(latent)
-print(f"Output shape: {output.shape}")  # [2, 1]
-"""
-
-def print_tensor_shapes(item, prefix=''):
-    if isinstance(item, torch.Tensor):
-        print(f"{prefix}Tensor shape:", item.shape)
-    elif isinstance(item, (list, tuple)):
-        print(f"{prefix}List/Tuple of length:", len(item))
-        for i, subitem in enumerate(item):
-            print_tensor_shapes(subitem, prefix=f"{prefix}[{i}] ")
-    elif isinstance(item, dict):
-        for key, value in item.items():
-            print_tensor_shapes(value, prefix=f"{prefix}['{key}'] ")
-    else:
-        print(f"{prefix}Not a tensor, type:", type(item))
-
-
-import pandas as pd
-import torch
-from pathlib import Path
-import numpy as np
-
-def encode_and_save_tensors(data_dict, model, output_path, longitude, latitude, oc):
-    """
-    Encode tensors and save results with metadata to parquet file.
-
-    Parameters:
-    data_dict: dictionary containing tensors and metadata
-    model: the encoder model
-    output_path: where to save the parquet file
-    longitude, latitude, oc: additional metadata
-    """
-    # Initialize lists to store all data
-    all_data = {
-        'longitude': [],
-        'latitude': [],
-        'oc': [],
-        'band': [],
-        'year': [],
-        'type': [],
-        'encoding': []  # Will store flattened encodings
-    }
-
-    # Process each band
-    with torch.no_grad():  # Disable gradient computation for efficiency
-        for band_name, band_data in data_dict.items():
-            if len(band_data['tensors']) > 0:
-                # Get encodings for all tensors in this band
-                tensors = band_data['tensors']
-                years = band_data['years'].tolist()
-                types = band_data['types']
-
-                # Process each tensor individually
-                for idx, tensor in enumerate(tensors):
-                    # Add batch dimension if needed
-                    if len(tensor.shape) == 3:  # Assuming (C, H, W) format
-                        tensor = tensor.unsqueeze(0)  # Make it (1, C, H, W)
-
-                    # Encode tensor
-                    encoding = model.encode(tensor)
-
-                    # Convert encoding to numpy and flatten
-                    encoding_np = encoding.cpu().numpy().flatten()
-
-                    # Append all data
-                    all_data['longitude'].append(longitude)
-                    all_data['latitude'].append(latitude)
-                    all_data['oc'].append(oc)
-                    all_data['band'].append(band_name)
-                    all_data['year'].append(years[idx])
-                    all_data['type'].append(types[idx])
-                    all_data['encoding'].append(encoding_np)
-
-    # Create DataFrame
-    df = pd.DataFrame(all_data)
-
-    # Save to parquet
-    output_file = Path(output_path) / f"encodings_{longitude}_{latitude}.parquet"
-    df.to_parquet(output_file, index=False)
-
-    return output_file
-
-# Example usage:
-def process_batch(batch, model, output_dir):
-    """
-    Process a single batch of data
-    """
-    longitude, latitude, data_dict, oc = batch
-
-    # Create output directory if it doesn't exist
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    # Encode and save
-    saved_file = encode_and_save_tensors(
-        data_dict, 
-        model, 
-        output_path, 
-        longitude, 
-        latitude, 
-        oc
-    )
-
-    print(f"Saved encodings to {saved_file}")
-
-# Process all batches
-def process_all_data(dataloader, model, output_dir):
-    """
-    Process all batches in the dataloader
-    """
-    for batch_idx, batch in enumerate(dataloader):
-        print(f"Processing batch {batch_idx}")
-        process_batch(batch, model, output_dir)
-
 
 def transform_data(stacked_tensor, metadata):
     """
@@ -396,7 +251,9 @@ def transform_data(stacked_tensor, metadata):
 
     # 2. Process remaining data
     remaining_indices = ~elevation_mask
-    metadata_strings = []
+    metadata_strings = [[[[] for _ in range(time_before)] 
+                        for _ in range(num_channels)] 
+                        for _ in range(B)]
     channel_time_data = {}  # Dictionary to store data by channel and time
 
     # Initialize dictionary for all channels and times
@@ -404,6 +261,7 @@ def transform_data(stacked_tensor, metadata):
         channel_time_data[c] = {}
         for t in range(time_before):
             channel_time_data[c][t] = []
+
     # Organize data by channel and time
     for b in range(B):
         channel_year_data = {}  # Temporary storage to sort by year
@@ -428,12 +286,13 @@ def transform_data(stacked_tensor, metadata):
             # Sort by year in descending order
             sorted_data = sorted(channel_year_data[channel], 
                             key=lambda x: x[0], 
-                            reverse=True) 
+                            reverse=True)
 
             # Store in the final structure
             for time_idx, (year, tensor_data) in enumerate(sorted_data):
                 if time_idx < time_before:  # Ensure we don't exceed time dimension
-                    metadata_strings.append(f"{index_to_band[channel+1]}_{year}")
+                    metadata_str = f"{index_to_band[channel+1]}_{year}"
+                    metadata_strings[b][channel][time_idx] = metadata_str
 
                     # Initialize if needed
                     if len(channel_time_data[channel][time_idx]) <= b:
@@ -450,6 +309,7 @@ def transform_data(stacked_tensor, metadata):
                 remaining_tensor[:len(data), c, t] = data
 
     return elevation_instrument, remaining_tensor, metadata_strings
+
 
 # Example usage:
 """
@@ -469,9 +329,146 @@ elevation_instrument, ordered_tensor, metadata_strings = transform_data(
 # elevation_instrument shape: [256, 1, 96, 96]
 """
 
-# Main execution
-if __name__ == "__main__":
-    args = parse_args()
+class MLP(nn.Module):
+    def __init__(self, input_dim=768*144):
+        super(MLP, self).__init__()
+
+        # MLP layers
+        self.layer1 = nn.Linear(input_dim, 2048)
+        self.layer2 = nn.Linear(2048, 512)
+        self.layer3 = nn.Linear(512, 1)
+
+        # Activation functions
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(0.2)
+
+        # Batch normalization
+        self.bn1 = nn.BatchNorm1d(2048)
+        self.bn2 = nn.BatchNorm1d(512)
+
+    def forward(self, x):
+        # Flatten input if necessary
+        if len(x.shape) > 2:
+            x = x.view(x.size(0), -1)
+
+        x = self.layer1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.dropout(x)
+
+        x = self.layer2(x)
+        x = self.bn2(x)
+        x = self.relu(x)
+        x = self.dropout(x)
+
+        x = self.layer3(x)
+
+        return x
+
+def process_batch(longitude, latitude, elevation_instrument, remaining_tensor, 
+                 metadata_strings, oc, vit_model, device):
+    batch_size = longitude.shape[0]
+    all_embeddings = []
+
+    with torch.no_grad():
+        # Process elevation embeddings
+        elevation_input = elevation_instrument.unsqueeze(1)  # [B, 1, 96, 96]
+        elevation_input = elevation_input.to(device).expand(batch_size, 1, 3, 96, 96)
+        elevation_embeddings = vit_model.patch_embed(elevation_input)  # [B, 144, 768]
+
+        # Process channel/time embeddings
+        channel_time_embeddings = []
+        for channel in range(5):
+            for time in range(5):
+                x = remaining_tensor[:, channel, time].unsqueeze(1).unsqueeze(1)  # [B, 1, 96, 96]
+                x = x.expand(batch_size, 1, 3, 96, 96)
+                x = x.to(device)
+                embedding = vit_model.patch_embed(x)  # [B, 144, 768]
+                channel_time_embeddings.append(embedding)
+
+        # Stack all embeddings
+        channel_time_embeddings = torch.stack(channel_time_embeddings, dim=1)  # [B, 25, 144, 768]
+        all_embeddings = torch.cat([elevation_embeddings.unsqueeze(1), 
+                                  channel_time_embeddings], dim=1)  # [B, 26, 144, 768]
+
+    return all_embeddings, oc
+
+def train_epoch(vit_model, mlp_model, train_loader, criterion, optimizer, device, progress):
+    mlp_model.train()
+    total_loss = 0
+    task_id = progress.add_task("[red]Training...", total=len(train_loader))
+
+    for batch in train_loader:
+        longitude, latitude, stacked_tensor, metadata, oc = batch
+
+        # Process the batch data
+        elevation_instrument, remaining_tensor, metadata_strings = transform_data(
+            stacked_tensor, metadata)
+
+        # Get embeddings
+        embeddings, targets = process_batch(
+            longitude, latitude, elevation_instrument, remaining_tensor,
+            metadata_strings, oc, vit_model, device
+        )
+
+        # Process through MLP
+        optimizer.zero_grad()
+        outputs = mlp_model(embeddings)
+        targets = targets.to(device).float().unsqueeze(1)
+        loss = criterion(outputs, targets)
+
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+        progress.update(task_id, advance=1)
+
+    return total_loss / len(train_loader)
+
+def validate(vit_model, mlp_model, val_loader, criterion, device, progress):
+    mlp_model.eval()
+    total_loss = 0
+    all_preds = []
+    all_targets = []
+    task_id = progress.add_task("[green]Validating...", total=len(val_loader))
+
+    with torch.no_grad():
+        for batch in val_loader:
+            longitude, latitude, stacked_tensor, metadata, oc = batch
+
+            # Process the batch data
+            elevation_instrument, remaining_tensor, metadata_strings = transform_data(
+                stacked_tensor, metadata)
+
+            # Get embeddings
+            embeddings, targets = process_batch(
+                longitude, latitude, elevation_instrument, remaining_tensor,
+                metadata_strings, oc, vit_model, device
+            )
+
+            # Process through MLP
+            outputs = mlp_model(embeddings)
+            targets = targets.to(device).float().unsqueeze(1)
+            loss = criterion(outputs, targets)
+
+            total_loss += loss.item()
+            all_preds.extend(outputs.cpu().numpy())
+            all_targets.extend(targets.cpu().numpy())
+
+            progress.update(task_id, advance=1)
+
+    r2 = r2_score(all_targets, all_preds)
+    rmse = np.sqrt(mean_squared_error(all_targets, all_preds))
+
+    return total_loss / len(val_loader), r2, rmse
+
+def main(args):
+    # Initialize wandb
+    wandb.init(project="soil-organic-carbon-prediction", name="mlp-embeddings")
+
+    # Setup
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    console = Console()
     # Data preparation
     df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
     samples_coordinates_array_path, data_array_path = separate_and_add_data()
@@ -497,35 +494,68 @@ if __name__ == "__main__":
     train_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
     val_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df)
 
-    train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
-        # Iterate through the DataLoader to get the first batch
-    for batch in train_loader:
-        ongitude, latitude, stacked_tensor, metadata, oc = batch 
-        break
-    print(stacked_tensor.shape)
-    print(metadata.shape)
-    print(metadata[2])
-    #first_batch = decode_data_dict(stacked_tensor, metadata)
-    elevation_instrument, remaining_tensor, metadata_strings = transform_data(stacked_tensor, metadata)
-    print(remaining_tensor.shape)
-#######################################################################
+    # Initialize models
+    vit_model = models_vit_tensor.__dict__[args.model](
+        drop_path_rate=args.drop_path,
+        num_classes=args.nb_classes
+    ).to(device)
+    vit_model = load_model(vit_model, args, device)
+    vit_model.eval()
 
-    model = models_vit_tensor.__dict__[args.model](drop_path_rate=args.drop_path,
-         num_classes=args.nb_classes)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    stacked_values= stacked_tensor.unsqueeze(dim=1)
-    print('remaining_tensor[0,0] ', remaining_tensor[0,0].shape)
-    x = remaining_tensor[0,0].unsqueeze(dim=0).unsqueeze(dim=0)
-    print('x ', x.shape)
-    x = x.to(device)
-    model = load_model(model, args, device)
-    model.eval()
-    embeddings = model.patch_embed(x)
-    #     # Setup device
-    
+    mlp_model = MLP(input_dim=768*144*26).to(device)  # 26 = 1 elevation + 25 channel/time
+    criterion = nn.MSELoss()
+    optimizer = optim.AdamW(mlp_model.parameters(), lr=1e-4, weight_decay=0.01)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
+    train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
+    # Training loop
+    num_epochs = 100
+    best_val_loss = float('inf')
 
-    # # Set to eval mode for inference
-    # 
-    print(embeddings.shape)
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TimeRemainingColumn(),
+    ) as progress:
+        for epoch in range(num_epochs):
+            # Training
+            train_loss = train_epoch(vit_model, mlp_model, train_loader, 
+                                   criterion, optimizer, device, progress)
 
+            # Validation
+            val_loss, r2, rmse = validate(vit_model, mlp_model, val_loader, 
+                                        criterion, device, progress)
+
+            # Log metrics
+            wandb.log({
+                'train_loss': train_loss,
+                'val_loss': val_loss,
+                'r2_score': r2,
+                'rmse': rmse,
+                'learning_rate': optimizer.param_groups[0]['lr']
+            })
+
+            # Print metrics
+            console.print(f"Epoch {epoch+1}/{num_epochs}")
+            console.print(f"Train Loss: {train_loss:.4f}")
+            console.print(f"Val Loss: {val_loss:.4f}")
+            console.print(f"R² Score: {r2:.4f}")
+            console.print(f"RMSE: {rmse:.4f}")
+
+            # Learning rate scheduling
+            scheduler.step(val_loss)
+
+            # Save best model
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': mlp_model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'val_loss': val_loss,
+                }, 'best_model.pth')
+
+if __name__ == "__main__":
+    args = parse_args()
+    main(args)
     

@@ -68,7 +68,7 @@ class PatchEmbed(nn.Module):
         assert (
             H == self.img_size[0] and W == self.img_size[1]
         ), f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
-        print('self.frames ',self.frames,'  T   ',T )
+        #print('self.frames ',self.frames,'  T   ',T )
         assert T == self.frames
         x = self.proj(x).flatten(3)
         x = torch.einsum("ncts->ntsc", x)  # [N, T, H*W, C]

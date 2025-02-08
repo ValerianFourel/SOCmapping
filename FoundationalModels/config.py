@@ -4,9 +4,9 @@ base_path_data = '/home/vfourel/SOCProject/SOCmapping/Data'
 file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC = f"{base_path_data}/LUCAS_LFU_Lfl_00to23_Bavaria_OC.xlsx"
 
 
-time_before  = 3
+time_before  = 5
 window_size = 96
-TIME_BEGINNING = '2005'
+TIME_BEGINNING = '2012'
 LOADING_TIME_BEGINNING = str(int(TIME_BEGINNING)-time_before)
 TIME_END = '2023'
 INFERENCE_TIME = '2015'
