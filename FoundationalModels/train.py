@@ -8,17 +8,94 @@ from dataloader.dataloaderMapping import MultiRasterDatasetMapping
 from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data
 import torch
 import torch.nn as nn
+from timm.models.layers import trunc_normal_
+
 from IEEE_TPAMI_SpectralGPT.util import video_vit
 from IEEE_TPAMI_SpectralGPT.util.logging import master_print as print
+from IEEE_TPAMI_SpectralGPT.util.pos_embed import interpolate_pos_embed
+
 from IEEE_TPAMI_SpectralGPT.models_mae_spectral import MaskedAutoencoderViT
 from config import (LOADING_TIME_BEGINNING , TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,
-                   seasons, years_padded, imageSize,
+                   seasons, years_padded, imageSize, bands_dict , 
                    SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, 
                    DataYearly, SamplesCoordinates_Seasonally, bands_list_order,
                    MatrixCoordinates_1mil_Seasonally, DataSeasonally, window_size,
                    file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC, time_before)
 from torch.utils.data import Dataset, DataLoader
 import pandas as pd
+from IEEE_TPAMI_SpectralGPT import models_vit_tensor
+
+import argparse
+import torch
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Model configuration parser')
+
+    # Model architecture argument
+    parser.add_argument('--model', default='vit_base_patch8', type=str, metavar='MODEL',
+                        # vit_tensor_base_patch16 vit_base_patch16
+                        help='Name of model to train')
+
+    # Drop path rate argument
+    parser.add_argument('--drop_path', type=float, default=0.1, metavar='PCT',
+                        help='Drop path rate (default: 0.1)')
+
+    # Number of classes argument
+    parser.add_argument('--nb_classes', default=62, type=int,
+                        help='number of the classification types')
+    
+    parser.add_argument('--finetune', default='/home/vfourel/SOCProject/SOCmapping/FoundationalModels/models/SpectralGPT/SpectralGPT+.pth',
+                        help='finetune from checkpoint')
+
+    args = parser.parse_args()
+
+    return args
+
+
+def load_model(model, args, device='cuda'):
+    if args.finetune:
+        # Load checkpoint
+        checkpoint = torch.load(args.finetune, map_location='cpu')
+        print(f"Loading pre-trained checkpoint from: {args.finetune}")
+
+        checkpoint_model = checkpoint['model']
+
+        # Remove incompatible keys
+        skip_keys = [
+            'patch_embed.0.proj.weight', 
+            'patch_embed.1.proj.weight', 
+            'patch_embed.2.proj.weight',
+            'patch_embed.2.proj.bias', 
+            'head.weight', 
+            'head.bias'
+        ]
+
+        for k in skip_keys:
+            if k in checkpoint_model and checkpoint_model[k].shape != model.state_dict()[k].shape:
+                print(f"Removing key {k} from pretrained checkpoint")
+                del checkpoint_model[k]
+
+        # Handle position embedding
+        interpolate_pos_embed(model, checkpoint_model)
+
+        # Load state dict
+        msg = model.load_state_dict(checkpoint_model, strict=False)
+        print("Missing keys:", msg.missing_keys)
+
+        # Initialize head layer
+        trunc_normal_(model.head.weight, std=2e-5)
+
+    # Move model to device
+    model = model.to(device)
+
+    # Print model info
+    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Model: {model.__class__.__name__}")
+    print(f'Number of parameters: {n_parameters/1e6:.2f}M')
+
+    return model
+
 
 def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
     """
@@ -84,21 +161,6 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
 
     return training_df, validation_df
 
-
-model = MaskedAutoencoderViT(
-        img_size=imageSize,
-        in_chans=1,
-        patch_size=8,
-        embed_dim=1280,
-        depth=32,
-        num_heads=16,
-        mlp_ratio=4,
-        num_frames=18,
-        pred_t_dim=100,
-        t_patch_size=3,
-        mask_ratio=0.90,
-        norm_layer=partial(nn.LayerNorm, eps=1e-6),
-    )
 
 
 class LatentMLP(nn.Module):
@@ -320,9 +382,174 @@ output_dir = "path/to/output/directory"
 process_all_data(dataloader, model, output_dir)
 """
 
+def deconsolidate_tensors(tensors_3d, indices_2d, bands_dict= bands_dict):
+    """
+    Parameters:
+    tensors_3d: torch.Tensor of shape [batch_size, time_steps, height, width] (256, 21, 96, 96)
+    indices_2d: torch.Tensor of shape [batch_size, time_steps, 2] (256, 21, 2)
+    bands_dict: dictionary mapping band indices to band names
+    """
+    # Create inverse mapping from index to band
+    index_to_band = {k: v for k, v in bands_dict.items()}
+    # Initialize the output nested dictionary
+    
+    data_dict = {}
+    # Iterate through the batch
+    for batch_idx in range(tensors_3d.shape[0]):
+        
+        # Iterate through each timestep
+        for time_idx in range(tensors_3d.shape[1]):
+            # Get the current tensor
+            tensor = tensors_3d[batch_idx, time_idx]
+
+            # Get the corresponding band index and year
+            band_index, year = indices_2d[batch_idx, time_idx].tolist()
+
+            # Get the band name from the index
+            band = index_to_band[int(band_index)]
+
+            # Initialize the inner dictionary if this band hasn't been seen yet
+            if band not in data_dict:
+                data_dict[band] = {}
+
+            # Store the tensor in the nested dictionary
+            data_dict[band][int(year)] = tensor
+        data_dict_list.append(data_dict)
+
+    return data_dict_list
+
+def print_dict_keys_and_shapes(data_dict, prefix=''):
+    for key, value in data_dict.items():
+        if isinstance(value, dict):
+            print(f"{prefix}Key: {key} (nested dictionary)")
+            print_dict_keys_and_shapes(value, prefix + '  ')
+        else:
+            try:
+                shape = value.shape
+                print(f"{prefix}Key: {key}, Shape: {shape}")
+            except AttributeError:
+                print(f"{prefix}Key: {key}, Not a tensor")
+
+# Example usage:
+"""
+# Sample dictionary structure
+data_dict = {
+    'layer1': {
+        'weights': torch.randn(64, 32),
+        'bias': torch.randn(64)
+    },
+    'layer2': {
+        'weights': torch.randn(32, 16),
+        'bias': torch.randn(32)
+    }
+}
+
+print_dict_keys_and_shapes(data_dict)
+"""
+
+
+
+
+
+def transform_data(stacked_tensor, metadata):
+    """
+    Parameters:
+    stacked_tensor: tensor of shape [B, total_steps, H, W]
+    metadata: tensor of shape [B, total_steps, 2]
+    index_to_band: dictionary mapping indices to band names
+    time_before: integer specifying the time dimension T
+    """
+    B, total_steps, H, W = stacked_tensor.shape
+    index_to_band = {k: v for k, v in bands_dict.items()}
+    num_channels = (total_steps - 1) // time_before  # -1 for elevation instrument
+
+    # 1. Extract elevation instrument data (metadata [0,0])
+    elevation_mask = (metadata[:, :, 0] == 0) & (metadata[:, :, 1] == 0)
+    elevation_indices = elevation_mask.nonzero(as_tuple=True)
+    elevation_instrument = stacked_tensor[
+        elevation_indices[0], 
+        elevation_indices[1], 
+        :, 
+    ].reshape(B, 1, H, W)
+
+    # 2. Process remaining data
+    remaining_indices = ~elevation_mask
+    metadata_strings = []
+    channel_time_data = {}  # Dictionary to store data by channel and time
+
+    # Initialize dictionary for all channels and times
+    for c in range(num_channels):
+        channel_time_data[c] = {}
+        for t in range(time_before):
+            channel_time_data[c][t] = []
+    # Organize data by channel and time
+    for b in range(B):
+        channel_year_data = {}  # Temporary storage to sort by year
+
+        # First collect all data for this batch
+        for i in range(total_steps):
+            if not elevation_mask[b, i]:
+                band_idx = int(metadata[b, i, 0])
+                year = int(metadata[b, i, 1])
+                band_name = index_to_band[band_idx]
+
+                # Initialize channel if not exists
+                channel = band_idx - 1  # Assuming band_idx starts from 1
+                if channel not in channel_year_data:
+                    channel_year_data[channel] = []
+
+                # Store data with year for sorting
+                channel_year_data[channel].append((year, stacked_tensor[b, i]))
+
+        # Sort and store data for each channel
+        for channel in channel_year_data:
+            # Sort by year in descending order
+            sorted_data = sorted(channel_year_data[channel], 
+                            key=lambda x: x[0], 
+                            reverse=True) 
+
+            # Store in the final structure
+            for time_idx, (year, tensor_data) in enumerate(sorted_data):
+                if time_idx < time_before:  # Ensure we don't exceed time dimension
+                    metadata_strings.append(f"{index_to_band[channel+1]}_{year}")
+
+                    # Initialize if needed
+                    if len(channel_time_data[channel][time_idx]) <= b:
+                        channel_time_data[channel][time_idx].append(tensor_data)
+
+    # 3. Reshape into final tensor
+    remaining_tensor = torch.zeros((B, num_channels, time_before, H, W))
+
+    # Fill the tensor
+    for c in range(num_channels):
+        for t in range(time_before):
+            if channel_time_data[c][t]:
+                data = torch.stack(channel_time_data[c][t])
+                remaining_tensor[:len(data), c, t] = data
+
+    return elevation_instrument, remaining_tensor, metadata_strings
+
+# Example usage:
+"""
+B, total_steps, H, W = 256, 61, 96, 96
+time_before = 12
+num_channels = (total_steps - 1) // time_before  # Should be 5
+
+stacked_tensor = torch.randn(B, total_steps, H, W)
+metadata = torch.zeros(B, total_steps, 2)
+index_to_band = {1: "band_A", 2: "band_B", 3: "band_C", 4: "band_D", 5: "band_E"}
+
+elevation_instrument, ordered_tensor, metadata_strings = transform_data(
+    stacked_tensor, metadata, index_to_band, time_before=12
+)
+
+# ordered_tensor shape: [256, 5, 12, 96, 96]
+# elevation_instrument shape: [256, 1, 96, 96]
+"""
 
 # Main execution
 if __name__ == "__main__":
+    args = parse_args()
     # Data preparation
     df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
     samples_coordinates_array_path, data_array_path = separate_and_add_data()
@@ -351,12 +578,32 @@ if __name__ == "__main__":
     train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
         # Iterate through the DataLoader to get the first batch
     for batch in train_loader:
-        _ , _ , first_batch , _ = batch 
+        ongitude, latitude, stacked_tensor, metadata, oc = batch 
         break
-
+    print(stacked_tensor.shape)
+    print(metadata.shape)
+    print(metadata[2])
+    #first_batch = decode_data_dict(stacked_tensor, metadata)
+    elevation_instrument, remaining_tensor, metadata_strings = transform_data(stacked_tensor, metadata)
+    print(remaining_tensor.shape)
 #######################################################################
 
     model = models_vit_tensor.__dict__[args.model](drop_path_rate=args.drop_path,
-        num_classes=args.nb_classes)
+         num_classes=args.nb_classes)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    stacked_values= stacked_tensor.unsqueeze(dim=1)
+    print('remaining_tensor[0,0] ', remaining_tensor[0,0].shape)
+    x = remaining_tensor[0,0].unsqueeze(dim=0).unsqueeze(dim=0)
+    print('x ', x.shape)
+    x = x.to(device)
+    model = load_model(model, args, device)
+    model.eval()
+    embeddings = model.patch_embed(x)
+    #     # Setup device
+    
+
+    # # Set to eval mode for inference
+    # 
+    print(embeddings.shape)
 
     

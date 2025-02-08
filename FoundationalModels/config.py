@@ -4,16 +4,31 @@ base_path_data = '/home/vfourel/SOCProject/SOCmapping/Data'
 file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC = f"{base_path_data}/LUCAS_LFU_Lfl_00to23_Bavaria_OC.xlsx"
 
 
-time_before  = 4
-window_size = 128
-TIME_BEGINNING = '2008'
+time_before  = 3
+window_size = 96
+TIME_BEGINNING = '2005'
 LOADING_TIME_BEGINNING = str(int(TIME_BEGINNING)-time_before)
 TIME_END = '2023'
 INFERENCE_TIME = '2015'
 bands_list_order = ['Elevation','LAI','LST','MODIS_NPP','SoilEvaporation','TotalEvapotranspiration']
 MAX_OC = 150
-imageSize = 128
+imageSize = 96
 
+def list_to_dict(bands_list_order):
+    """
+    Converts a list into a dictionary where:
+    - Keys are the indices (0, 1, 2, ...).
+    - Values are the elements from the list.
+
+    Args:
+        bands_list_order (list): A list of values.
+
+    Returns:
+        dict: A dictionary mapping indices to values.
+    """
+    return {i: value for i, value in enumerate(bands_list_order)}
+
+bands_dict = list_to_dict(bands_list_order)
 
 def generate_seasonal_list():
     seasons = ['winter', 'spring', 'summer', 'autumn']  # Reordered with winter first

@@ -311,8 +311,8 @@ def vit_base_patch8(**kwargs):
         depth=12,
         num_heads=12,
         mlp_ratio=4,
-        num_frames=12,
-        t_patch_size=3,
+        num_frames=3, # original is set at 12
+        t_patch_size=3, # original is set to 3
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
         **kwargs,
     )

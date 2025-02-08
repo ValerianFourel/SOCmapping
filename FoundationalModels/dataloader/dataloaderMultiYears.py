@@ -8,8 +8,38 @@ from pathlib import Path
 import re
 import glob
 import pandas as pd
-from config import bands_list_order , time_before, LOADING_TIME_BEGINNING , window_size
+from config import bands_list_order , bands_dict ,  time_before, LOADING_TIME_BEGINNING , window_size
 
+
+import torch
+
+
+import numpy as np
+
+def consolidate_tensors(data_dict, band_to_index):
+    # First, collect all tensors and their corresponding indices
+    tensors = []
+    indices = []
+
+    # Iterate through the dictionary in a sorted manner to maintain consistency
+    for band in sorted(data_dict.keys()):
+        for year in sorted(data_dict[band].keys()):
+            # Get the tensor
+            tensor = data_dict[band][year]
+
+            # Store the tensor
+            tensors.append(tensor)
+
+            # Store the corresponding indices
+            indices.append([band_to_index[band], year])
+
+    # Convert tensors list to a single 3D tensor (n x 98 x 98)
+    tensors_combined = np.stack(tensors, axis=0)
+
+    # Convert indices to a 2D tensor (n x 2)
+    indices_tensor = np.array(indices)
+
+    return tensors_combined, indices_tensor
 
 def get_metadata(self, id_num):
     """Get metadata from filename"""
@@ -96,7 +126,7 @@ class RasterTensorDataset(Dataset):
         # Calculate window boundaries with adjusted size
         half_window = adjusted_window_size // 2
         x_start = int(max(0, x - half_window))
-        x_end = int(min(data.shape[0], x + half_window ))
+        x_end = int(min(data.shape[0], x + half_window) )
         y_start = int(max(0, y - half_window))
         y_end = int(min(data.shape[1], y + half_window))
 
@@ -243,11 +273,7 @@ class MultiRasterDatasetMultiYears(Dataset):
 
         filtered_array = self.filter_by_season_or_year(row['season'], row['year'], self.seasonalityBased)
         # Initialize dictionary to store data for each band
-        data_dict = {band: {
-            'tensors': [],
-            'years': [],
-            'types': []
-        } for band in bands_list_order}
+        data_dict = {band: {} for band in bands_list_order}
 
         # Handle Elevation separately since it's constant
         elevation_processed = False
@@ -260,9 +286,8 @@ class MultiRasterDatasetMultiYears(Dataset):
                 tensor, type_of_band = self.datasets[subfolder].get_tensor_by_location(id_num, x, y)
 
                 if tensor is not None:
-                    data_dict['Elevation']['tensors'].append(tensor)
-                    data_dict['Elevation']['years'].append(0)
-                    data_dict['Elevation']['types'].append(type_of_band)
+                    data_dict['Elevation'][0] = tensor
+                    #data_dict['Elevation']['years'].append(0)
                     elevation_processed = True
 
             else:
@@ -282,18 +307,69 @@ class MultiRasterDatasetMultiYears(Dataset):
                     )
 
                     if tensor is not None:
-                        data_dict[band]['tensors'].append(tensor)
-                        data_dict[band]['years'].append(current_year)
-                        data_dict[band]['types'].append(type_of_band)
+                        data_dict[band][current_year] = tensor
+                        #data_dict[band]['years'].append(current_year)
+                        
+        band_to_index = {v: k for k, v in bands_dict.items()} 
+        tensors_combined, indices_tensor = consolidate_tensors(data_dict, band_to_index)
+        # stacked_tensor, metadata = encode_data_dict(data_dict)
+        return longitude, latitude, tensors_combined, indices_tensor, oc
+    # def __getitem__(self, index):
+    #     """
+    #     Retrieve tensor and target value for a given index with nested structure by bands and years.
 
-        # Convert lists to tensors for each band
-        for band in bands_list_order:
-            if data_dict[band]['tensors']:
-                data_dict[band]['tensors'] = torch.stack(data_dict[band]['tensors'])
-                data_dict[band]['years'] =  data_dict[band]['years'] 
-                data_dict[band]['types'] = data_dict[band]['types']  # Keep as list if types are strings
+    #     Parameters:
+    #     index: int, index of the row in the dataframe
 
-        return longitude, latitude, data_dict, oc
+    #     Returns:
+    #     tuple: (longitude, latitude, data_dict, oc), where data_dict contains organized tensors by bands and years
+    #     """
+    #     row = self.dataframe.iloc[index]
+    #     print(row['year'])
+    #     longitude, latitude, oc = row["GPS_LONG"], row["GPS_LAT"], row["OC"]
+
+    #     filtered_array = self.filter_by_season_or_year(row['season'], row['year'], self.seasonalityBased)
+    #     # Initialize nested dictionary structure: band -> year -> tensor
+    #     data_dict = {band: {} for band in bands_list_order}
+
+    #     # Handle Elevation separately since it's constant
+    #     elevation_processed = False
+
+    #     for subfolder in filtered_array:
+    #         subfolder = self.get_last_three_folders(subfolder)
+
+    #         if subfolder.split(os.path.sep)[-1] == 'Elevation' and not elevation_processed:
+    #             id_num, x, y = self.find_coordinates_index(subfolder, longitude, latitude)
+    #             tensor, _ = self.datasets[subfolder].get_tensor_by_location(id_num, x, y)
+
+    #             if tensor is not None:
+    #                 # For elevation, use year 0
+    #                 data_dict['Elevation'][0] = tensor
+    #                 elevation_processed = True
+
+    #         else:
+    #             # Get the year from the last subfolder
+    #             year = int(subfolder.split(os.path.sep)[-1])
+    #             band = subfolder.split(os.path.sep)[-2]
+
+    #             # Process each year in the time window
+    #             for decrement in range(self.time_before):
+    #                 current_year = year - decrement
+    #                 decremented_subfolder = os.path.sep.join(
+    #                     subfolder.split(os.path.sep)[:-1] + [str(current_year)]
+    #                 )
+    #                 print(decremented_subfolder)
+    #                 id_num, x, y = self.find_coordinates_index(decremented_subfolder, longitude, latitude)
+    #                 tensor, _ = self.datasets[decremented_subfolder].get_tensor_by_location(
+    #                     id_num, x, y
+    #                 )
+                    
+    #                 if tensor is not None:
+    #                     # Store only one tensor per band-year pair
+    #                     if current_year not in data_dict[band]:
+    #                         data_dict[band][current_year] = tensor
+
+    #     return longitude, latitude, data_dict, oc
 
 
     def filter_by_season_or_year(self, season,year,Season_or_year):
