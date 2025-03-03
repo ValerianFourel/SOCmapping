@@ -1,0 +1,17 @@
+should_transfer_files = yes
+transfer_input_files = ./
+
+executable = job.sh
+
+getenv = True
+require_gpus = (CUDADeviceName == "NVIDIA A100-SXM4-80GB")
+request_cpus = 6
+request_memory = 401920
+request_gpus = 1
+request_disk = 150G
+
+error = job.$(Cluster).$(Process).err
+output = job.$(Cluster).$(Process).out
+log = job.$(Cluster).log
+
+queue

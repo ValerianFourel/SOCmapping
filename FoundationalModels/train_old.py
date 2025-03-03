@@ -1,4 +1,3 @@
-
 from functools import partial
 import numpy as np
 import torch.optim as optim
@@ -6,13 +5,10 @@ import matplotlib.pyplot as plt
 from dataloader.dataloaderMultiYears import MultiRasterDatasetMultiYears 
 from dataloader.dataloaderMapping import MultiRasterDatasetMapping
 from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data
-
 from timm.models.layers import trunc_normal_
-
 from IEEE_TPAMI_SpectralGPT.util import video_vit
 from IEEE_TPAMI_SpectralGPT.util.logging import master_print as print
 from IEEE_TPAMI_SpectralGPT.util.pos_embed import interpolate_pos_embed
-
 from IEEE_TPAMI_SpectralGPT.models_mae_spectral import MaskedAutoencoderViT
 from config import (LOADING_TIME_BEGINNING , TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,
                    seasons, years_padded, imageSize, bands_dict , 
@@ -23,11 +19,8 @@ from config import (LOADING_TIME_BEGINNING , TIME_BEGINNING, TIME_END, INFERENCE
 from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 from IEEE_TPAMI_SpectralGPT import models_vit_tensor
-
 import argparse
 import torch
-
-
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
@@ -37,60 +30,6 @@ from rich.console import Console
 import numpy as np
 from sklearn.metrics import r2_score, mean_squared_error
 import wandb
-
-
-
-def train_epoch(model, train_loader, criterion, optimizer, device, progress):
-    model.train()
-    total_loss = 0
-    task_id = progress.add_task("[red]Training...", total=len(train_loader))
-
-    for batch in train_loader:
-        elevation_emb = batch['elevation_emb'].to(device)
-        channel_time_embs = batch['channel_time_embs'].to(device)
-        coords = batch['coords'].to(device)
-        targets = batch['oc'].to(device).unsqueeze(1)
-
-        optimizer.zero_grad()
-        outputs = model(elevation_emb, channel_time_embs, coords)
-        loss = criterion(outputs, targets)
-
-        loss.backward()
-        optimizer.step()
-
-        total_loss += loss.item()
-        progress.update(task_id, advance=1)
-
-    return total_loss / len(train_loader)
-
-def validate(model, val_loader, criterion, device, progress):
-    model.eval()
-    total_loss = 0
-    all_preds = []
-    all_targets = []
-    task_id = progress.add_task("[green]Validating...", total=len(val_loader))
-
-    with torch.no_grad():
-        for batch in val_loader:
-            elevation_emb = batch['elevation_emb'].to(device)
-            channel_time_embs = batch['channel_time_embs'].to(device)
-            coords = batch['coords'].to(device)
-            targets = batch['oc'].to(device).unsqueeze(1)
-
-            outputs = model(elevation_emb, channel_time_embs, coords)
-            loss = criterion(outputs, targets)
-
-            total_loss += loss.item()
-            all_preds.extend(outputs.cpu().numpy())
-            all_targets.extend(targets.cpu().numpy())
-
-            progress.update(task_id, advance=1)
-
-    r2 = r2_score(all_targets, all_preds)
-    rmse = np.sqrt(mean_squared_error(all_targets, all_preds))
-
-    return total_loss / len(val_loader), r2, rmse
-
 
 
 def parse_args():
@@ -333,37 +272,72 @@ class MLP(nn.Module):
     def __init__(self, input_dim=768*144):
         super(MLP, self).__init__()
 
-        # MLP layers
         self.layer1 = nn.Linear(input_dim, 2048)
         self.layer2 = nn.Linear(2048, 512)
         self.layer3 = nn.Linear(512, 1)
 
-        # Activation functions
+        # Use LayerNorm instead
+        self.ln1 = nn.LayerNorm(2048)
+        self.ln2 = nn.LayerNorm(512)
+
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(0.2)
 
-        # Batch normalization
-        self.bn1 = nn.BatchNorm1d(2048)
-        self.bn2 = nn.BatchNorm1d(512)
-
     def forward(self, x):
-        # Flatten input if necessary
         if len(x.shape) > 2:
             x = x.view(x.size(0), -1)
 
         x = self.layer1(x)
-        x = self.bn1(x)
+        x = self.ln1(x)
         x = self.relu(x)
         x = self.dropout(x)
 
         x = self.layer2(x)
-        x = self.bn2(x)
+        x = self.ln2(x)
         x = self.relu(x)
         x = self.dropout(x)
 
         x = self.layer3(x)
-
         return x
+
+
+def validate(vit_model, mlp_model, val_loader, criterion, device, progress):
+    mlp_model.eval()
+    total_loss = 0
+    all_preds = []
+    all_targets = []
+    task_id = progress.add_task("[green]Validating...", total=len(val_loader))
+
+    with torch.no_grad():
+        for batch in val_loader:
+            longitude, latitude, stacked_tensor, metadata, oc = batch
+
+            # Process the batch data
+            elevation_instrument, remaining_tensor, metadata_strings = transform_data(
+                stacked_tensor, metadata)
+
+            # Get embeddings
+            embeddings, targets = process_batch(
+                longitude, latitude, elevation_instrument, remaining_tensor,
+                metadata_strings, oc, vit_model, device
+            )
+
+            # Process through MLP
+            outputs = mlp_model(embeddings)
+            targets = targets.to(device).float().unsqueeze(1)
+            loss = criterion(outputs, targets)
+
+            total_loss += loss.item()
+            all_preds.extend(outputs.cpu().numpy())
+            all_targets.extend(targets.cpu().numpy())
+
+            progress.update(task_id, advance=1)
+
+    r2 = r2_score(all_targets, all_preds)
+    rmse = np.sqrt(mean_squared_error(all_targets, all_preds))
+
+    return total_loss / len(val_loader), r2, rmse
+
 
 def process_batch(longitude, latitude, elevation_instrument, remaining_tensor, 
                  metadata_strings, oc, vit_model, device):
@@ -410,6 +384,7 @@ def train_epoch(vit_model, mlp_model, train_loader, criterion, optimizer, device
             longitude, latitude, elevation_instrument, remaining_tensor,
             metadata_strings, oc, vit_model, device
         )
+        print('embeddings.shape ',embeddings.shape)
 
         # Process through MLP
         optimizer.zero_grad()
@@ -425,42 +400,6 @@ def train_epoch(vit_model, mlp_model, train_loader, criterion, optimizer, device
 
     return total_loss / len(train_loader)
 
-def validate(vit_model, mlp_model, val_loader, criterion, device, progress):
-    mlp_model.eval()
-    total_loss = 0
-    all_preds = []
-    all_targets = []
-    task_id = progress.add_task("[green]Validating...", total=len(val_loader))
-
-    with torch.no_grad():
-        for batch in val_loader:
-            longitude, latitude, stacked_tensor, metadata, oc = batch
-
-            # Process the batch data
-            elevation_instrument, remaining_tensor, metadata_strings = transform_data(
-                stacked_tensor, metadata)
-
-            # Get embeddings
-            embeddings, targets = process_batch(
-                longitude, latitude, elevation_instrument, remaining_tensor,
-                metadata_strings, oc, vit_model, device
-            )
-
-            # Process through MLP
-            outputs = mlp_model(embeddings)
-            targets = targets.to(device).float().unsqueeze(1)
-            loss = criterion(outputs, targets)
-
-            total_loss += loss.item()
-            all_preds.extend(outputs.cpu().numpy())
-            all_targets.extend(targets.cpu().numpy())
-
-            progress.update(task_id, advance=1)
-
-    r2 = r2_score(all_targets, all_preds)
-    rmse = np.sqrt(mean_squared_error(all_targets, all_preds))
-
-    return total_loss / len(val_loader), r2, rmse
 
 def main(args):
     # Initialize wandb
@@ -506,7 +445,7 @@ def main(args):
     criterion = nn.MSELoss()
     optimizer = optim.AdamW(mlp_model.parameters(), lr=1e-4, weight_decay=0.01)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
-    train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
     # Training loop
     num_epochs = 100
     best_val_loss = float('inf')
@@ -555,7 +494,90 @@ def main(args):
                     'val_loss': val_loss,
                 }, 'best_model.pth')
 
+
+import pandas as pd
+import torch
+import numpy as np
+from itertools import product
+
+def process_batch_to_dataframe(longitude, latitude, elevation_instrument, remaining_tensor, 
+                             metadata_strings, oc, model, device):
+    # Lists to store all data
+    records = []
+
+    # Process each sample in the batch
+    for idx in range(longitude.shape[0]):
+        # Base record with location and oc
+        base_record = {
+            'longitude': longitude[idx].item(),
+            'latitude': latitude[idx].item(),
+            'organic_carbon': oc[idx].item()
+        }
+
+        # Process elevation embedding
+        elevation_input = elevation_instrument[idx:idx+1].unsqueeze(1)  # [1, 1, 96, 96]
+        elevation_input = elevation_input.to(device)
+        elevation_embedding = model.patch_embed(elevation_input).squeeze().cpu().detach().numpy()
+
+        # Add elevation embedding to base record
+        base_record['elevation_embedding'] = elevation_embedding.tolist()
+
+        # Process channel/time embeddings
+        channel_time_embeddings = {}
+
+        # Iterate through all channel and time combinations
+        for channel, time in product(range(5), range(5)):
+            # Get the specific tensor slice
+            x = remaining_tensor[idx, channel, time].unsqueeze(0).unsqueeze(0)  # [1, 1, 96, 96]
+            x = x.expand(1, 1, 3, 96, 96)  # Expand to match model input requirements
+            x = x.to(device)
+
+            # Get embedding
+            embedding = model.patch_embed(x).squeeze().cpu().detach().numpy()
+
+            # Create key using metadata string
+            tag = metadata_strings[idx][channel][time]
+
+            # Store embedding with its tag
+            channel_time_embeddings[tag] = embedding.tolist()
+
+        # Add channel/time embeddings to base record
+        base_record['channel_time_embeddings'] = channel_time_embeddings
+
+        records.append(base_record)
+
+    return pd.DataFrame(records)
+
+def save_to_parquet(train_loader, model, device, output_path='/fast/vfourel/SOCProject/embeddings.parquet'):
+    all_data = []
+
+    with torch.no_grad():
+        for batch in train_loader:
+            longitude, latitude, stacked_tensor, metadata, oc = batch
+
+            # Process the batch data
+            elevation_instrument, remaining_tensor, metadata_strings = transform_data(
+                stacked_tensor, metadata)
+
+            # Convert batch to DataFrame
+            batch_df = process_batch_to_dataframe(
+                longitude, latitude, elevation_instrument, remaining_tensor,
+                metadata_strings, oc, model, device
+            )
+
+            all_data.append(batch_df)
+
+    # Combine all batches
+    final_df = pd.concat(all_data, ignore_index=True)
+
+    # Save to parquet
+    final_df.to_parquet(output_path)
+
+    return final_df
+
+
 if __name__ == "__main__":
     args = parse_args()
+    df = save_to_parquet(train_loader, model, device)
     main(args)
     

@@ -1,0 +1,19 @@
+000 (16011701.000.000) 2025-02-09 02:03:07 Job submitted from host: <10.15.2.1:9618?PrivAddr=%3c172.22.0.101:9618%3fsock%3dschedd_2528881_99e6%3e&PrivNet=internal.cluster.is.localnet&addrs=10.15.2.1-9618&alias=sched.cluster.is.localnet&noUDP&sock=schedd_2528881_99e6>
+...
+040 (16011701.000.000) 2025-02-09 02:03:24 Started transferring input files
+	Transferring to host: <172.22.2.189:9618?addrs=172.22.2.189-9618&alias=g189.internal.cluster.is.localnet&noUDP&sock=slot1_1_3610797_e269_3784>
+...
+040 (16011701.000.000) 2025-02-09 02:03:32 Finished transferring input files
+...
+007 (16011701.000.000) 2025-02-09 02:03:32 Shadow exception!
+	Error from slot1_1@g189.internal.cluster.is.localnet: SHADOW at 172.22.0.101 failed to send file(s) to <172.22.2.189:43267>: |Error: reading from file /lustre/home/vfourel/SOCProject/SOCmapping/FoundationalModels/./wandb/latest-run: (errno 21) Is a directory- Transfer of symlinks to directories is not supported.; STARTER failed to receive file(s) from <172.22.0.101:9618>
+	0  -  Run Bytes Sent By Job
+	1208926080  -  Run Bytes Received By Job
+...
+012 (16011701.000.000) 2025-02-09 02:03:32 Job was held.
+	Transfer input files failure at access point sched while sending files to execution point slot1_1@g189.internal.cluster.is.localnet. Details: Error from slot1_1@g189.internal.cluster.is.localnet: SHADOW at 172.22.0.101 failed to send file(s) to <172.22.2.189:43267>: |Error: reading from file /lustre/home/vfourel/SOCProject/SOCmapping/FoundationalModels/./wandb/latest-run: (errno 21) Is a directory- Transfer of symlinks to directories is not supported.; STARTER failed to receive file(s) from <172.22.0.101:9618>
+	Code 13 Subcode 21
+...
+009 (16011701.000.000) 2025-02-09 15:23:32 Job was aborted.
+	via condor_rm (by user vfourel)
+...
