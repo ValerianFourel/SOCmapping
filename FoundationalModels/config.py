@@ -6,12 +6,12 @@ file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC = f"{base_path_data}/LUCAS_LFU_Lfl_00t
 
 time_before  = 5
 window_size = 96
-TIME_BEGINNING = '2012'
+TIME_BEGINNING = '2008'
 LOADING_TIME_BEGINNING = str(int(TIME_BEGINNING)-time_before)
 TIME_END = '2023'
 INFERENCE_TIME = '2015'
 bands_list_order = ['Elevation','LAI','LST','MODIS_NPP','SoilEvaporation','TotalEvapotranspiration']
-MAX_OC = 150
+MAX_OC = 200
 imageSize = 96
 
 def list_to_dict(bands_list_order):

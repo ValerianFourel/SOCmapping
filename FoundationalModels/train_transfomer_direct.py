@@ -1,7 +1,6 @@
 from functools import partial
 import numpy as np
 import torch
-import time
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
@@ -20,39 +19,41 @@ from config import (
     seasons, years_padded, time_before, imageSize, bands_dict, SamplesCoordinates_Yearly,
     MatrixCoordinates_1mil_Yearly, DataYearly, SamplesCoordinates_Seasonally,
     bands_list_order, MatrixCoordinates_1mil_Seasonally, DataSeasonally,
-    window_size, file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC, time_before
+    window_size, file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC
 )
 import argparse
 import os
 from datetime import datetime
-from rich.progress import Progress, TextColumn, BarColumn, TimeRemainingColumn
 from rich.console import Console
 from itertools import product
+from accelerate import Accelerator
 
 # Argument parsing
 def parse_args():
-    parser = argparse.ArgumentParser(description='Embedding Generation with Size Validation')
+    parser = argparse.ArgumentParser(description='Transformer Regression on Embeddings with Multi-GPU Support')
     parser.add_argument('--model', default='vit_base_patch8', type=str, metavar='MODEL',
-                        help='Name of model to train (e.g., vit_base_patch8)')
+                        help='Name of model to extract embeddings (e.g., vit_base_patch8)')
     parser.add_argument('--drop_path', type=float, default=0.1, metavar='PCT',
                         help='Drop path rate (default: 0.1)')
     parser.add_argument('--nb_classes', default=62, type=int,
-                        help='Number of classification types')
+                        help='Number of classification types for ViT')
     parser.add_argument('--finetune', default='/home/vfourel/SOCProject/SOCmapping/FoundationalModels/models/SpectralGPT/SpectralGPT+.pth',
                         help='Path to finetune checkpoint')
-    parser.add_argument('--batch_size', default=256, type=int, help='Batch size for dataloader')
+    parser.add_argument('--batch_size', default=64, type=int, help='Batch size for dataloader')
     parser.add_argument('--output_dir', default='/fast/vfourel/SOCProject', type=str,
-                        help='Base folder for output Parquet files')
+                        help='Base folder for saving model checkpoints')
+    parser.add_argument('--epochs', default=20, type=int, help='Number of training epochs')
+    parser.add_argument('--lr', default=1e-4, type=float, help='Learning rate for Transformer')
+    parser.add_argument('--accum_steps', default=8, type=int, help='Gradient accumulation steps')
     args = parser.parse_args()
     return args
 
-# Load and initialize the model
+# Load and initialize the ViT model
 def load_model(model, args, device='cuda'):
     if args.finetune:
         checkpoint = torch.load(args.finetune, map_location='cpu')
         print(f"Loading pre-trained checkpoint from: {args.finetune}")
         checkpoint_model = checkpoint['model']
-
         skip_keys = [
             'patch_embed.0.proj.weight', 'patch_embed.1.proj.weight',
             'patch_embed.2.proj.weight', 'patch_embed.2.proj.bias',
@@ -62,12 +63,10 @@ def load_model(model, args, device='cuda'):
             if k in checkpoint_model and checkpoint_model[k].shape != model.state_dict()[k].shape:
                 print(f"Removing key {k} from pretrained checkpoint")
                 del checkpoint_model[k]
-
         interpolate_pos_embed(model, checkpoint_model)
         msg = model.load_state_dict(checkpoint_model, strict=False)
         print("Missing keys:", msg.missing_keys)
         trunc_normal_(model.head.weight, std=2e-5)
-
     model = model.to(device)
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Model: {model.__class__.__name__}")
@@ -81,7 +80,6 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
     bin_counts = df['bin'].value_counts()
     max_samples = bin_counts.max()
     min_samples = max(int(max_samples * min_ratio), 5)
-
     validation_indices = []
     training_dfs = []
     for bin_idx in range(len(bin_counts)):
@@ -96,13 +94,10 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
                     training_dfs.append(resampled)
                 else:
                     training_dfs.append(train_samples)
-
     if not training_dfs or not validation_indices:
         raise ValueError("No training or validation data available after binning")
-
     training_df = pd.concat(training_dfs).drop('bin', axis=1)
     validation_df = df.loc[validation_indices].drop('bin', axis=1)
-
     print(f"Number of bins with data: {len(bin_counts)}")
     print(f"Min samples per bin: {min_samples}")
     print(f"Original data size: {len(df)}")
@@ -113,23 +108,14 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
 # Transform input tensors
 def transform_data(stacked_tensor, metadata):
     B, total_steps, H, W = stacked_tensor.shape
-    print(f"Input stacked_tensor shape: [B={B}, total_steps={total_steps}, H={H}, W={W}]")
-    
     index_to_band = {k: v for k, v in bands_dict.items()}
     num_channels = (total_steps - 1) // time_before
-    print(f"Calculated num_channels: {num_channels} (total_steps-1={total_steps-1} / time_before={time_before})")
-
-    # Extract elevation
     elevation_mask = (metadata[:, :, 0] == 0) & (metadata[:, :, 1] == 0)
     elevation_indices = elevation_mask.nonzero(as_tuple=True)
     elevation_instrument = stacked_tensor[elevation_indices[0], elevation_indices[1], :, :].reshape(B, 1, H, W)
-    print(f"Elevation instrument shape: {elevation_instrument.shape} (expected [B={B}, 1, H={H}, W={W}])")
-
-    # Process remaining data
     remaining_indices = ~elevation_mask
     metadata_strings = [[[[] for _ in range(time_before)] for _ in range(num_channels)] for _ in range(B)]
     channel_time_data = {c: {t: [] for t in range(time_before)} for c in range(num_channels)}
-
     for b in range(B):
         channel_year_data = {}
         for i in range(total_steps):
@@ -140,135 +126,163 @@ def transform_data(stacked_tensor, metadata):
                 if channel not in channel_year_data:
                     channel_year_data[channel] = []
                 channel_year_data[channel].append((year, stacked_tensor[b, i]))
-
         for channel in channel_year_data:
             sorted_data = sorted(channel_year_data[channel], key=lambda x: x[0], reverse=True)
             for time_idx, (year, tensor_data) in enumerate(sorted_data):
                 if time_idx < time_before:
                     metadata_strings[b][channel][time_idx] = f"{index_to_band[channel+1]}_{year}"
                     channel_time_data[channel][time_idx].append(tensor_data)
-                    print(f"Channel {channel}, Time {time_idx}, Tensor shape: {tensor_data.shape} (expected [H={H}, W={W}])")
-
     remaining_tensor = torch.zeros((B, num_channels, time_before, H, W))
     for c in range(num_channels):
         for t in range(time_before):
             if channel_time_data[c][t]:
                 data = torch.stack(channel_time_data[c][t])
                 remaining_tensor[:len(data), c, t] = data
-                print(f"Remaining tensor slice [:{len(data)}, {c}, {t}] shape: {data.shape} (expected [B_slice, H={H}, W={W}])")
-
-    print(f"Final remaining_tensor shape: {remaining_tensor.shape} (expected [B={B}, num_channels={num_channels}, time_before={time_before}, H={H}, W={W}])")
     return elevation_instrument, remaining_tensor, metadata_strings
 
-# Process batch to DataFrame with embedding size validation
-def process_batch_to_dataframe(longitude, latitude, elevation_instrument, remaining_tensor, metadata_strings, oc, model, device):
-    records = []
-    console = Console()
+# Small Transformer for regression
+class TransformerRegressor(nn.Module):
+    def __init__(self, input_dim=2875392, num_tokens=26, d_model=512, nhead=8, num_layers=2, dim_feedforward=1024, output_dim=1):
+        super(TransformerRegressor, self).__init__()
+        self.token_dim = input_dim // num_tokens  # e.g., 110592 = 2875392 / 26
+        self.input_proj = nn.Linear(self.token_dim, d_model)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=0.1,
+            batch_first=True
+        )
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.pool = nn.AdaptiveAvgPool1d(1)
+        self.fc_out = nn.Linear(d_model, output_dim)
+        self.pos_embedding = nn.Parameter(torch.randn(1, num_tokens, d_model))
 
-    for idx in range(longitude.shape[0]):
-        base_record = {
-            'longitude': longitude[idx].item(),
-            'latitude': latitude[idx].item(),
-            'organic_carbon': oc[idx].item()
-        }
+    def forward(self, x):
+        batch_size = x.size(0)
+        x = x.view(batch_size, -1, self.token_dim)
+        x = self.input_proj(x)
+        x = x + self.pos_embedding
+        x = self.transformer_encoder(x)
+        x = x.transpose(1, 2)
+        x = self.pool(x)
+        x = x.squeeze(-1)
+        x = self.fc_out(x)
+        return x
 
-        # Elevation embedding
-        elevation_input = elevation_instrument[idx:idx+1].unsqueeze(1)  # [1, 1, H, W]
-        print(f"Elevation input shape before expansion (idx={idx}): {elevation_input.shape}")
-        elevation_input = elevation_input.to(device).expand(1, 1, 3, 96, 96)  # [1, 1, 3, 96, 96]
-        print(f"Elevation input shape after expansion: {elevation_input.shape}")
-        
-        elevation_embedding = model.patch_embed(elevation_input).squeeze().cpu().detach().numpy()
-        elevation_emb_size = elevation_embedding.flatten().size
-        print(f"Elevation embedding size (idx={idx}): {elevation_emb_size} (shape: {elevation_embedding.shape})")
-        base_record['elevation_embedding'] = elevation_embedding.tolist()
-
-        # Channel-time embeddings
-        channel_time_embeddings = {}
-        for channel, time in product(range(len(bands_list_order)-1), range(time_before)):
-            x = remaining_tensor[idx, channel, time].unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
-            print(f"Channel {channel}, Time {time} input shape before expansion: {x.shape}")
-            x = x.expand(1, 1, 3, 96, 96).to(device)  # [1, 1, 3, 96, 96]
-            print(f"Channel {channel}, Time {time} input shape after expansion: {x.shape}")
-            
-            embedding = model.patch_embed(x).squeeze().cpu().detach().numpy()
-            embedding_size = embedding.flatten().size
-            print(f"Channel {channel}, Time {time} embedding size: {embedding_size} (shape: {embedding.shape})")
-            tag = metadata_strings[idx][channel][time]
-            channel_time_embeddings[tag] = embedding.tolist()
-
-        base_record['channel_time_embeddings'] = channel_time_embeddings
-        records.append(base_record)
-
-    df = pd.DataFrame(records)
-    print(f"Batch DataFrame created with {len(df)} rows")
-    return df
-
-# Save to Parquet with documentation
-def save_to_parquet(train_loader, model, device, args, base_folder='/fast/vfourel/SOCProject'):
-    run_number = datetime.now().strftime("%Y%m%d_%H%M%S")
-    folder_path = os.path.join(base_folder, f'run_{run_number}')
-    os.makedirs(folder_path, exist_ok=True)
-
-    timing_info = {
-        'loading_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        'start_time': time.time(),
-        'time_before': time.time(),
-        'max_oc': float('-inf'),
-        'image_size': (96, 96),
-        'inference_time': 0
-    }
-
-    console = Console()
+def process_batch_to_embeddings(longitude, latitude, elevation_instrument, remaining_tensor, metadata_strings, oc, model, device):
+    B = longitude.shape[0]
+    num_channels = remaining_tensor.shape[1]
+    num_times = remaining_tensor.shape[2]
+    all_embeddings = []
+    targets = oc.to(device)
     with torch.no_grad():
-        for batch_idx, batch in enumerate(train_loader):
-            batch_start_time = time.time()
-            longitude, latitude, stacked_tensor, metadata, oc = batch
-            batch_size = len(longitude)
-            print(f"Batch {batch_idx}: {batch_size} samples")
+        for idx in range(B):
+            sample_embeddings = []
+            elevation_input = elevation_instrument[idx:idx+1].unsqueeze(1).to(device).expand(1, 1, 3, 96, 96)
+            elevation_emb = model.patch_embed(elevation_input).squeeze().flatten()
+            sample_embeddings.append(elevation_emb)
+            for channel in range(num_channels):
+                for time in range(num_times):
+                    x = remaining_tensor[idx, channel, time].unsqueeze(0).unsqueeze(0).to(device).expand(1, 1, 3, 96, 96)
+                    emb = model.patch_embed(x).squeeze().flatten()
+                    sample_embeddings.append(emb)
+            sample_embeddings = torch.cat(sample_embeddings, dim=0)
+            all_embeddings.append(sample_embeddings)
+    all_embeddings = torch.stack(all_embeddings, dim=0)
+    return all_embeddings, targets
 
+def train_transformer(train_loader, val_loader, vit_model, args, accelerator):
+    num_patches = (96 // 8) * (96 // 8)  # 144 patches
+    embedding_dim_per_patch = 768  # ViT base embedding dim per patch
+    total_embedding_dim = embedding_dim_per_patch * num_patches * (1 + (len(bands_list_order) - 1) * time_before)
+    num_tokens = 1 + (len(bands_list_order) - 1) * time_before  # e.g., 26
+
+    transformer_model = TransformerRegressor(
+        input_dim=total_embedding_dim,
+        num_tokens=num_tokens,
+        d_model=512,
+        nhead=8,
+        num_layers=2,
+        dim_feedforward=1024,
+        output_dim=1
+    )
+
+    optimizer = optim.Adam(transformer_model.parameters(), lr=args.lr)
+    criterion = nn.L1Loss()
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
+
+    train_loader, val_loader, transformer_model, optimizer = accelerator.prepare(train_loader, val_loader, transformer_model, optimizer)
+
+    # Compute target stats for normalization
+    all_targets = []
+    for _, _, _, _, oc in train_loader:
+        all_targets.append(oc)
+    all_targets = torch.cat(all_targets)
+    target_mean, target_std = all_targets.mean().item(), all_targets.std().item()
+
+    for epoch in range(args.epochs):
+        transformer_model.train()
+        total_train_loss = 0
+        optimizer.zero_grad()
+
+        for batch_idx, batch in enumerate(train_loader):
+            longitude, latitude, stacked_tensor, metadata, oc = batch
             elevation_instrument, remaining_tensor, metadata_strings = transform_data(stacked_tensor, metadata)
-            batch_df = process_batch_to_dataframe(
-                longitude, latitude, elevation_instrument, remaining_tensor,
-                metadata_strings, oc, model, device
+            embeddings, targets = process_batch_to_embeddings(
+                longitude, latitude, elevation_instrument, remaining_tensor, metadata_strings, oc, vit_model, accelerator.device
             )
 
-            batch_filename = f'batch_{batch_idx:04d}_size_{batch_size}.parquet'
-            batch_path = os.path.join(folder_path, batch_filename)
-            batch_df.to_parquet(batch_path)
-            print(f"Saved {batch_filename} with {len(batch_df)} rows")
+            embeddings = (embeddings - embeddings.mean(dim=1, keepdim=True)) / (embeddings.std(dim=1, keepdim=True) + 1e-8)
+            targets = (targets - target_mean) / (target_std + 1e-8)
+            embeddings, targets = embeddings.to(torch.float32), targets.to(torch.float32)
 
-            timing_info['max_oc'] = max(timing_info['max_oc'], torch.max(oc).item())
-            timing_info['inference_time'] += time.time() - batch_start_time
+            outputs = transformer_model(embeddings)
+            loss = criterion(outputs.squeeze(), targets)
+            accelerator.backward(loss / args.accum_steps)
+            total_train_loss += loss.item() * args.accum_steps
 
-    timing_info['end_time'] = time.time()
-    doc_path = os.path.join(folder_path, f'run_{run_number}_documentation.txt')
-    with open(doc_path, 'w') as f:
-        f.write(f"Run {run_number} Documentation\n")
-        f.write("=" * 50 + "\n\n")
-        f.write("Timing Information:\n")
-        f.write(f"LOADING_TIME_BEGINNING: {timing_info['loading_time']}\n")
-        f.write(f"TIME_BEGINNING: {timing_info['start_time']}\n")
-        f.write(f"TIME_END: {timing_info['end_time']}\n")
-        f.write(f"INFERENCE_TIME: {timing_info['inference_time']}\n")
-        f.write(f"MAX_OC: {timing_info['max_oc']}\n")
-        f.write(f"time_before: {timing_info['time_before']}\n")
-        f.write(f"imageSize: {timing_info['image_size']}\n\n")
-        f.write("Arguments Configuration:\n")
-        for arg, value in vars(args).items():
-            f.write(f"{arg}: {value}\n")
+            if (batch_idx + 1) % args.accum_steps == 0 or (batch_idx + 1) == len(train_loader):
+                optimizer.step()
+                optimizer.zero_grad()
 
-    print(f"Run completed. Output saved to {folder_path}")
-    return folder_path
+            if accelerator.is_main_process:
+                print(f"Epoch {epoch+1}/{args.epochs}, Batch {batch_idx+1}/{len(train_loader)}, Train Loss: {loss.item():.4f}")
+
+        transformer_model.eval()
+        total_val_loss = 0
+        with torch.no_grad():
+            for batch in val_loader:
+                longitude, latitude, stacked_tensor, metadata, oc = batch
+                elevation_instrument, remaining_tensor, metadata_strings = transform_data(stacked_tensor, metadata)
+                embeddings, targets = process_batch_to_embeddings(
+                    longitude, latitude, elevation_instrument, remaining_tensor, metadata_strings, oc, vit_model, accelerator.device
+                )
+                embeddings = (embeddings - embeddings.mean(dim=1, keepdim=True)) / (embeddings.std(dim=1, keepdim=True) + 1e-8)
+                targets = (targets - target_mean) / (target_std + 1e-8)
+                embeddings, targets = embeddings.to(torch.float32), targets.to(torch.float32)
+                outputs = transformer_model(embeddings)
+                total_val_loss += criterion(outputs.squeeze(), targets).item()
+
+        if accelerator.is_main_process:
+            avg_train_loss = total_train_loss / len(train_loader.dataset)
+            avg_val_loss = total_val_loss / len(val_loader.dataset)
+            print(f"Epoch {epoch+1}/{args.epochs}, Avg Train Loss: {avg_train_loss:.4f}, Avg Val Loss: {avg_val_loss:.4f}")
+            scheduler.step(avg_val_loss)
+
+        if accelerator.is_main_process:
+            checkpoint_path = os.path.join(args.output_dir, f'transformer_epoch_{epoch+1}.pth')
+            accelerator.save_state(checkpoint_path)
+
+    return transformer_model
 
 # Main execution
 if __name__ == "__main__":
     args = parse_args()
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    accelerator = Accelerator()
     console = Console()
-    console.print(f"Using device: {device}")
+    console.print(f"Using device: {accelerator.device}")
 
-    # Data preparation
     df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
     samples_coordinates_array_path, data_array_path = separate_and_add_data()
 
@@ -287,15 +301,17 @@ if __name__ == "__main__":
     print(f"Flattened data paths: {len(data_array_path)}")
 
     train_df, val_df = create_balanced_dataset(df)
+    print('train df size: ', train_df.size)
+    print('val df size: ',val_df.size )
     train_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
+    val_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df)
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
 
-    # Initialize and load model
     vit_model = models_vit_tensor.__dict__[args.model](
         drop_path_rate=args.drop_path,
         num_classes=args.nb_classes
-    ).to(device)
-    vit_model = load_model(vit_model, args, device)
+    ).to(accelerator.device)
+    vit_model = load_model(vit_model, args, accelerator.device)
 
-    # Process and save embeddings
-    output_folder = save_to_parquet(train_loader, vit_model, device, args, base_folder=args.output_dir)
+    transformer_model = train_transformer(train_loader, val_loader, vit_model, args, accelerator)
