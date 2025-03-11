@@ -14,6 +14,12 @@ INFERENCE_TIME = '2015'
 bands_list_order = ['Elevation','LAI','LST','MODIS_NPP','SoilEvaporation','TotalEvapotranspiration']
 MAX_OC = 150
 
+
+NUM_EPOCH_VAE_TRAINING = 2
+NUM_EPOCH_MLP_TRAINING = 2
+
+
+
 def generate_seasonal_list():
     seasons = ['winter', 'spring', 'summer', 'autumn']  # Reordered with winter first
     years = range(2000, 2025)  # 2000 to 2024
