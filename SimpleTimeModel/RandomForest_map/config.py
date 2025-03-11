@@ -4,7 +4,7 @@ base_path_data = '/home/vfourel/SOCProject/SOCmapping/Data'
 
 file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC = f"{base_path_data}/LUCAS_LFU_Lfl_00to23_Bavaria_OC.xlsx"
 
-
+window_size = 33
 TIME_BEGINNING = '2002'
 TIME_END = '2023'
 bands_list_order = ['Elevation','LAI','LST','MODIS_NPP','SoilEvaporation','TotalEvapotranspiration']
