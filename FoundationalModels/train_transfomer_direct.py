@@ -331,4 +331,12 @@ if __name__ == "__main__":
 
     transformer_model = train_transformer(train_loader, val_loader, vit_model, args, accelerator)
 
+    # Define the save path
+    mlp_path = f'spectralGPT_TransformerRegressor_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}.pth'
+
+    # Save the model (only on the main process in a distributed setup)
+    if accelerator.is_main_process:
+        accelerator.save(transformer_model.state_dict(), mlp_path)
+        console.print(f"Model saved to {mlp_path}")
+
     wandb.finish()

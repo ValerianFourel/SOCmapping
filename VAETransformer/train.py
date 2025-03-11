@@ -3,9 +3,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from dataloader.dataloaderMultiYears import MultiRasterDatasetMultiYears
+from dataloader.dataloaderMultiYears1Mil import MultiRasterDataset1MilMultiYears
 from dataloader.dataloaderMapping import MultiRasterDatasetMapping
-from dataloader.dataloaderMappingMultiYear import MultiRasterDatasetMappingMultiYears
-from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data
+from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data, separate_and_add_data_1mil
 import pandas as pd
 from tqdm import tqdm
 from pathlib import Path
@@ -302,7 +302,7 @@ if __name__ == "__main__":
 
     # Training data preparation (for VAE and MLP)
     df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
-    samples_coordinates_array_path, data_array_path = separate_and_add_data()
+    samples_coordinates_array_path_1mil , data_array_path_1mil  = separate_and_add_data_1mil()
 
     def flatten_paths(path_list):
         flattened = []
@@ -313,8 +313,8 @@ if __name__ == "__main__":
                 flattened.append(item)
         return flattened
 
-    samples_coordinates_array_path = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path)))
-    data_array_path = list(dict.fromkeys(flatten_paths(data_array_path)))
+    samples_coordinates_array_path = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path_1mil )))
+    data_array_path = list(dict.fromkeys(flatten_paths(data_array_path_1mil )))
 
     train_df, val_df = create_balanced_dataset(df)
     
@@ -323,14 +323,14 @@ if __name__ == "__main__":
         wandb.run.summary["val_size"] = len(val_df)
         print(f"Training set size: {len(train_df)}")
         print(f"Validation set size: {len(val_df)}")
-    train_dataset_df_full = pd.read_csv(file_path_coordinates_Bavaria_1mil)
+    train_dataset_df_full_1mil = pd.read_csv(file_path_coordinates_Bavaria_1mil)
 
-    # train_dataset = MultiRasterDatasetMapping(samples_coordinates_array_path, data_array_path, train_dataset_df_full)
-    train_dataset = MultiRasterDatasetMappingMultiYears(samples_coordinates_array_path, train_dataset_df_full)
+    train_dataset = MultiRasterDataset1MilMultiYears(samples_coordinates_array_path_1mil , data_array_path_1mil , train_dataset_df_full_1mil )
+    #train_dataset = MultiRasterDatasetMapping(samples_coordinates_array_path, train_dataset_df_full)
 
     train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
     for batch in train_loader:
-        _, _, first_batch, _ = batch
+        _, _, first_batch = batch
         break
     first_batch_size = first_batch.shape
     if accelerator.is_main_process:

@@ -1,128 +1,150 @@
 # coding=utf-8  # Specifies UTF-8 encoding for the Python source code file
 
-# Import required PyTorch libraries and modules
-import torch  # Main PyTorch library
-import torchvision  # PyTorch computer vision library
-from torchvision import models, datasets  # Pre-trained models and dataset utilities
-import torchvision.transforms as transforms  # Image transformation tools
-import torch.nn as nn  # Neural network modules
-import torch.nn.functional as F  # Neural network functional operations
-import torch.optim as optim  # Optimization algorithms
-# import config as cfg  # Commented out configuration import
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from config import time_before, window_size  # Import required config variables
 
+class RefittedCovLSTM(nn.Module):
+    """Refitted Convolutional LSTM Network
+    Combines CNN for spatial feature extraction and LSTM for temporal sequence processing
+    Optimized for CUDA 11.8 compatibility"""
+    
+    def __init__(self, num_channels, lstm_input_size, lstm_hidden_size, 
+                 num_layers=1, dropout=0.25):
+        """
+        Initialize the RefittedCovLSTM model
+        
+        Args:
+            num_channels (int): Number of input channels (bands)
+            lstm_input_size (int): Size of LSTM input (flattened spatial features after CNN)
+            lstm_hidden_size (int): Size of LSTM hidden state
+            num_layers (int): Number of LSTM layers (default: 1)
+            dropout (float): Dropout rate between layers (default: 0.25)
+        """
+        super(RefittedCovLSTM, self).__init__()
+        
+        # CNN Components
+        self.conv1 = nn.Conv2d(
+            in_channels=num_channels,
+            out_channels=32,
+            kernel_size=(3, 3),
+            stride=1,
+            padding=1,
+            bias=True,
+        ).to(dtype=torch.float32)  # Explicitly set float32 for CUDA compatibility
+        
+        self.conv2 = nn.Conv2d(
+            in_channels=32,
+            out_channels=64,
+            kernel_size=(3, 3),
+            stride=1,
+            padding=1,
+            bias=True
+        ).to(dtype=torch.float32)
+        
+        # Calculate CNN output size per time step
+        # Two maxpool2d operations with kernel=2 reduce spatial dims by 4
+        self.cnn_output_height = window_size // 4
+        self.cnn_output_width = window_size // 4
+        self.cnn_output_size = 64 * self.cnn_output_height * self.cnn_output_width
+        self.fc_cnn = nn.Linear(self.cnn_output_size, 128).to(dtype=torch.float32)
 
-class ConvNet(nn.Module):
-    """Convolutional Neural Network implementation
-    A simple CNN with 2 convolutional layers followed by 2 fully connected layers"""
-    def __init__(self, num_channels):
-        super(ConvNet, self).__init__()
-        self.num_channels = num_channels
-        # First conv layer: input_channels -> 16 output channels, 2x2 kernel
-        self.conv1 = nn.Conv2d(in_channels=self.num_channels, out_channels=16, kernel_size=(2, 2), stride=1, padding=1)
-        # Second conv layer: 16 -> 16 channels, 2x2 kernel
-        self.conv2 = nn.Conv2d(in_channels=16, out_channels=16, kernel_size=(2, 2), stride=1, padding=1)
-        # First fully connected layer: 64 -> 16 neurons
-        self.fc1 = nn.Linear(64, 16)
-        # Output layer: 16 -> 1 neuron
-        self.fc2 = nn.Linear(16, 1)
-
-    def forward(self, x):
-        """Forward pass of the network"""
-        x = x[:, :, :, :]  # Ensure proper input dimensions
-        # Apply convolutions with ReLU activation and max pooling
-        x = F.max_pool2d(F.relu(self.conv1(x)), (2, 2))
-        x = F.max_pool2d(F.relu(self.conv2(x)), (2, 2))
-        # Flatten the output for fully connected layers
-        x = x.view(-1, self.num_flat_features(x))
-        x = F.relu(self.fc1(x))  # First fully connected layer with ReLU
-        x = self.fc2(x).reshape(-1)  # Output layer
-        return x
-
-    def num_flat_features(self, x):
-        """Calculate the total number of features after flattening"""
-        sizes = x.size()[1:]  # Get all dimensions except batch size
-        num_features = 1
-        for s in sizes:
-            num_features *= s
-        return num_features
-
-
-class SimpleLSTM(nn.Module):
-    """Simple LSTM network implementation
-    Single LSTM layer followed by two fully connected layers"""
-    def __init__(self, input_size, hidden_size, num_layers=1, dropout=0.25):
-        super(SimpleLSTM, self).__init__()
-        self.hidden_size = hidden_size
-        # LSTM layer configuration
+        # LSTM Component
         self.lstm = nn.LSTM(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            dropout=dropout,
-            batch_first=True
-        )
-        # Fully connected layers for output processing
-        self.fc_1 = nn.Linear(hidden_size, 16)
-        self.fc_2 = nn.Linear(16, 1)
-
-    def forward(self, x):
-        """Forward pass of the network"""
-        x, (h_n, c_n) = self.lstm(x)  # Process sequence through LSTM
-        x = torch.tanh(self.fc_1(x[:, -1, :]))  # Apply tanh activation to first FC layer
-        x = self.fc_2(x).reshape(-1)  # Output layer
-        return x
-
-    def init_hidden(self):
-        """Initialize hidden state"""
-        return torch.randn(1, 24, self.hidden_size)
-
-
-class CovLSTM(nn.Module):
-    """Combined CNN-LSTM network implementation
-    Processes both image data (CNN) and sequential data (LSTM) in parallel"""
-    def __init__(self, cnn_num_channels,
-                 lstm_input_size, lstm_hidden_size, lstm_num_layers=1, lstm_dropout=0):
-        super(CovLSTM, self).__init__()
-        # CNN components
-        self.conv1 = nn.Conv2d(in_channels=cnn_num_channels, out_channels=6, kernel_size=(2, 2), stride=1, padding=1)
-        self.conv2 = nn.Conv2d(in_channels=6, out_channels=16, kernel_size=(2, 2), stride=1, padding=1)
-        self.fc_cnn_1 = nn.Linear(64, 16)
-
-        # LSTM components
-        self.lstm = nn.LSTM(
-            input_size=lstm_input_size,
+            input_size=128,  # Size after fc_cnn
             hidden_size=lstm_hidden_size,
-            num_layers=lstm_num_layers,
-            dropout=lstm_dropout,
-            batch_first=True
-        )
-        self.fc_lstm_1 = nn.Linear(lstm_hidden_size, 16)
+            num_layers=num_layers,
+            dropout=dropout if num_layers > 1 else 0,
+            batch_first=True,
+            bias=True
+        ).to(dtype=torch.float32)
 
-        # Final combined fully connected layer
-        self.fc_final = nn.Linear(16+16, 1)
+        # Final fully connected layers
+        self.fc_lstm = nn.Linear(lstm_hidden_size, 64).to(dtype=torch.float32)
+        self.fc_final = nn.Linear(128 + 64, 32).to(dtype=torch.float32)
+        self.output = nn.Linear(32, 1).to(dtype=torch.float32)
 
-    def forward(self, x_cnn, x_lstm):
-        """Forward pass combining CNN and LSTM outputs"""
-        # Process CNN input
-        x_cnn = x_cnn[:, :, :, :]
-        x_cnn = F.max_pool2d(F.relu(self.conv1(x_cnn)), (2, 2))
-        x_cnn = F.max_pool2d(F.relu(self.conv2(x_cnn)), (2, 2))
-        x_cnn = x_cnn.view(-1, self.num_flat_features(x_cnn))
-        x_cnn = F.relu(self.fc_cnn_1(x_cnn))
+        # Ensure all parameters are on the correct device
+        self.cuda_compatible = torch.cuda.is_available()
+        if self.cuda_compatible:
+            self.cuda()
 
-        # Process LSTM input
-        x_lstm, (h_n, c_n) = self.lstm(x_lstm)
-        x_lstm = torch.tanh(self.fc_lstm_1(x_lstm[:, -1, :]))
+    def forward(self, x):
+        """
+        Forward pass of the network
+        
+        Args:
+            x (torch.Tensor): Input tensor of shape [batch, bands, height, width, time]
+            
+        Returns:
+            torch.Tensor: Output predictions of shape [batch]
+        """
+        # Ensure input is in correct dtype
+        x = x.to(dtype=torch.float32)
+        
+        batch_size, num_channels, height, width, time_steps = x.size()
+        
+        # Process CNN for each time step
+        # Reshape to combine batch and time for CNN processing
+        x_cnn = x.permute(0, 4, 1, 2, 3)  # [batch, time, bands, height, width]
+        x_cnn = x_cnn.reshape(batch_size * time_steps, num_channels, height, width)
+        
+        # Apply CNN layers
+        x_cnn = F.max_pool2d(F.relu(self.conv1(x_cnn)), 2)
+        x_cnn = F.max_pool2d(F.relu(self.conv2(x_cnn)), 2)
+        x_cnn = x_cnn.view(batch_size * time_steps, -1)
+        x_cnn = F.relu(self.fc_cnn(x_cnn))
+        
+        # Reshape back to include time dimension for LSTM
+        x_cnn = x_cnn.view(batch_size, time_steps, 128)  # [batch, time, features]
 
+        # LSTM Processing
+        x_lstm, _ = self.lstm(x_cnn)
+        x_lstm = x_lstm[:, -1, :]  # Take last time step
+        x_lstm = F.relu(self.fc_lstm(x_lstm))
+
+        # CNN features from last time step
+        x_cnn_last = x_cnn[:, -1, :]  # Use the last time step's CNN features
+        
         # Combine CNN and LSTM outputs
-        v_combined = torch.cat((x_cnn, x_lstm), 1)
-        pred = self.fc_final(v_combined).reshape(-1)
-        return pred
+        combined = torch.cat((x_cnn_last, x_lstm), dim=1)
+        x = F.relu(self.fc_final(combined))
+        output = self.output(x).reshape(-1)
+        
+        return output
 
-    def num_flat_features(self, x):
-        """Calculate the total number of features after flattening"""
-        sizes = x.size()[1:]
-        num_features = 1
-        for s in sizes:
-            num_features *= s
-        return num_features
+    def to(self, *args, **kwargs):
+        """Override to method to ensure CUDA compatibility"""
+        super().to(*args, **kwargs)
+        for param in self.parameters():
+            param.data = param.data.to(dtype=torch.float32)
+        return self
+
+    def cuda(self, device=None):
+        """Override cuda method for compatibility"""
+        if self.cuda_compatible:
+            return super().cuda(device)
+        return self
+
+# Example usage
+if __name__ == "__main__":
+    # Example initialization
+    model = RefittedCovLSTM(
+        num_channels=6,  # Match your dataset's number of bands
+        lstm_input_size=128,  # This is now fixed by CNN output
+        lstm_hidden_size=128,
+        num_layers=2,
+        dropout=0.25
+    )
+    
+    # Example input tensor matching your batch size
+    batch_size = 256
+    sample_input = torch.randn(batch_size, 6, 33, 33, 4)  # [batch, bands, height, width, time]
+    
+    if torch.cuda.is_available():
+        model = model.cuda()
+        sample_input = sample_input.cuda()
+    
+    output = model(sample_input)
+    print(f"Output shape: {output.shape}")  # Should be [batch_size]
