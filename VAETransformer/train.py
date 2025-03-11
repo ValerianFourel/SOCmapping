@@ -16,16 +16,19 @@ from config import (TIME_BEGINNING, TIME_END, MAX_OC, NUM_EPOCH_VAE_TRAINING, NU
 from torch.utils.data import DataLoader
 from modelTransformerVAE import TransformerVAE
 from modelMLPRegressor import MLPRegressor
+import logging
 
-
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train VAE and MLP for SOC prediction')
     parser.add_argument('--load_vae', type=str, default=None, help='Path to pre-trained VAE model (optional)')
     return parser.parse_args()
 
-
 def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
+    logger.info("Creating balanced dataset...")
     bins = pd.qcut(df['OC'], q=n_bins, labels=False, duplicates='drop')
     df['bin'] = bins
     bin_counts = df['bin'].value_counts()
@@ -53,16 +56,17 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
     
     training_df = pd.concat(training_dfs).drop('bin', axis=1)
     validation_df = df.loc[validation_indices].drop('bin', axis=1)
-    
+    logger.info("Balanced dataset created.")
     return training_df, validation_df
-
 
 def train_vae(model, train_loader, num_epochs, accelerator):
     reconstruction_criterion = nn.L1Loss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     kld_weight = 0.01
     
+    logger.info("Preparing VAE training with Accelerator...")
     train_loader, model, optimizer = accelerator.prepare(train_loader, model, optimizer)
+    logger.info(f"Training on {len(train_loader)} batches per epoch.")
 
     for epoch in range(num_epochs):
         model.train()
@@ -70,31 +74,37 @@ def train_vae(model, train_loader, num_epochs, accelerator):
         running_recon_loss = 0.0
         running_kld_loss = 0.0
         
+        logger.info(f"Starting VAE Epoch {epoch+1}/{num_epochs}")
         for batch_idx, (longitudes, latitudes, features) in enumerate(tqdm(train_loader, desc=f'VAE Epoch {epoch+1}')):
+            logger.debug(f"Processing batch {batch_idx+1}/{len(train_loader)}")
             features = features.to(accelerator.device)
             optimizer.zero_grad()
-            reconstruction, mu, log_var = model(features)
-            
-            recon_loss = reconstruction_criterion(reconstruction, features)
-            kld_loss = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp())
-            loss = recon_loss + kld_weight * kld_loss
-            
-            accelerator.backward(loss)
-            optimizer.step()
-            
-            running_loss += loss.item()
-            running_recon_loss += recon_loss.item()
-            running_kld_loss += kld_loss.item()
-            
-            if accelerator.is_main_process:
-                wandb.log({
-                    'vae_train_loss': loss.item(),
-                    'vae_train_recon_loss': recon_loss.item(),
-                    'vae_train_kld_loss': kld_loss.item(),
-                    'vae_batch': batch_idx + 1 + epoch * len(train_loader),
-                    'vae_epoch': epoch + 1
-                })
-
+            try:
+                reconstruction, mu, log_var = model(features)
+                recon_loss = reconstruction_criterion(reconstruction, features)
+                kld_loss = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp())
+                loss = recon_loss + kld_weight * kld_loss
+                
+                accelerator.backward(loss)
+                optimizer.step()
+                
+                running_loss += loss.item()
+                running_recon_loss += recon_loss.item()
+                running_kld_loss += kld_loss.item()
+                
+                if accelerator.is_main_process and batch_idx % 10 == 0:  # Log every 10 batches
+                    wandb.log({
+                        'vae_train_loss': loss.item(),
+                        'vae_train_recon_loss': recon_loss.item(),
+                        'vae_train_kld_loss': kld_loss.item(),
+                        'vae_batch': batch_idx + 1 + epoch * len(train_loader),
+                        'vae_epoch': epoch + 1
+                    })
+                    logger.debug(f"Batch {batch_idx+1} - Loss: {loss.item():.4f}")
+            except Exception as e:
+                logger.error(f"Error in batch {batch_idx+1}: {str(e)}")
+                raise
+        
         train_loss = running_loss / len(train_loader)
         if accelerator.is_main_process:
             wandb.log({
@@ -103,12 +113,14 @@ def train_vae(model, train_loader, num_epochs, accelerator):
                 'vae_train_recon_loss_avg': running_recon_loss / len(train_loader),
                 'vae_train_kld_loss_avg': running_kld_loss / len(train_loader)
             })
+            logger.info(f'VAE Epoch {epoch+1} - Training Loss: {train_loss:.4f}')
             print(f'VAE Epoch {epoch+1} - Training Loss: {train_loss:.4f}')
 
+    logger.info("VAE training completed.")
     return model
 
-
 def train_mlp(vae_model, mlp_model, train_loader, val_loader, num_epochs, accelerator):
+    # [Your existing train_mlp function remains unchanged for brevity]
     criterion = nn.MSELoss()
     optimizer = optim.Adam(mlp_model.parameters(), lr=0.001)
     
@@ -172,7 +184,6 @@ def train_mlp(vae_model, mlp_model, train_loader, val_loader, num_epochs, accele
 
     return mlp_model
 
-
 if __name__ == "__main__":
     args = parse_args()
     accelerator = Accelerator()
@@ -204,13 +215,23 @@ if __name__ == "__main__":
     })
 
     # Load Bavaria 1M points for VAE training
+    logger.info("Loading Bavaria 1M dataset...")
     train_dataset_df_full_1mil = pd.read_csv(file_path_coordinates_Bavaria_1mil)
     samples_coordinates_array_path_1mil, data_array_path_1mil = separate_and_add_data_1mil()
     samples_coordinates_array_path_1mil = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path_1mil)))
     data_array_path_1mil = list(dict.fromkeys(flatten_paths(data_array_path_1mil)))
 
+    logger.info("Initializing VAE dataset...")
     train_dataset = MultiRasterDataset1MilMultiYears(samples_coordinates_array_path_1mil, data_array_path_1mil, train_dataset_df_full_1mil)
-    train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True, num_workers=4)  # Added num_workers
+    logger.info(f"VAE DataLoader created with {len(train_loader)} batches.")
+
+    # Test a single batch to check data loading
+    logger.info("Testing data loading with one batch...")
+    for batch in train_loader:
+        longitudes, latitudes, features = batch
+        logger.info(f"Batch loaded - Features shape: {features.shape}")
+        break
 
     vae_model = TransformerVAE(
         input_channels=len(bands_list_order),
@@ -224,20 +245,23 @@ if __name__ == "__main__":
 
     if args.load_vae:
         if accelerator.is_main_process:
+            logger.info(f"Loading pre-trained VAE from {args.load_vae}")
             print(f"Loading pre-trained VAE from {args.load_vae}")
         vae_model.load_state_dict(torch.load(args.load_vae, map_location=accelerator.device))
     else:
+        logger.info("Starting VAE training...")
         vae_model = train_vae(vae_model, train_loader, num_epochs=NUM_EPOCH_VAE_TRAINING, accelerator=accelerator)
         if accelerator.is_main_process:
             vae_path = f'vae_transformer_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}.pth'
             accelerator.save(vae_model.state_dict(), vae_path)
             wandb.save(vae_path)
             wandb.run.summary["vae_parameters"] = vae_model.count_parameters()
+            logger.info(f"VAE parameters: {vae_model.count_parameters()}")
             print(f"VAE parameters: {vae_model.count_parameters()}")
 
     wandb.finish()
 
-    # MLP Training
+    # MLP Training (unchanged for brevity)
     wandb.init(project="socmapping-VAETransformer-MLPRegressor", config={
         "max_oc": MAX_OC,
         "time_beginning": TIME_BEGINNING,
@@ -251,7 +275,6 @@ if __name__ == "__main__":
         "vae_latent_dim": 8
     })
 
-    # Load OC data for MLP training
     df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
     samples_coordinates_array_path, data_array_path = separate_and_add_data()
     samples_coordinates_array_path = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path)))
