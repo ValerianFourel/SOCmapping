@@ -1,5 +1,4 @@
 
-
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -7,35 +6,9 @@ import os
 from pathlib import Path
 import re
 import glob
-import pandas as pd
-from config import bands_list_order
 
 
-def get_metadata(self, id_num):
-    """Get metadata from filename"""
-    if id_num not in self.id_to_file:
-        raise ValueError(f"ID {id_num} not found")
-
-    filename = self.id_to_file[id_num].name
-    pattern = r'ID(\d+)N(\d+\.\d+)S(\d+\.\d+)W(\d+\.\d+)E(\d+\.\d+)'
-    match = re.search(pattern, filename)
-
-    if match:
-        return {
-            'id': int(match.group(1)),
-            'north': float(match.group(2)),
-            'south': float(match.group(3)),
-            'west': float(match.group(4)),
-            'east': float(match.group(5))
-        }
-    return None
-
-def get_available_ids(self):
-    """Return list of available IDs"""
-    return list(self.id_to_file.keys())
-
-
-class RasterTensorDataset(Dataset):
+class RasterTensorDatasetMapping(Dataset):
     def __init__(self, base_path):
         """
         Initialize the dataset
@@ -44,8 +17,9 @@ class RasterTensorDataset(Dataset):
         base_path: str, base path to RasterTensorData directory
         subfolder: str, name of the subfolder (e.g., 'Elevation')
         """
-        
-        self.folder_path = base_path
+        # Replace "OC_LUCAS_LFU_LfL_Coordinates" with "RasterTensorData" in the base path
+        self.base_path = Path(base_path.replace("Coordinates1Mil", "RasterTensorData"))
+        self.folder_path = self.base_path
 
         # Create ID to filename mapping
         self.id_to_file = self._create_id_mapping()
@@ -58,9 +32,10 @@ class RasterTensorDataset(Dataset):
     def _create_id_mapping(self):
         """Create a dictionary mapping IDs to their corresponding file paths"""
         id_to_file = {}
-        for file_path in glob.glob(os.path.join(self.folder_path, "*.npy")):
+
+        for file_path in self.folder_path.glob("*.npy"):
             # Extract ID number from filename
-            match = re.search(r'ID(\d+)N', file_path)
+            match = re.search(r'ID(\d+)N', file_path.name)
             if match:
                 id_num = int(match.group(1))
                 id_to_file[id_num] = file_path
@@ -109,8 +84,7 @@ class RasterTensorDataset(Dataset):
                 y_offset:y_offset+window.shape[1]
             ] = window
             window = padded_window
-        
-        #window = np.asarray(window)
+
         return torch.from_numpy(window).float()
 
     def __len__(self):
@@ -144,45 +118,23 @@ dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
 """
 
 
-class MultiRasterDataset(Dataset):
-    def __init__(self, samples_coordinates_array_subfolders ,  data_array_subfolders , dataframe):
+class MultiRasterDatasetMapping(Dataset):
+    def __init__(self, subfolders, dataframe):
         """
         Parameters:
         subfolders: list of str, names of subfolders to include
         dataframe: pandas.DataFrame, contains columns GPS_LONG, GPS_LAT, and OC (target variable)
         """
-        self.data_array_subfolders = data_array_subfolders
-        self.seasonalityBased = self.check_seasonality(data_array_subfolders)
-
-        self.samples_coordinates_array_subfolders = samples_coordinates_array_subfolders
+        self.subfolders = subfolders
         self.dataframe = dataframe
         self.datasets = {
-            self.get_last_three_folders(subfolder): RasterTensorDataset(subfolder)
-            for subfolder in  self.data_array_subfolders
+            subfolder: RasterTensorDatasetMapping(subfolder)
+            for subfolder in subfolders
         }
-        
         self.coordinates = {
-            self.get_last_three_folders(subfolder): np.load(f"{subfolder}/coordinates.npy")#[np.isfinite(np.load(f"{subfolder}/coordinates.npy"))]
-            for subfolder in self.samples_coordinates_array_subfolders
+            subfolder: np.load(f"{subfolder}/coordinates.npy")
+            for subfolder in subfolders
         }
-
-    def check_seasonality(self,data_array_subfolders):
-        seasons = ['winter', 'spring', 'summer', 'autumn']
-
-        # Check if any subfolder contains a season name
-        is_seasonal = any(
-            any(season in subfolder.lower() for season in seasons)
-            for subfolder in data_array_subfolders
-        )
-
-        return 1 if is_seasonal else 0
-
-
-    def get_last_three_folders(self,path):
-        # Split the path into components
-        parts = path.rstrip('/').split('/')
-        # Return last 3 components, or all if less than 3
-        return '/'.join(parts[-2:])
 
     def find_coordinates_index(self, subfolder, longitude, latitude):
         """
@@ -200,7 +152,7 @@ class MultiRasterDataset(Dataset):
         # Assuming the first two columns of `coordinates.npy` are longitude and latitude
         match = np.where((coords[:, 1] == longitude) & (coords[:, 0] == latitude))[0]
         if match.size == 0:
-            raise ValueError(f"{coords} Coordinates ({longitude}, {latitude}) not found in {subfolder}")
+            raise ValueError(f"Coordinates ({longitude}, {latitude}) not found in {subfolder}")
 
         # Return id_num, x, y from the same row
         return coords[match[0], 2], coords[match[0], 3], coords[match[0], 4]
@@ -216,39 +168,14 @@ class MultiRasterDataset(Dataset):
         tuple: (tensor, OC), where tensor is the data and OC is the target variable
         """
         row = self.dataframe.iloc[index]
-        longitude, latitude, oc = row["GPS_LONG"], row["GPS_LAT"], row["OC"]
-        tensors = []
-        
-        filtered_array = self.filter_by_season_or_year(row['season'],row['year'],self.seasonalityBased)
-        
-        for subfolder in filtered_array:
-            subfolder = self.get_last_three_folders(subfolder)
+        longitude, latitude = row["longitude"], row["latitude"]
+
+        tensors = {}
+        for subfolder in self.subfolders:
             id_num, x, y = self.find_coordinates_index(subfolder, longitude, latitude)
-            tensor = self.datasets[subfolder].get_tensor_by_location(id_num, x, y)
-            if tensor is not None:
-                tensors.append(tensor)
-            # Combine all tensors into a single tensor
-        return longitude, latitude, torch.stack(tensors), oc
+            tensors[subfolder] = self.datasets[subfolder].get_tensor_by_location(id_num, x, y)
 
-    
-    def filter_by_season_or_year(self, season,year,Season_or_year):
-
-        if Season_or_year:
-            filtered_array = [
-                path for path in self.samples_coordinates_array_subfolders
-                if ('Elevation' in path) or
-                ('MODIS_NPP' in path and path.endswith(str(year))) or
-                (not 'Elevation' in path and not 'MODIS_NPP' in path and path.endswith(season))
-            ]
-            
-        else:
-            filtered_array = [
-                            path for path in self.samples_coordinates_array_subfolders
-                            if ('Elevation' in path) or
-                            (not 'Elevation' in path and path.endswith(str(year)))
-                        ]
-
-        return filtered_array
+        return longitude, latitude, tensors
 
     def __len__(self):
         """
@@ -259,4 +186,3 @@ class MultiRasterDataset(Dataset):
     def get_tensor_by_location(self, subfolder, id_num, x, y):
         """Get tensor from specific subfolder dataset"""
         return self.datasets[subfolder].get_tensor_by_location(id_num, x, y)
-

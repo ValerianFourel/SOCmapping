@@ -8,7 +8,6 @@ from pathlib import Path
 import re
 import glob
 import pandas as pd
-from config import bands_list_order
 
 
 def get_metadata(self, id_num):
@@ -109,8 +108,7 @@ class RasterTensorDataset(Dataset):
                 y_offset:y_offset+window.shape[1]
             ] = window
             window = padded_window
-        
-        #window = np.asarray(window)
+
         return torch.from_numpy(window).float()
 
     def __len__(self):
