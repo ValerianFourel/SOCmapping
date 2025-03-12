@@ -11,7 +11,7 @@ from pathlib import Path
 import wandb
 from accelerate import Accelerator
 from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,
-                   seasons, years_padded, 
+                   seasons, years_padded, num_epochs,
                    SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, 
                    DataYearly, SamplesCoordinates_Seasonally, bands_list_order,
                    MatrixCoordinates_1mil_Seasonally, DataSeasonally, window_size,
@@ -53,7 +53,7 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
     
     return training_df, validation_df
 
-def train_model(model, train_loader, val_loader, num_epochs=100, accelerator=None):
+def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelerator=None):
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     
@@ -127,7 +127,7 @@ def train_model(model, train_loader, val_loader, num_epochs=100, accelerator=Non
                 'mae': mae
             })
 
-            if val_loss < best_val_loss:
+            if val_loss < best_val_loss and epoch % 5 ==0:
                 best_val_loss = val_loss
                 wandb.run.summary['best_val_loss'] = best_val_loss
                 accelerator.save_state(f'multiyearcnn_checkpoint_epoch_{epoch+1}.pth')
@@ -211,7 +211,7 @@ if __name__ == "__main__":
 
     # Train model
     model, val_outputs, val_targets = train_model(model, train_loader, val_loader, 
-                                                 num_epochs=100, accelerator=accelerator)
+                                                 num_epochs=num_epochs, accelerator=accelerator)
 
     # Save final model
     if accelerator.is_main_process:

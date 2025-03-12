@@ -11,7 +11,7 @@ from tqdm import tqdm
 from pathlib import Path
 import wandb
 from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,
-                   seasons, years_padded, 
+                   seasons, years_padded, num_epochs,
                    SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, 
                    DataYearly, SamplesCoordinates_Seasonally, bands_list_order,
                    MatrixCoordinates_1mil_Seasonally, DataSeasonally, window_size,
@@ -66,8 +66,8 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
 def train_model(model, train_loader, val_loader, num_epochs=100, 
                 device='cuda' if torch.cuda.is_available() else 'cpu'):
     model = model.to(device)
-    criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    criterion = nn.L1Loss()
+    optimizer = optim.Adam(model.parameters(), lr=0.005)
 
     best_val_loss = float('inf')
     best_model = None
@@ -205,7 +205,7 @@ if __name__ == "__main__":
     wandb.run.summary["model_parameters"] = model.count_parameters()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model, val_outputs, val_targets = train_model(model, train_loader, val_loader, num_epochs=100, device=device)
+    model, val_outputs, val_targets = train_model(model, train_loader, val_loader, num_epochs=num_epochs, device=device)
 
     # Save model to wandb
     model_path = f'cnn_model_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}.pth'

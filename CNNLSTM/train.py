@@ -14,6 +14,7 @@ from accelerate import Accelerator
 from dataloader.dataloaderMultiYears import MultiRasterDatasetMultiYears 
 from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data
 from config import (TIME_BEGINNING, TIME_END, MAX_OC, seasons, years_padded,
+                    num_epochs,
                    SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, 
                    DataYearly, SamplesCoordinates_Seasonally, bands_list_order,
                    MatrixCoordinates_1mil_Seasonally, DataSeasonally, window_size,
@@ -94,7 +95,7 @@ def train_model(model, train_loader, val_loader, num_epochs=20, accelerator=None
                 'mae': mae
             })
 
-            if val_loss < best_val_loss:
+            if val_loss < best_val_loss and epoch % 5 ==0:
                 best_val_loss = val_loss
                 wandb.run.summary['best_val_loss'] = best_val_loss
                 accelerator.save_state(f'model_checkpoint_epoch_{epoch+1}.pth')
@@ -180,7 +181,7 @@ if __name__ == "__main__":
     
     # Train model
     model, val_outputs, val_targets = train_model(model, train_loader, val_loader, 
-                                                num_epochs=20, accelerator=accelerator)
+                                                num_epochs=num_epochs, accelerator=accelerator)
 
     # Save final model
     if accelerator.is_main_process:

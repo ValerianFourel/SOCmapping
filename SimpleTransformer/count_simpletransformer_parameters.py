@@ -15,7 +15,7 @@ def main():
         input_height=window_size,              # Spatial height
         input_width=window_size,               # Spatial width
         input_time=time_before,                # Temporal dimension
-        num_heads=4,                           # Number of attention heads
+        num_heads=8,                           # Number of attention heads
         num_layers=2,                          # Number of transformer layers
         dropout_rate=0.3                       # Dropout rate
     )

@@ -48,3 +48,17 @@ to use:
 ````bash
 condor_submit_bid 1000 -i -append request_memory=481920 -append request_cpus=100 -append request_disk=200G -append request_gpus=3 -append 'requirements = CUDADeviceName == "NVIDIA A100-SXM4-80GB"'
 ```
+
+
+The main run is done on:
+'''
+bands_list_order = ['Elevation','LAI','LST','MODIS_NPP','SoilEvaporation','TotalEvapotranspiration']
+MAX_OC = 160
+time_before  = 5
+window_size = 33
+TIME_BEGINNING = '2007'
+LOADING_TIME_BEGINNING = str(int(TIME_BEGINNING)-time_before)
+TIME_END = '2023'
+INFERENCE_TIME = '2015'
+num_epochs = 20
+'''

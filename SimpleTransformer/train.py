@@ -12,12 +12,60 @@ from dataloader.dataloaderMultiYears import MultiRasterDatasetMultiYears
 from dataloader.dataloaderMapping import MultiRasterDatasetMapping
 from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data
 from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,
-                   seasons, years_padded,
+                   seasons, years_padded, num_epochs,
                    SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, 
                    DataYearly, SamplesCoordinates_Seasonally, bands_list_order,
                    MatrixCoordinates_1mil_Seasonally, DataSeasonally, window_size,
                    file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC, time_before)
 from modelSimpleTransformer import SimpleTransformer
+import argparse
+
+
+
+def composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
+    """
+    Composite loss combining L1 and scaled chi-squared loss (chi^2_3 inspired).
+    
+    Args:
+        outputs: Predicted values (tensor)
+        targets: True values (tensor)
+        sigma: Scale parameter for chi-squared loss (default 3.0)
+        alpha: Weight for L1 loss (default 0.5, chi-squared gets 1-alpha)
+    
+    Returns:
+        Mean composite loss value (tensor)
+    """
+    # Compute L1 loss
+    errors = targets - outputs
+    l1_loss = torch.mean(torch.abs(errors))
+    
+    # Compute unscaled chi-squared loss
+    squared_errors = errors ** 2
+    chi2_unscaled = (1/4) * squared_errors * torch.exp(-squared_errors / (2 * sigma))
+    chi2_unscaled_mean = torch.mean(chi2_unscaled)
+    
+    # Prevent division by zero
+    chi2_unscaled_mean = torch.clamp(chi2_unscaled_mean, min=1e-8)
+    
+    # Dynamic scaling factor to match L1 magnitude
+    scale_factor = l1_loss / chi2_unscaled_mean
+    
+    # Scaled chi-squared loss
+    chi2_scaled = scale_factor * chi2_unscaled_mean
+    
+    # Composite loss
+    composite_loss = alpha * l1_loss + (1 - alpha) * chi2_scaled
+    
+    return composite_loss
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Train SimpleTransformer model with customizable parameters')
+    parser.add_argument('--lr', type=float, default=0.002, help='Learning rate')
+    parser.add_argument('--num_heads', type=int, default=8, help='Number of attention heads')
+    parser.add_argument('--num_layers', type=int, default=2, help='Number of transformer layers')
+    parser.add_argument('--loss_alpha', type=float, default=0.5, help='Number of transformer layers')
+    return parser.parse_args()
 
 def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
     """
@@ -53,9 +101,10 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
     
     return training_df, validation_df
 
-def train_model(model, train_loader, val_loader, num_epochs=20, accelerator=None):
-    criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.005)
+def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelerator=None, lr=0.001,loss_alpha= 0.6):
+    # criterion = nn.L1Loss()
+    criterion = lambda outputs, targets: composite_l1_chi2_loss(outputs, targets, sigma=3.0,alpha = loss_alpha)  # Adjust sigma based on OC scale
+    optimizer = optim.Adam(model.parameters(), lr=lr)
     
     # Prepare with Accelerate
     train_loader, val_loader, model, optimizer = accelerator.prepare(
@@ -127,7 +176,7 @@ def train_model(model, train_loader, val_loader, num_epochs=20, accelerator=None
                 'mae': mae
             })
 
-            if val_loss < best_val_loss:
+            if val_loss < best_val_loss and epoch % 20 == 0:
                 best_val_loss = val_loss
                 wandb.run.summary['best_val_loss'] = best_val_loss
                 accelerator.save_state(f'model_checkpoint_epoch_{epoch+1}.pth')
@@ -140,6 +189,9 @@ def train_model(model, train_loader, val_loader, num_epochs=20, accelerator=None
     return model, val_outputs, val_targets_list
 
 if __name__ == "__main__":
+    # Parse command line arguments
+    args = parse_args()
+    
     # Initialize Accelerate
     accelerator = Accelerator()
     
@@ -153,12 +205,13 @@ if __name__ == "__main__":
             "window_size": window_size,
             "time_before": time_before,
             "bands": len(bands_list_order),
-            "epochs": 20,
+            "epochs": num_epochs,
             "batch_size": 256,
-            "learning_rate": 0.005,
-            "num_heads": 4,
-            "num_layers": 2,
-            "dropout_rate": 0.3
+            "learning_rate": args.lr,
+            "num_heads": args.num_heads,
+            "num_layers": args.num_layers,
+            "dropout_rate": 0.3,
+            "loss_alpha": args.loss_alpha
         }
     )
 
@@ -207,8 +260,8 @@ if __name__ == "__main__":
         input_height=window_size,
         input_width=window_size,
         input_time=time_before,
-        num_heads=4,
-        num_layers=2,
+        num_heads=args.num_heads,
+        num_layers=args.num_layers,
         dropout_rate=0.3
     )
     
@@ -217,7 +270,15 @@ if __name__ == "__main__":
         wandb.run.summary["model_parameters"] = model.count_parameters()
 
     # Train model
-    model, val_outputs, val_targets = train_model(model, train_loader, val_loader, num_epochs=20, accelerator=accelerator)
+    model, val_outputs, val_targets = train_model(
+        model, 
+        train_loader, 
+        val_loader, 
+        num_epochs=num_epochs, 
+        accelerator=accelerator,
+        lr=args.lr,
+        loss_alpha=args.loss_alpha
+    )
 
     # Save final model
     if accelerator.is_main_process:

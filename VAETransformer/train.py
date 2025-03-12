@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__)
 def parse_args():
     parser = argparse.ArgumentParser(description='Train VAE and MLP for SOC prediction')
     parser.add_argument('--load_vae', type=str, default=None, help='Path to pre-trained VAE model (optional)')
+    parser.add_argument('--batch_size', type=int, default=8)
+    parser.add_argument('--accum_steps', type=int, default=64, help='Number of gradient accumulation steps')
     return parser.parse_args()
 
 def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
@@ -59,14 +61,14 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
     logger.info("Balanced dataset created.")
     return training_df, validation_df
 
-def train_vae(model, train_loader, num_epochs, accelerator):
+def train_vae(model, train_loader, num_epochs, accelerator, accum_steps):
     reconstruction_criterion = nn.L1Loss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     kld_weight = 0.01
     
     logger.info("Preparing VAE training with Accelerator...")
     train_loader, model, optimizer = accelerator.prepare(train_loader, model, optimizer)
-    logger.info(f"Training on {len(train_loader)} batches per epoch.")
+    logger.info(f"Training on {len(train_loader)} batches per epoch with {accum_steps} accumulation steps.")
 
     for epoch in range(num_epochs):
         model.train()
@@ -75,18 +77,23 @@ def train_vae(model, train_loader, num_epochs, accelerator):
         running_kld_loss = 0.0
         
         logger.info(f"Starting VAE Epoch {epoch+1}/{num_epochs}")
+        optimizer.zero_grad()
+        
         for batch_idx, (longitudes, latitudes, features) in enumerate(tqdm(train_loader, desc=f'VAE Epoch {epoch+1}')):
             logger.debug(f"Processing batch {batch_idx+1}/{len(train_loader)}")
             features = features.to(accelerator.device)
-            optimizer.zero_grad()
-            try:
+            
+            with accelerator.accumulate(model):  # Gradient accumulation
                 reconstruction, mu, log_var = model(features)
                 recon_loss = reconstruction_criterion(reconstruction, features)
                 kld_loss = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp())
                 loss = recon_loss + kld_weight * kld_loss
                 
                 accelerator.backward(loss)
-                optimizer.step()
+                
+                if ((batch_idx + 1) % accum_steps == 0) or (batch_idx + 1 == len(train_loader)):
+                    optimizer.step()
+                    optimizer.zero_grad()
                 
                 running_loss += loss.item()
                 running_recon_loss += recon_loss.item()
@@ -101,9 +108,6 @@ def train_vae(model, train_loader, num_epochs, accelerator):
                         'vae_epoch': epoch + 1
                     })
                     logger.debug(f"Batch {batch_idx+1} - Loss: {loss.item():.4f}")
-            except Exception as e:
-                logger.error(f"Error in batch {batch_idx+1}: {str(e)}")
-                raise
         
         train_loss = running_loss / len(train_loader)
         if accelerator.is_main_process:
@@ -119,8 +123,7 @@ def train_vae(model, train_loader, num_epochs, accelerator):
     logger.info("VAE training completed.")
     return model
 
-def train_mlp(vae_model, mlp_model, train_loader, val_loader, num_epochs, accelerator):
-    # [Your existing train_mlp function remains unchanged for brevity]
+def train_mlp(vae_model, mlp_model, train_loader, val_loader, num_epochs, accelerator, accum_steps):
     criterion = nn.MSELoss()
     optimizer = optim.Adam(mlp_model.parameters(), lr=0.001)
     
@@ -133,27 +136,32 @@ def train_mlp(vae_model, mlp_model, train_loader, val_loader, num_epochs, accele
     for epoch in range(num_epochs):
         mlp_model.train()
         running_loss = 0.0
+        optimizer.zero_grad()
         
         for batch_idx, (longitudes, latitudes, features, targets) in enumerate(tqdm(train_loader, desc=f'MLP Epoch {epoch+1}')):
             features = features.to(accelerator.device)
             targets = targets.to(accelerator.device).float()
-            optimizer.zero_grad()
-            with torch.no_grad():
-                _, mu, _ = vae_model(features)
-            outputs = mlp_model(mu)
-            loss = criterion(outputs.squeeze(), targets)
             
-            accelerator.backward(loss)
-            optimizer.step()
-            
-            running_loss += loss.item()
-            
-            if accelerator.is_main_process:
-                wandb.log({
-                    'mlp_train_loss': loss.item(),
-                    'mlp_batch': batch_idx + 1 + epoch * len(train_loader),
-                    'mlp_epoch': epoch + 1
-                })
+            with accelerator.accumulate(mlp_model):  # Gradient accumulation
+                with torch.no_grad():
+                    _, mu, _ = vae_model(features)
+                outputs = mlp_model(mu)
+                loss = criterion(outputs.squeeze(), targets)
+                
+                accelerator.backward(loss)
+                
+                if ((batch_idx + 1) % accum_steps == 0) or (batch_idx + 1 == len(train_loader)):
+                    optimizer.step()
+                    optimizer.zero_grad()
+                
+                running_loss += loss.item()
+                
+                if accelerator.is_main_process:
+                    wandb.log({
+                        'mlp_train_loss': loss.item(),
+                        'mlp_batch': batch_idx + 1 + epoch * len(train_loader),
+                        'mlp_epoch': epoch + 1
+                    })
 
         train_loss = running_loss / len(train_loader)
         
@@ -211,7 +219,8 @@ if __name__ == "__main__":
         "kld_weight": 0.01,
         "vae_num_heads": 2,
         "vae_latent_dim": 8,
-        "vae_dropout_rate": 0.3
+        "vae_dropout_rate": 0.3,
+        "accum_steps": args.accum_steps
     })
 
     # Load Bavaria 1M points for VAE training
@@ -223,7 +232,7 @@ if __name__ == "__main__":
 
     logger.info("Initializing VAE dataset...")
     train_dataset = MultiRasterDataset1MilMultiYears(samples_coordinates_array_path_1mil, data_array_path_1mil, train_dataset_df_full_1mil)
-    train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True, num_workers=4)  # Added num_workers
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
     logger.info(f"VAE DataLoader created with {len(train_loader)} batches.")
 
     # Test a single batch to check data loading
@@ -250,7 +259,8 @@ if __name__ == "__main__":
         vae_model.load_state_dict(torch.load(args.load_vae, map_location=accelerator.device))
     else:
         logger.info("Starting VAE training...")
-        vae_model = train_vae(vae_model, train_loader, num_epochs=NUM_EPOCH_VAE_TRAINING, accelerator=accelerator)
+        vae_model = train_vae(vae_model, train_loader, num_epochs=NUM_EPOCH_VAE_TRAINING, 
+                            accelerator=accelerator, accum_steps=args.accum_steps)
         if accelerator.is_main_process:
             vae_path = f'vae_transformer_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}.pth'
             accelerator.save(vae_model.state_dict(), vae_path)
@@ -261,7 +271,7 @@ if __name__ == "__main__":
 
     wandb.finish()
 
-    # MLP Training (unchanged for brevity)
+    # MLP Training
     wandb.init(project="socmapping-VAETransformer-MLPRegressor", config={
         "max_oc": MAX_OC,
         "time_beginning": TIME_BEGINNING,
@@ -272,7 +282,8 @@ if __name__ == "__main__":
         "mlp_epochs": NUM_EPOCH_MLP_TRAINING,
         "mlp_lr": 0.001,
         "mlp_hidden_dim": 32,
-        "vae_latent_dim": 8
+        "vae_latent_dim": 8,
+        "accum_steps": args.accum_steps
     })
 
     df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
@@ -293,7 +304,9 @@ if __name__ == "__main__":
         print(f"Validation set size: {len(val_df)}")
 
     mlp_model = MLPRegressor(input_dim=8).to(accelerator.device)
-    mlp_model = train_mlp(vae_model, mlp_model, train_loader, val_loader, num_epochs=NUM_EPOCH_MLP_TRAINING, accelerator=accelerator)
+    mlp_model = train_mlp(vae_model, mlp_model, train_loader, val_loader, 
+                         num_epochs=NUM_EPOCH_MLP_TRAINING, accelerator=accelerator, 
+                         accum_steps=args.accum_steps)
 
     if accelerator.is_main_process:
         mlp_path = f'mlp_regressor_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}.pth'
