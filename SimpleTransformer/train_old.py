@@ -64,72 +64,48 @@ def parse_args():
     parser.add_argument('--num_heads', type=int, default=8, help='Number of attention heads')
     parser.add_argument('--num_layers', type=int, default=2, help='Number of transformer layers')
     parser.add_argument('--loss_alpha', type=float, default=0.5, help='Weight for L1 loss in composite loss')
-    parser.add_argument('--use_validation', action='store_true', default=False, help='Whether to use validation set')
     return parser.parse_args()
 
-def create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=True):
-    """
-    Create a balanced dataset by binning OC values and resampling.
-    If use_validation is True, splits into training and validation sets.
-    If use_validation is False, returns only a balanced training set.
-    """
+def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
+    """Create a balanced dataset by binning OC values and resampling"""
     bins = pd.qcut(df['OC'], q=n_bins, labels=False, duplicates='drop')
     df['bin'] = bins
     bin_counts = df['bin'].value_counts()
     max_samples = bin_counts.max()
     min_samples = max(int(max_samples * min_ratio), 5)
     
+    validation_indices = []
     training_dfs = []
     
-    if use_validation:
-        validation_indices = []
-        
-        for bin_idx in range(len(bin_counts)):
-            bin_data = df[df['bin'] == bin_idx]
-            if len(bin_data) >= 4:
-                val_samples = bin_data.sample(n=min(8, len(bin_data)))
-                validation_indices.extend(val_samples.index)
-                train_samples = bin_data.drop(val_samples.index)
-                if len(train_samples) > 0:
-                    if len(train_samples) < min_samples:
-                        resampled = train_samples.sample(n=min_samples, replace=True)
-                        training_dfs.append(resampled)
-                    else:
-                        training_dfs.append(train_samples)
-        
-        if not training_dfs or not validation_indices:
-            raise ValueError("No training or validation data available after binning")
-        
-        training_df = pd.concat(training_dfs).drop('bin', axis=1)
-        validation_df = df.loc[validation_indices].drop('bin', axis=1)
-        return training_df, validation_df
-    
-    else:
-        for bin_idx in range(len(bin_counts)):
-            bin_data = df[df['bin'] == bin_idx]
-            if len(bin_data) > 0:
-                if len(bin_data) < min_samples:
-                    resampled = bin_data.sample(n=min_samples, replace=True)
+    for bin_idx in range(len(bin_counts)):
+        bin_data = df[df['bin'] == bin_idx]
+        if len(bin_data) >= 4:
+            val_samples = bin_data.sample(n=min(8, len(bin_data)))
+            validation_indices.extend(val_samples.index)
+            train_samples = bin_data.drop(val_samples.index)
+            if len(train_samples) > 0:
+                if len(train_samples) < min_samples:
+                    resampled = train_samples.sample(n=min_samples, replace=True)
                     training_dfs.append(resampled)
                 else:
-                    training_dfs.append(bin_data)
-        
-        if not training_dfs:
-            raise ValueError("No training data available after binning")
-        
-        training_df = pd.concat(training_dfs).drop('bin', axis=1)
-        return training_df
+                    training_dfs.append(train_samples)
+    
+    if not training_dfs or not validation_indices:
+        raise ValueError("No training or validation data available after binning")
+    
+    training_df = pd.concat(training_dfs).drop('bin', axis=1)
+    validation_df = df.loc[validation_indices].drop('bin', axis=1)
+    
+    return training_df, validation_df
 
-def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelerator=None, lr=0.001, 
-                loss_alpha=0.6, min_r2=0.5, use_validation=True):
+def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelerator=None, lr=0.001, loss_alpha=0.6, min_r2=0.5):
     criterion = lambda outputs, targets: composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=loss_alpha)
     optimizer = optim.Adam(model.parameters(), lr=lr)
     
-    # Prepare with None for val_loader if not using validation
-    train_loader, model, optimizer = accelerator.prepare(train_loader, model, optimizer)
-    if use_validation and val_loader is not None:
-        val_loader = accelerator.prepare(val_loader)
-    
+    train_loader, val_loader, model, optimizer = accelerator.prepare(
+        train_loader, val_loader, model, optimizer
+    )
+
     best_r2 = -float('inf')
     best_model_state = None
     
@@ -158,40 +134,30 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
 
         train_loss = running_loss / len(train_loader)
         
-        if use_validation and val_loader is not None:
-            model.eval()
-            val_loss = 0.0
-            val_outputs = []
-            val_targets_list = []
-            
-            with torch.no_grad():
-                for longitudes, latitudes, features, targets in val_loader:
-                    features = features.to(accelerator.device)
-                    targets = targets.to(accelerator.device).float()
-                    outputs = model(features)
-                    loss = criterion(outputs, targets)
-                    val_loss += loss.item()
-                    val_outputs.extend(outputs.cpu().numpy())
-                    val_targets_list.extend(targets.cpu().numpy())
-            
-            val_loss = val_loss / len(val_loader)
-            val_outputs = np.array(val_outputs)
-            val_targets_list = np.array(val_targets_list)
-            correlation = np.corrcoef(val_outputs, val_targets_list)[0, 1]
-            r_squared = correlation ** 2
-            mse = np.mean((val_outputs - val_targets_list) ** 2)
-            rmse = np.sqrt(mse)
-            mae = np.mean(np.abs(val_outputs - val_targets_list))
-        else:
-            # Default values when no validation
-            val_loss = 1.0
-            val_outputs = np.array([])
-            val_targets_list = np.array([])
-            correlation = 1.0
-            r_squared = 1.0
-            mse = 1.0
-            rmse = 1.0
-            mae = 1.0
+        model.eval()
+        val_loss = 0.0
+        val_outputs = []
+        val_targets_list = []
+        
+        with torch.no_grad():
+            for longitudes, latitudes, features, targets in val_loader:
+                features = features.to(accelerator.device)
+                targets = targets.to(accelerator.device).float()
+                outputs = model(features)
+                loss = criterion(outputs, targets)
+                val_loss += loss.item()
+                val_outputs.extend(outputs.cpu().numpy())
+                val_targets_list.extend(targets.cpu().numpy())
+        
+        val_loss = val_loss / len(val_loader)
+        
+        val_outputs = np.array(val_outputs)
+        val_targets_list = np.array(val_targets_list)
+        correlation = np.corrcoef(val_outputs, val_targets_list)[0, 1]
+        r_squared = correlation ** 2
+        mse = np.mean((val_outputs - val_targets_list) ** 2)
+        rmse = np.sqrt(mse)
+        mae = np.mean(np.abs(val_outputs - val_targets_list))
 
         if accelerator.is_main_process:
             wandb.log({
@@ -205,22 +171,16 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
                 'mae': mae
             })
 
-            # Save model if it has the best R² and meets minimum threshold (only with validation)
-            if use_validation and r_squared > best_r2 and r_squared >= min_r2:
+            # Save model if it has the best R² and meets minimum threshold
+            if r_squared > best_r2 and r_squared >= min_r2:
                 best_r2 = r_squared
-                best_model_state = model.state_dict()
-                wandb.run.summary['best_r2'] = best_r2
-            elif not use_validation and epoch == num_epochs - 1:
-                # Save last model when no validation
-                best_r2 = 1.0
                 best_model_state = model.state_dict()
                 wandb.run.summary['best_r2'] = best_r2
         
         accelerator.print(f'Epoch {epoch+1}:')
         accelerator.print(f'Training Loss: {train_loss:.4f}')
         accelerator.print(f'Validation Loss: {val_loss:.4f}')
-        if use_validation:
-            accelerator.print(f'R²: {r_squared:.4f}\n')
+        accelerator.print(f'R²: {r_squared:.4f}\n')
 
     return model, val_outputs, val_targets_list, best_model_state, best_r2
 
@@ -243,8 +203,7 @@ if __name__ == "__main__":
             "num_heads": args.num_heads,
             "num_layers": args.num_layers,
             "dropout_rate": 0.3,
-            "loss_alpha": args.loss_alpha,
-            "use_validation": args.use_validation
+            "loss_alpha": args.loss_alpha
         }
     )
 
@@ -263,28 +222,17 @@ if __name__ == "__main__":
     samples_coordinates_array_path = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path)))
     data_array_path = list(dict.fromkeys(flatten_paths(data_array_path)))
 
-    if args.use_validation:
-        train_df, val_df = create_balanced_dataset(df, use_validation=True)
-        train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
-        val_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df)
-        # Print lengths
-        if accelerator.is_main_process:
-            print(f"Length of train_dataset: {len(train_dataset)}")
-            print(f"Length of val_dataset: {len(val_dataset)}")
-        train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
-        val_loader = DataLoader(val_dataset, batch_size=256, shuffle=False)
-    else:
-        train_df = create_balanced_dataset(df, use_validation=False)
-        train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
-        # Print length
-        if accelerator.is_main_process:
-            print(f"Length of train_dataset: {len(train_dataset)}")
-        train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
-        val_loader = None
-
+    train_df, val_df = create_balanced_dataset(df)
+    
     if accelerator.is_main_process:
         wandb.run.summary["train_size"] = len(train_df)
-        wandb.run.summary["val_size"] = len(val_df) if args.use_validation else 0
+        wandb.run.summary["val_size"] = len(val_df)
+
+    train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
+    val_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df)
+
+    train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=256, shuffle=False)
 
     for batch in train_loader:
         _, _, first_batch, _ = batch
@@ -315,8 +263,7 @@ if __name__ == "__main__":
         accelerator=accelerator,
         lr=args.lr,
         loss_alpha=args.loss_alpha,
-        min_r2=0.5,
-        use_validation=args.use_validation
+        min_r2=0.5  # Set minimum R² threshold here
     )
 
     if accelerator.is_main_process and best_model_state is not None:

@@ -13,7 +13,7 @@ TIME_END = '2023'
 INFERENCE_TIME = '2015'
 bands_list_order = ['Elevation','LAI','LST','MODIS_NPP','SoilEvaporation','TotalEvapotranspiration']
 MAX_OC = 160
-num_epochs = 1000
+num_epochs = 100
 
 
 def generate_seasonal_list():

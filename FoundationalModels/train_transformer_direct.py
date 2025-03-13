@@ -43,7 +43,7 @@ def parse_args():
     parser.add_argument('--batch_size', default=64, type=int, help='Batch size for dataloader')
     parser.add_argument('--output_dir', default='/fast/vfourel/SOCProject', type=str,
                         help='Base folder for saving model checkpoints')
-    parser.add_argument('--epochs', default=20, type=int, help='Number of training epochs')
+    parser.add_argument('--epochs', default=100, type=int, help='Number of training epochs')
     parser.add_argument('--lr', default=1e-4, type=float, help='Learning rate for Transformer')
     parser.add_argument('--accum_steps', default=8, type=int, help='Gradient accumulation steps')
     return parser.parse_args()
