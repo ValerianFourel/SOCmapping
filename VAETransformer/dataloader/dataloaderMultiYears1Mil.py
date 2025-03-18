@@ -8,7 +8,6 @@ import glob
 import pandas as pd
 from config import bands_list_order, time_before, LOADING_TIME_BEGINNING, window_size
 
-
 class RasterTensorDataset(Dataset):
     def __init__(self, base_path):
         self.folder_path = base_path
@@ -43,7 +42,7 @@ class RasterTensorDataset(Dataset):
     def get_metadata(self, id_num):
         if id_num not in self.id_to_file:
             raise ValueError(f"ID {id_num} not found")
-        filename = self.id_to_file[id_num].name
+        filename = Path(self.id_to_file[id_num]).name
         pattern = r'ID(\d+)N(\d+\.\d+)S(\d+\.\d+)W(\d+\.\d+)E(\d+\.\d+)'
         match = re.search(pattern, filename)
         if match:
@@ -111,6 +110,8 @@ class MultiRasterDataset1MilMultiYears(Dataset):
         filtered_array = self.filter_by_season_or_year(row.get('season', ''), row.get('year', ''), self.seasonalityBased)
 
         band_tensors = {band: [None] * self.time_before for band in bands_list_order}
+        # Initialize encoding tensor with -1 (invalid year)
+        encoding = torch.full((len(bands_list_order), self.time_before), -1, dtype=torch.long)
 
         for subfolder in filtered_array:
             subfolder_key = self.get_last_three_folders(subfolder)
@@ -120,6 +121,7 @@ class MultiRasterDataset1MilMultiYears(Dataset):
                 if elevation_tensor is not None:
                     for t in range(self.time_before):
                         band_tensors['Elevation'][t] = elevation_tensor
+                        encoding[bands_list_order.index('Elevation'), t] = 0  # Elevation has no year
             else:
                 year = int(subfolder_key.split(os.path.sep)[-1])
                 for decrement in range(self.time_before):
@@ -130,7 +132,9 @@ class MultiRasterDataset1MilMultiYears(Dataset):
                         tensor = self.datasets[decremented_subfolder].get_tensor_by_location(id_num, x, y)
                         if tensor is not None:
                             band = subfolder_key.split(os.path.sep)[-2]
+                            band_idx = bands_list_order.index(band)
                             band_tensors[band][decrement] = tensor
+                            encoding[band_idx, decrement] = current_year
 
         stacked_tensors = []
         for band in bands_list_order:
@@ -143,7 +147,7 @@ class MultiRasterDataset1MilMultiYears(Dataset):
         final_tensor = torch.stack(stacked_tensors)
         final_tensor = final_tensor.permute(0, 2, 3, 1)
 
-        return longitude, latitude, final_tensor
+        return longitude, latitude, final_tensor, encoding
 
     def __len__(self):
         return len(self.dataframe)

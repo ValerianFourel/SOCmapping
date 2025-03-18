@@ -11,12 +11,12 @@ def count_parameters(model):
 def main():
     # Model configuration matching your training script
     vae_model = TransformerVAE(
-        input_channels=len(bands_list_order),  # Number of bands
+        input_channels=1,  # Number of bands
         input_height=window_size,              # Spatial height
         input_width=window_size,               # Spatial width
         input_time=time_before,                # Temporal dimension
-        num_heads=2,                           # Number of attention heads
-        latent_dim=8,                          # Latent dimension size
+        num_heads=16,                           # Number of attention heads
+        latent_dim=24,                          # Latent dimension size
         dropout_rate=0.3                       # Dropout rate
     )
 

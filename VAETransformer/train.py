@@ -24,42 +24,48 @@ logger = logging.getLogger(__name__)
 
 # Fixed hyperparameters
 VAE_LR = 0.001
-VAE_KLD_WEIGHT = 0.1  # Boosted from 0.01 to 0.1
+VAE_KLD_WEIGHT = 0.1
 VAE_NUM_HEADS = 2
 VAE_LATENT_DIM = 128
 VAE_DROPOUT_RATE = 0.3
-VAE_BATCH_SIZE = 8
-VAE_ALPHA = 0.5  # For composite MSE-L1 loss
+VAE_BATCH_SIZE = 256
+VAE_ALPHA = 0.5
 MLP_LR = 0.002
 MLP_HIDDEN_DIM = 32
 MLP_BATCH_SIZE = 256
-ACCUM_STEPS = 64
+ACCUM_STEPS = 4
 
-# New composite MSE-L1 loss
+# New composite MSE-L1 loss with NaN handling
 def composite_mse_l1_loss(outputs, targets, alpha=VAE_ALPHA):
-    """Composite loss combining MSE and L1 loss."""
+    """Composite loss combining MSE and L1 loss, normalized by number of elements, with NaN handling."""
+    # Replace NaNs with 0
+    outputs = torch.nan_to_num(outputs, nan=0.0)
+    targets = torch.nan_to_num(targets, nan=0.0)
     # Compute MSE loss
     mse_loss = torch.mean((targets - outputs) ** 2)
-    
     # Compute L1 loss
     l1_loss = torch.mean(torch.abs(targets - outputs))
-    
     # Combine losses with alpha weighting
-    return alpha * mse_loss + (1 - alpha) * l1_loss
+    composite_loss = alpha * mse_loss + (1 - alpha) * l1_loss
+    # Normalize by the number of elements in the feature tensor
+    num_elements = torch.numel(targets) / targets.size(0)  # Per sample
+    return composite_loss * 1e1 / num_elements  # Scale to thousands
 
-# Define the NormalizedMultiRasterDatasetMultiYears class (unchanged)
+# Define the NormalizedMultiRasterDatasetMultiYears class with NaN handling
 class NormalizedMultiRasterDatasetMultiYears(MultiRasterDatasetMultiYears):
-    """Wrapper around MultiRasterDatasetMultiYears that adds feature normalization"""
+    """Wrapper around MultiRasterDatasetMultiYears that adds feature normalization and NaN handling"""
     def __init__(self, samples_coordinates_array_path, data_array_path, df):
         super().__init__(samples_coordinates_array_path, data_array_path, df)
         self.compute_statistics()
         
     def compute_statistics(self):
-        """Compute mean and std across all features for normalization"""
+        """Compute mean and std across all features for normalization, handling NaNs"""
         features_list = []
         for i in range(len(self)):
             _, _, features, _ = super().__getitem__(i)
-            features_list.append(features.numpy())
+            # Replace NaNs with 0 before computing statistics
+            features = np.nan_to_num(features.numpy(), nan=0.0)
+            features_list.append(features)
         features_array = np.stack(features_list)
         self.feature_means = torch.tensor(np.mean(features_array, axis=(0, 2, 3)), dtype=torch.float32)
         self.feature_stds = torch.tensor(np.std(features_array, axis=(0, 2, 3)), dtype=torch.float32)
@@ -67,7 +73,13 @@ class NormalizedMultiRasterDatasetMultiYears(MultiRasterDatasetMultiYears):
         
     def __getitem__(self, idx):
         longitude, latitude, features, target = super().__getitem__(idx)
+        # Replace NaNs with 0
+        features = torch.nan_to_num(features, nan=0.0)
+        target = torch.nan_to_num(target, nan=0.0)
+        # Normalize features
         features = (features - self.feature_means[:, None, None]) / self.feature_stds[:, None, None]
+        # Clamp to avoid extreme values
+        features = torch.clamp(features, min=-1.0, max=1.0)
         return longitude, latitude, features, target
 
 def parse_args():
@@ -77,6 +89,8 @@ def parse_args():
 
 def create_balanced_dataset(df, n_bins=128, min_ratio=0.75):
     logger.info("Creating balanced dataset...")
+    # Replace NaNs in 'OC' with 0
+    df['OC'] = df['OC'].fillna(0.0)
     bins = pd.qcut(df['OC'], q=n_bins, labels=False, duplicates='drop')
     df['bin'] = bins
     bin_counts = df['bin'].value_counts()
@@ -123,14 +137,24 @@ def train_vae(model, train_loader, num_epochs, accelerator):
         logger.info(f"Starting VAE Epoch {epoch+1}/{num_epochs}")
         optimizer.zero_grad()
         
-        for batch_idx, (longitudes, latitudes, features) in enumerate(tqdm(train_loader, desc=f'VAE Epoch {epoch+1}')):
+        for batch_idx, (longitudes, latitudes, features,encoding) in enumerate(tqdm(train_loader, desc=f'VAE Epoch {epoch+1}')):
             logger.debug(f"Processing batch {batch_idx+1}/{len(train_loader)}")
-            features = features.to(accelerator.device)
+            features = torch.nan_to_num(features.to(accelerator.device), nan=0.0)
             
             with accelerator.accumulate(model):
+                print(encoding)
                 reconstruction, mu, log_var = model(features)
                 recon_loss = composite_mse_l1_loss(reconstruction, features, alpha=VAE_ALPHA)
+                
+                # Stabilize mu and log_var
+                mu = torch.clamp(mu, -100, 100)  # Prevent extreme values
+                log_var = torch.clamp(log_var, -20, 20)  # Prevent exp() from overflowing
+                
+                # Calculate KLD with NaN handling
                 kld_loss = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp())
+                kld_loss = torch.nan_to_num(kld_loss, nan=0.0)  # Replace NaN with 0
+                kld_loss = kld_loss / VAE_LATENT_DIM * 1e2  # Normalize and scale
+                
                 loss = recon_loss + VAE_KLD_WEIGHT * kld_loss
                 
                 accelerator.backward(loss)
@@ -142,6 +166,10 @@ def train_vae(model, train_loader, num_epochs, accelerator):
                 running_loss += loss.item()
                 running_recon_loss += recon_loss.item()
                 running_kld_loss += kld_loss.item()
+                
+                # Debug logging to monitor mu and log_var
+                if batch_idx % 10 == 0:
+                    logger.debug(f"Batch {batch_idx+1} - mu: {mu.mean().item():.4f}, log_var: {log_var.mean().item():.4f}")
                 
                 if accelerator.is_main_process and batch_idx % 10 == 0:
                     wandb.log({
@@ -183,8 +211,8 @@ def train_mlp(vae_model, mlp_model, train_loader, val_loader, num_epochs, accele
         optimizer.zero_grad()
         
         for batch_idx, (longitudes, latitudes, features, targets) in enumerate(tqdm(train_loader, desc=f'MLP Epoch {epoch+1}')):
-            features = features.to(accelerator.device)
-            targets = targets.to(accelerator.device).float()
+            features = torch.nan_to_num(features.to(accelerator.device), nan=0.0)
+            targets = torch.nan_to_num(targets.to(accelerator.device), nan=0.0).float()
             
             with accelerator.accumulate(mlp_model):
                 with torch.no_grad():
@@ -213,8 +241,8 @@ def train_mlp(vae_model, mlp_model, train_loader, val_loader, num_epochs, accele
         val_loss = 0.0
         with torch.no_grad():
             for longitudes, latitudes, features, targets in val_loader:
-                features = features.to(accelerator.device)
-                targets = targets.to(accelerator.device).float()
+                features = torch.nan_to_num(features.to(accelerator.device), nan=0.0)
+                targets = torch.nan_to_num(targets.to(accelerator.device), nan=0.0).float()
                 _, mu, _ = vae_model(features)
                 outputs = mlp_model(mu)
                 val_loss += criterion(outputs.squeeze(), targets).item()
@@ -270,7 +298,7 @@ if __name__ == "__main__":
     })
 
     logger.info("Loading Bavaria 1M dataset...")
-    train_dataset_df_full_1mil = pd.read_csv(file_path_coordinates_Bavaria_1mil)
+    train_dataset_df_full_1mil = pd.read_csv(file_path_coordinates_Bavaria_1mil).fillna(0.0)  # Replace NaNs with 0
     samples_coordinates_array_path_1mil, data_array_path_1mil = separate_and_add_data_1mil()
     samples_coordinates_array_path_1mil = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path_1mil)))
     data_array_path_1mil = list(dict.fromkeys(flatten_paths(data_array_path_1mil)))
@@ -283,6 +311,7 @@ if __name__ == "__main__":
     logger.info("Testing data loading with one batch...")
     for batch in train_loader:
         longitudes, latitudes, features = batch
+        features = torch.nan_to_num(features, nan=0.0)  # Ensure no NaNs in test batch
         logger.info(f"Batch loaded - Features shape: {features.shape}")
         break
 
@@ -330,7 +359,7 @@ if __name__ == "__main__":
         "accum_steps": ACCUM_STEPS
     })
 
-    df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
+    df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC).fillna(0.0)  # Replace NaNs with 0
     samples_coordinates_array_path, data_array_path = separate_and_add_data()
     samples_coordinates_array_path = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path)))
     data_array_path = list(dict.fromkeys(flatten_paths(data_array_path)))
