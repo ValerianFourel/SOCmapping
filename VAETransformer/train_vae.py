@@ -21,7 +21,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Fixed hyperparameters
-VAE_LR = 0.001
+BASE_VAE_LR = 0.001  # Base learning rate
 VAE_KLD_WEIGHT = 0.1
 VAE_NUM_HEADS = 16
 VAE_LATENT_DIM = 24
@@ -52,12 +52,46 @@ def parse_args():
     parser.add_argument('--load_vae', type=str, default=None, help='Path to pre-trained VAE model (optional)')
     return parser.parse_args()
 
+def compute_adaptive_learning_rates(model, dataset, device):
+    """Compute adaptive learning rates based on initial loss magnitudes for each band."""
+    model.eval()
+    dataloader = DataLoader(dataset, batch_size=VAE_BATCH_SIZE, shuffle=False, num_workers=4)
+    initial_losses = {band: 0.0 for band in bands_list_order}
+    num_batches = min(10, len(dataloader))  # Use first 10 batches or less
+
+    with torch.no_grad():
+        for batch_idx, (longitudes, latitudes, features, encoding) in enumerate(dataloader):
+            if batch_idx >= num_batches:
+                break
+            features = torch.nan_to_num(features.to(device), nan=0.0)
+            
+            for band_idx in range(len(bands_list_order)):
+                band_features = features[:, band_idx:band_idx+1, :, :, :]
+                recon, mu, log_var = model(band_features, band_idx)
+                _, recon_loss, _ = vae_loss(recon, band_features, mu, log_var)
+                initial_losses[bands_list_order[band_idx]] += recon_loss.item()
+    
+    # Average initial losses
+    for band in bands_list_order:
+        initial_losses[band] /= num_batches
+    
+    # Normalize losses and compute adaptive learning rates
+    max_loss = max(initial_losses.values())
+    adaptive_lrs = {band: BASE_VAE_LR * (max_loss / (initial_losses[band] + 1e-8)) for band in bands_list_order}
+    logger.info(f"Adaptive learning rates: {adaptive_lrs}")
+    return adaptive_lrs
+
 def train_vae(model, train_loader, num_epochs, accelerator):
-    optimizer = optim.Adam(model.parameters(), lr=VAE_LR)
+    optimizer = optim.Adam(model.parameters(), lr=BASE_VAE_LR)  # Use base LR initially
     
     logger.info("Preparing VAE training with Accelerator...")
     train_loader, model, optimizer = accelerator.prepare(train_loader, model, optimizer)
     logger.info(f"Training on {len(train_loader)} batches per epoch with {ACCUM_STEPS} accumulation steps.")
+
+    # Compute adaptive learning rates
+    adaptive_lrs = compute_adaptive_learning_rates(model, train_loader.dataset, accelerator.device)
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = sum(adaptive_lrs.values()) / len(adaptive_lrs)  # Initial average LR
 
     for epoch in range(num_epochs):
         model.train()
@@ -69,8 +103,8 @@ def train_vae(model, train_loader, num_epochs, accelerator):
         
         for batch_idx, (longitudes, latitudes, features, encoding) in enumerate(tqdm(train_loader, desc=f'VAE Epoch {epoch+1}')):
             logger.debug(f"Processing batch {batch_idx+1}/{len(train_loader)}")
-            features = torch.nan_to_num(features.to(accelerator.device), nan=0.0)  # [256, 6, 33, 33, 5]
-            encoding = encoding.to(accelerator.device)  # [256, 6, 5]
+            features = torch.nan_to_num(features.to(accelerator.device), nan=0.0)  # [128, 6, 33, 33, 5]
+            encoding = encoding.to(accelerator.device)  # [128, 6, 5]
             
             optimizer.zero_grad()
             
@@ -82,7 +116,7 @@ def train_vae(model, train_loader, num_epochs, accelerator):
             with accelerator.accumulate(model):
                 for band_idx in range(len(bands_list_order)):
                     # Select only the current band's data
-                    band_features = features[:, band_idx:band_idx+1, :, :, :]  # [256, 1, 33, 33, 5]
+                    band_features = features[:, band_idx:band_idx+1, :, :, :]  # [128, 1, 33, 33, 5]
                     
                     recon, mu, log_var = model(band_features, band_idx)
                     loss, recon_loss, kld_loss = vae_loss(recon, band_features, mu, log_var)
@@ -153,7 +187,7 @@ if __name__ == "__main__":
         "time_before": time_before,
         "bands": len(bands_list_order),
         "vae_epochs": NUM_EPOCH_VAE_TRAINING,
-        "vae_lr": VAE_LR,
+        "vae_lr": BASE_VAE_LR,
         "vae_kld_weight": VAE_KLD_WEIGHT,
         "vae_num_heads": VAE_NUM_HEADS,
         "vae_latent_dim": VAE_LATENT_DIM,
