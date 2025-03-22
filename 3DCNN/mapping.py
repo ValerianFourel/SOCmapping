@@ -8,7 +8,7 @@ from config import (base_path_data , file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC ,
                 TIME_BEGINNING , TIME_END , INFERENCE_TIME)
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataloader.dataloaderMapping import MultiRasterDatasetMapping
+from dataloader.dataloaderMapping import MultiRasterDataset1MilMultiYears
 from sklearn.utils import shuffle
 import copy
 from torch.utils.data import DataLoader, Subset
@@ -165,7 +165,7 @@ def create_prediction_visualizations(year,coordinates, predictions, save_path):
 
 def process_batch(df_chunk, model, bands_yearly, batch_size, device):
     model = model.to(device)
-    chunk_dataset = MultiRasterDatasetMapping(bands_yearly, df_chunk)
+    chunk_dataset = MultiRasterDataset1MilMultiYears(bands_yearly, df_chunk)
     chunk_dataloader = DataLoader(chunk_dataset, batch_size=batch_size, shuffle=True)
     
     chunk_coordinates = []
@@ -189,7 +189,7 @@ def process_batch(df_chunk, model, bands_yearly, batch_size, device):
 def parallel_predict(df_full, cnn_model, bands_yearly, batch_size=256):
     accelerator = Accelerator()
     print(bands_yearly)
-    dataset = MultiRasterDatasetMapping(bands_yearly, df_full)
+    dataset = MultiRasterDataset1MilMultiYears(bands_yearly, df_full)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
     cnn_model, dataloader = accelerator.prepare(cnn_model, dataloader)

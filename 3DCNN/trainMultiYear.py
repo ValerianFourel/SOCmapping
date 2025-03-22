@@ -4,7 +4,6 @@ import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
 from dataloader.dataloaderMultiYears import MultiRasterDatasetMultiYears 
-from dataloader.dataloaderMapping import MultiRasterDatasetMapping
 from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data
 import pandas as pd
 from tqdm import tqdm
