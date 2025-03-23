@@ -16,7 +16,7 @@ from IEEE_TPAMI_SpectralGPT.util.pos_embed import interpolate_pos_embed
 from IEEE_TPAMI_SpectralGPT.models_mae_spectral import MaskedAutoencoderViT
 from IEEE_TPAMI_SpectralGPT import models_vit_tensor
 from config import (
-    LOADING_TIME_BEGINNING, TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,
+    LOADING_TIME_BEGINNING, TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,num_epochs,
     seasons, years_padded, time_before, imageSize, bands_dict, SamplesCoordinates_Yearly,
     MatrixCoordinates_1mil_Yearly, DataYearly, SamplesCoordinates_Seasonally,
     bands_list_order, MatrixCoordinates_1mil_Seasonally, DataSeasonally,
@@ -43,7 +43,7 @@ def parse_args():
     parser.add_argument('--batch_size', default=64, type=int, help='Batch size for dataloader')
     parser.add_argument('--output_dir', default='/fast/vfourel/SOCProject', type=str,
                         help='Base folder for saving model checkpoints')
-    parser.add_argument('--epochs', default=100, type=int, help='Number of training epochs')
+    parser.add_argument('--epochs', default=num_epochs, type=int, help='Number of training epochs')
     parser.add_argument('--lr', default=1e-4, type=float, help='Learning rate for Transformer')
     parser.add_argument('--accum_steps', default=8, type=int, help='Gradient accumulation steps')
     return parser.parse_args()

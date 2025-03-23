@@ -6,35 +6,45 @@ import glob
 import pandas as pd
 from config import (
     bands_list_order, time_before, LOADING_TIME_BEGINNING, window_size,
-    TIME_BEGINNING, TIME_END, INFERENCE_TIME, seasons, years_padded, NUM_HEADS, NUM_LAYERS,
+    TIME_BEGINNING, TIME_END, INFERENCE_TIME, seasons, years_padded,
     save_path_predictions_plots, SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly,
     DataYearly, file_path_coordinates_Bavaria_1mil, SamplesCoordinates_Seasonally,
     MatrixCoordinates_1mil_Seasonally, DataSeasonally, file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC
 )
 from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data, separate_and_add_data_1mil_inference
-from dataloader.dataloaderMapping import MultiRasterDataset1MilMultiYears, NormalizedMultiRasterDataset1MilMultiYears
+from dataloader.dataloaderMapping import MultiRasterDataset1MilMultiYears
 from mapping import create_prediction_visualizations, parallel_predict
-from modelSimpleTransformer import SimpleTransformer
+from models import RefittedCovLSTM
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from accelerate import Accelerator
 
 
-# Load CNN model with Accelerator
-def load_cnn_model(model_path="/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/transformer_model_MAX_OC_160_TIME_BEGINNING_2007_TIME_END_2023_R2_0_5578.pth"):
+# Load CNN-LSTM model with Accelerator
+def load_cnn_model(model_path="/home/vfourel/SOCProject/SOCmapping/CNNLSTM/cnnlstm_model_MAX_OC_160_TIME_BEGINNING_2007_TIME_END_2023.pth"):
     accelerator = Accelerator()  # Initialize Accelerator
     device = accelerator.device  # Get the device (GPU or CPU) assigned to this process
     
-    model = SimpleTransformer(
-        input_channels=len(bands_list_order),
-        input_height=window_size,
-        input_width=window_size,
-        input_time=time_before,
-        num_heads=NUM_HEADS,
-        num_layers=NUM_LAYERS,
-        dropout_rate=0.3
+    model = RefittedCovLSTM(
+        num_channels=len(bands_list_order),  # Must match training (e.g., 6)
+        lstm_input_size=128,  # Fixed by CNN output, must match training
+        lstm_hidden_size=128,  # Must match training
+        num_layers=2,         # Must match training
+        dropout=0.25          # Must match training
     )
-    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
+    
+    # Load the state dict and strip 'module.' prefix if present
+    try:
+        state_dict = torch.load(model_path, map_location=device, weights_only=False)
+        # Check if keys have 'module.' prefix and strip it
+        if any(k.startswith('module.') for k in state_dict.keys()):
+            state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+        model.load_state_dict(state_dict)
+    except Exception as e:
+        if accelerator.is_local_main_process:
+            print(f"Error loading model weights: {e}")
+        raise
+    
     model.eval()
     
     # Prepare model for distributed inference
@@ -51,7 +61,7 @@ def run_inference(model, dataloader, accelerator):
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Running Inference", disable=not accelerator.is_local_main_process):
             longitudes, latitudes, tensors = batch
-            tensors = tensors.to(accelerator.device)  # Move to the assigned device
+            tensors = tensors.to(accelerator.device)  # Shape: (batch_size, bands, window_size, window_size, time)
 
             # Run model inference
             outputs = model(tensors)  # Assuming model outputs a single value per sample
@@ -107,7 +117,7 @@ def main():
     data_array_path_1mil = list(dict.fromkeys(data_array_path_1mil))
 
     # Initialize dataset
-    inference_dataset = NormalizedMultiRasterDataset1MilMultiYears(
+    inference_dataset = MultiRasterDataset1MilMultiYears(
         samples_coordinates_array_subfolders=samples_coordinates_array_path_1mil,
         data_array_subfolders=data_array_path_1mil,
         dataframe=df_full,
@@ -117,17 +127,17 @@ def main():
     # Create DataLoader and prepare it for distributed inference
     inference_loader = DataLoader(
         inference_dataset,
-        batch_size=32,  # Kept as per your latest change
+        batch_size=256,
         shuffle=False,
         num_workers=4,
         pin_memory=True
     )
     inference_loader = accelerator.prepare(inference_loader)
 
-    # Load the CNN model
+    # Load the CNN-LSTM model
     cnn_model, device, accelerator = load_cnn_model()
     if accelerator.is_local_main_process:
-        print("Loaded CNN model:")
+        print("Loaded CNN-LSTM model:")
         print(cnn_model)
 
     # Run inference

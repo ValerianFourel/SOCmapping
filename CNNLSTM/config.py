@@ -11,9 +11,13 @@ TIME_BEGINNING = '2007'
 LOADING_TIME_BEGINNING = str(int(TIME_BEGINNING)-time_before)
 TIME_END = '2023'
 INFERENCE_TIME = '2015'
+LOADING_TIME_BEGINNING_INFERENCE = str(int(INFERENCE_TIME)-time_before)
+
 bands_list_order = ['Elevation','LAI','LST','MODIS_NPP','SoilEvaporation','TotalEvapotranspiration']
 MAX_OC = 160
 num_epochs = 100
+save_path_predictions_plots = '/home/vfourel/SOCProject/SOCmapping/predictions_plots/cnnlstm_plots'
+file_path_coordinates_Bavaria_1mil = "/home/vfourel/SOCProject/SOCmapping/Data/Coordinates1Mil/coordinates_Bavaria_1mil.csv"
 
 
 def generate_seasonal_list():

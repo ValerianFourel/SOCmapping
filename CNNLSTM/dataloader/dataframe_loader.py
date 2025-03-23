@@ -1,5 +1,5 @@
 
-from config import LOADING_TIME_BEGINNING, TIME_BEGINNING ,TIME_END , seasons, years_padded  , SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, DataYearly, SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, DataSeasonally ,file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC 
+from config import LOADING_TIME_BEGINNING, TIME_BEGINNING ,TIME_END , INFERENCE_TIME, LOADING_TIME_BEGINNING_INFERENCE, seasons, years_padded  , SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, DataYearly, SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, DataSeasonally ,file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC 
 import pandas as pd
 import numpy as np
 
@@ -254,3 +254,72 @@ def filter_dataframe(time_beginning, time_end, max_oc=150):
         print(f"OC range: {df['OC'].min()} to {df['OC'].max()}")
 
     return filtered_df
+
+
+def separate_and_add_data_1mil_inference(LOADING_TIME_BEGINNING=LOADING_TIME_BEGINNING_INFERENCE, TIME_END=INFERENCE_TIME, seasons=seasons, years_padded=years_padded, 
+                         SamplesCoordinates_Yearly=MatrixCoordinates_1mil_Yearly, DataYearly=DataYearly,
+                         SamplesCoordinates_Seasonally=MatrixCoordinates_1mil_Seasonally, DataSeasonally=DataSeasonally):
+
+    # Define seasons list for matching
+    seasons_list = ['winter', 'spring', 'summer', 'autumn']
+
+    # Check if LOADING_TIME_BEGINNING is a season
+    is_season = any(season in LOADING_TIME_BEGINNING.lower() for season in seasons_list)
+
+    if is_season:
+        # Handle seasons case
+        start_idx = next(i for i, season in enumerate(seasons) 
+                        if LOADING_TIME_BEGINNING.lower() in season.lower())
+        end_idx = next(i for i, season in enumerate(seasons) 
+                      if TIME_END.lower() in season.lower())
+
+        # Get the seasonal range
+        selected_seasons = seasons[start_idx:end_idx + 1]
+
+
+        # Add seasonal data pairs
+        return create_path_arrays(SamplesCoordinates_Seasonally, DataSeasonally, selected_seasons)
+    else:
+        start_idx = years_padded.index(LOADING_TIME_BEGINNING)
+        end_idx = years_padded.index(TIME_END)
+        selected_years = years_padded[start_idx:end_idx + 1]
+        return create_path_arrays_yearly(SamplesCoordinates_Yearly, DataYearly, selected_years)
+
+def add_season_column(dataframe):
+    seasons_months = {
+        'winter': [12, 1, 2],
+        'spring': [3, 4, 5],
+        'summer': [6, 7, 8],
+        'autumn': [9, 10, 11]
+    }
+
+    month_to_season = {
+        month: season
+        for season, months in seasons_months.items()
+        for month in months
+    }
+
+    dataframe['survey_date'] = pd.to_datetime(dataframe['survey_date'])
+
+    def get_season_year(row):
+        if pd.isna(row['survey_date']):
+            return None
+
+        month = row['survey_date'].month
+        year = row['survey_date'].year
+
+        if month == 12:
+            year += 1
+
+        season = month_to_season.get(month)
+        if season:
+            return f"{year}_{season}"
+        return None
+
+    valid_dates_mask = dataframe['survey_date'] >= '2000-01-01'
+    dataframe['season'] = None
+    dataframe.loc[valid_dates_mask, 'season'] = (
+        dataframe[valid_dates_mask].apply(get_season_year, axis=1)
+    )
+
+    return dataframe

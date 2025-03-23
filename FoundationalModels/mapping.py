@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-import xgboost as xgb
 import matplotlib.pyplot as plt
 from scipy.interpolate import griddata
 import geopandas as gpd

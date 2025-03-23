@@ -76,6 +76,9 @@ class MultiRasterDataset1MilMultiYears(Dataset):
                          for subfolder in self.data_array_subfolders}
         self.coordinates = {self.get_last_three_folders(subfolder): np.load(f"{subfolder}/coordinates.npy")
                             for subfolder in self.samples_coordinates_array_subfolders}
+        
+        # Compute normalization statistics over the full dataset
+        self.compute_statistics()
 
     def check_seasonality(self, data_array_subfolders):
         seasons = ['winter', 'spring', 'summer', 'autumn']
@@ -104,13 +107,27 @@ class MultiRasterDataset1MilMultiYears(Dataset):
                                  (not 'Elevation' in path and path.endswith(str(year)))]
         return filtered_array
 
-    def __getitem__(self, index):
+    def compute_statistics(self):
+        """Compute mean and std across all features for the full dataset"""
+        features_list = []
+        for i in range(len(self)):
+            longitude, latitude, final_tensor, _ = self._get_unnormalized_item(i)
+            features_list.append(final_tensor.numpy())
+        
+        # Stack all features into a single array
+        features_array = np.stack(features_list)  # Shape: (samples, bands, window_size, window_size, time_before)
+        # Compute mean and std over samples, height, and width for each band and time step
+        self.feature_means = torch.tensor(np.mean(features_array, axis=(0, 2, 3)), dtype=torch.float32)  # Shape: (bands, time_before)
+        self.feature_stds = torch.tensor(np.std(features_array, axis=(0, 2, 3)), dtype=torch.float32)    # Shape: (bands, time_before)
+        self.feature_stds = torch.clamp(self.feature_stds, min=1e-8)  # Avoid division by zero
+
+    def _get_unnormalized_item(self, index):
+        """Helper method to get unnormalized data for statistics computation"""
         row = self.dataframe.iloc[index]
         longitude, latitude = row["longitude"], row["latitude"]
         filtered_array = self.filter_by_season_or_year(row.get('season', ''), row.get('year', ''), self.seasonalityBased)
 
         band_tensors = {band: [None] * self.time_before for band in bands_list_order}
-        # Initialize encoding tensor with -1 (invalid year)
         encoding = torch.full((len(bands_list_order), self.time_before), -1, dtype=torch.long)
 
         for subfolder in filtered_array:
@@ -121,7 +138,7 @@ class MultiRasterDataset1MilMultiYears(Dataset):
                 if elevation_tensor is not None:
                     for t in range(self.time_before):
                         band_tensors['Elevation'][t] = elevation_tensor
-                        encoding[bands_list_order.index('Elevation'), t] = 0  # Elevation has no year
+                        encoding[bands_list_order.index('Elevation'), t] = 0
             else:
                 year = int(subfolder_key.split(os.path.sep)[-1])
                 for decrement in range(self.time_before):
@@ -147,6 +164,12 @@ class MultiRasterDataset1MilMultiYears(Dataset):
         final_tensor = torch.stack(stacked_tensors)
         final_tensor = final_tensor.permute(0, 2, 3, 1)
 
+        return longitude, latitude, final_tensor, encoding
+
+    def __getitem__(self, index):
+        longitude, latitude, final_tensor, encoding = self._get_unnormalized_item(index)
+        # Normalize the final tensor using precomputed statistics
+        final_tensor = (final_tensor - self.feature_means[:, None, None]) / self.feature_stds[:, None, None]
         return longitude, latitude, final_tensor, encoding
 
     def __len__(self):

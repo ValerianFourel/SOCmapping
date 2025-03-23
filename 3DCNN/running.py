@@ -21,7 +21,7 @@ from accelerate import Accelerator
 
 
 # Load CNN model with Accelerator
-def load_cnn_model(model_path="/home/vfourel/SOCProject/SOCmapping/3DCNN/cnn_model_MAX_OC_160_TIME_BEGINNING_2007_TIME_END_2023_4epochs.pth"):
+def load_cnn_model(model_path="/home/vfourel/SOCProject/SOCmapping/3DCNN/cnn_model_MAX_OC_160_TIME_BEGINNING_2007_TIME_END_2023.pth"):
     accelerator = Accelerator()  # Initialize Accelerator
     device = accelerator.device  # Get the device (GPU or CPU) assigned to this process
     
@@ -46,7 +46,6 @@ def run_inference(model, dataloader, accelerator):
     all_predictions = []
 
     with torch.no_grad():
-        # Use accelerator.print for synchronized printing across processes
         for batch in tqdm(dataloader, desc="Running Inference", disable=not accelerator.is_local_main_process):
             longitudes, latitudes, tensors = batch
             tensors = tensors.to(accelerator.device)  # Move to the assigned device
@@ -55,16 +54,16 @@ def run_inference(model, dataloader, accelerator):
             outputs = model(tensors)  # Assuming model outputs a single value per sample
             predictions = outputs.cpu().numpy()
 
-            # Store coordinates and predictions
-            coords = np.stack([longitudes.numpy(), latitudes.numpy()], axis=1)
+            # Store coordinates and predictions, ensuring tensors are moved to CPU
+            coords = np.stack([longitudes.cpu().numpy(), latitudes.cpu().numpy()], axis=1)
             all_coordinates.append(coords)
             all_predictions.append(predictions)
 
-    # Gather results from all GPUs
+    # Concatenate local results
     all_coordinates = np.concatenate(all_coordinates, axis=0) if all_coordinates else np.array([])
     all_predictions = np.concatenate(all_predictions, axis=0) if all_predictions else np.array([])
 
-    # Use accelerator.gather to collect results from all processes
+    # Gather results from all GPUs
     all_coordinates = accelerator.gather(torch.tensor(all_coordinates, device=accelerator.device)).cpu().numpy()
     all_predictions = accelerator.gather(torch.tensor(all_predictions, device=accelerator.device)).cpu().numpy()
 
@@ -84,23 +83,19 @@ def flatten_paths(path_list):
 def main():
     # Initialize Accelerator at the start of main
     accelerator = Accelerator()
-    
-    # Load the full inference dataframe (only on main process to avoid duplication)
-    if accelerator.is_local_main_process:
-        try:
-            df_full = pd.read_csv(file_path_coordinates_Bavaria_1mil)
+
+    # Load the full inference dataframe independently on each process
+    try:
+        df_full = pd.read_csv(file_path_coordinates_Bavaria_1mil)
+        if accelerator.is_local_main_process:
             print("Loaded inference dataframe:")
             print(df_full.head())
-        except Exception as e:
+    except Exception as e:
+        if accelerator.is_local_main_process:
             print(f"Error loading inference dataframe: {e}")
-            return
-    else:
-        df_full = None
-    
-    # Synchronize processes to ensure df_full is broadcasted or handled correctly
-    df_full = accelerator.broadcast_object(df_full) if df_full is not None else pd.read_csv(file_path_coordinates_Bavaria_1mil)
+        return
 
-    # Prepare data paths (can be done on all processes since it’s deterministic)
+    # Prepare data paths (deterministic, so can be done on all processes)
     samples_coordinates_array_path_1mil, data_array_path_1mil = separate_and_add_data_1mil_inference()
     samples_coordinates_array_path_1mil = flatten_paths(samples_coordinates_array_path_1mil)
     data_array_path_1mil = flatten_paths(data_array_path_1mil)
@@ -119,7 +114,7 @@ def main():
     # Create DataLoader and prepare it for distributed inference
     inference_loader = DataLoader(
         inference_dataset,
-        batch_size=256,
+        batch_size=32,  # Kept as per your latest change
         shuffle=False,
         num_workers=4,
         pin_memory=True

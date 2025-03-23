@@ -4,7 +4,7 @@ import xgboost as xgb
 import matplotlib.pyplot as plt
 from scipy.interpolate import griddata
 import geopandas as gpd
-from config import (base_path_data , file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC , MAX_OC , PICTURE_VERSION,
+from config import (base_path_data , file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC , MAX_OC ,
                 TIME_BEGINNING , TIME_END , INFERENCE_TIME)
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -79,7 +79,7 @@ def create_prediction_visualizations(year,coordinates, predictions, save_path):
 
     # Function to generate filename with timestamp
     def get_filename(base_name):
-        return f"{PICTURE_VERSION}_{base_name}_MAX_OC_{str(MAX_OC)}_Beginning_{TIME_BEGINNING}_End_{TIME_END}__InferenceTime{INFERENCE_TIME}_{timestamp}.png"
+        return f"{base_name}_MAX_OC_{str(MAX_OC)}_Beginning_{TIME_BEGINNING}_End_{TIME_END}__InferenceTime{INFERENCE_TIME}_{timestamp}.png"
 
     # 1. Interpolated surface
     fig_interp, ax_interp = plt.subplots(**plot_params)
@@ -89,7 +89,7 @@ def create_prediction_visualizations(year,coordinates, predictions, save_path):
                                 alpha=0.8)
     set_common_elements(ax_interp, 'Interpolated Predicted Values')
     plt.colorbar(contour, ax=ax_interp, label='Predicted Values')
-    plt.savefig(os.path.join(individual_path, get_filename(f'{year}_bavaria_interpolated_{PICTURE_VERSION}')), 
+    plt.savefig(os.path.join(individual_path, get_filename(f'{year}_bavaria_interpolated')), 
                 bbox_inches='tight')
     plt.close()
 
@@ -102,7 +102,7 @@ def create_prediction_visualizations(year,coordinates, predictions, save_path):
                                s=50)
     set_common_elements(ax_scatter, 'Scatter Plot of Predicted Values')
     plt.colorbar(scatter, ax=ax_scatter, label='Predicted Values')
-    plt.savefig(os.path.join(individual_path, get_filename(f'{year}_bavaria_scatter_{PICTURE_VERSION}')), 
+    plt.savefig(os.path.join(individual_path, get_filename(f'{year}_bavaria_scatter')), 
                 bbox_inches='tight')
     plt.close()
 
@@ -115,7 +115,7 @@ def create_prediction_visualizations(year,coordinates, predictions, save_path):
                                  s=20)
     set_common_elements(ax_discrete, 'Discrete Points of Predicted Values')
     plt.colorbar(discrete, ax=ax_discrete, label='Predicted Values')
-    plt.savefig(os.path.join(individual_path, get_filename(f'{year}_bavaria_discrete_{PICTURE_VERSION}')), 
+    plt.savefig(os.path.join(individual_path, get_filename(f'{year}_bavaria_discrete')), 
                 bbox_inches='tight')
     plt.close()
 

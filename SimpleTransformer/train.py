@@ -8,11 +8,10 @@ from tqdm import tqdm
 from pathlib import Path
 import wandb
 from accelerate import Accelerator
-from dataloader.dataloaderMultiYears import MultiRasterDatasetMultiYears 
-from dataloader.dataloaderMapping import MultiRasterDatasetMapping
+from dataloader.dataloaderMultiYears import MultiRasterDatasetMultiYears , NormalizedMultiRasterDatasetMultiYears
 from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data
 from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,
-                   seasons, years_padded, num_epochs,
+                   seasons, years_padded, num_epochs, NUM_HEADS, NUM_LAYERS, 
                    SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, 
                    DataYearly, SamplesCoordinates_Seasonally, bands_list_order,
                    MatrixCoordinates_1mil_Seasonally, DataSeasonally, window_size,
@@ -20,28 +19,6 @@ from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,
 from modelSimpleTransformer import SimpleTransformer
 import argparse
 
-class NormalizedMultiRasterDatasetMultiYears(MultiRasterDatasetMultiYears):
-    """Wrapper around MultiRasterDatasetMultiYears that adds feature normalization"""
-    def __init__(self, samples_coordinates_array_path, data_array_path, df):
-        super().__init__(samples_coordinates_array_path, data_array_path, df)
-        self.compute_statistics()
-        
-    def compute_statistics(self):
-        """Compute mean and std across all features for normalization"""
-        features_list = []
-        for i in range(len(self)):
-            _, _, features, _ = super().__getitem__(i)
-            features_list.append(features.numpy())
-            
-        features_array = np.stack(features_list)
-        self.feature_means = torch.tensor(np.mean(features_array, axis=(0, 2, 3)), dtype=torch.float32)
-        self.feature_stds = torch.tensor(np.std(features_array, axis=(0, 2, 3)), dtype=torch.float32)
-        self.feature_stds = torch.clamp(self.feature_stds, min=1e-8)
-        
-    def __getitem__(self, idx):
-        longitude, latitude, features, target = super().__getitem__(idx)
-        features = (features - self.feature_means[:, None, None]) / self.feature_stds[:, None, None]
-        return longitude, latitude, features, target
 
 def composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
     """Composite loss combining L1 and scaled chi-squared loss"""
@@ -61,8 +38,8 @@ def composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
 def parse_args():
     parser = argparse.ArgumentParser(description='Train SimpleTransformer model with customizable parameters')
     parser.add_argument('--lr', type=float, default=0.002, help='Learning rate')
-    parser.add_argument('--num_heads', type=int, default=8, help='Number of attention heads')
-    parser.add_argument('--num_layers', type=int, default=2, help='Number of transformer layers')
+    parser.add_argument('--num_heads', type=int, default=NUM_HEADS, help='Number of attention heads')
+    parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of transformer layers')
     parser.add_argument('--loss_alpha', type=float, default=0.5, help='Weight for L1 loss in composite loss')
     parser.add_argument('--use_validation', action='store_true', default=False, help='Whether to use validation set')
     return parser.parse_args()
