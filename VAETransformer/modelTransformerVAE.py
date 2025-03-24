@@ -4,10 +4,9 @@ import torch.nn.functional as F
 
 class TransformerVAE(nn.Module):
     def __init__(self, input_channels=1, input_height=33, input_width=33, input_time=5, 
-                 num_heads=2, latent_dim=4, dropout_rate=0.2, bands_list_order=None):
+                 num_heads=2, latent_dim=4, dropout_rate=0.2):
         super(TransformerVAE, self).__init__()
 
-        self.bands_list_order = bands_list_order or ['Elevation', 'LAI', 'LST', 'MODIS_NPP', 'SoilEvaporation', 'TotalEvapotranspiration']
         self.input_channels = input_channels  # Fixed to 1 for single band
         self.input_time = input_time
         self.input_height = input_height
@@ -17,8 +16,6 @@ class TransformerVAE(nn.Module):
         self.d_model = min(64, input_channels * input_height)
         if self.d_model % num_heads != 0:
             self.d_model = (self.d_model // num_heads + 1) * num_heads
-
-        self.input_shape = (input_channels, input_height, input_width)
 
         self.input_projection = nn.Linear(input_channels * input_height * input_width, self.d_model)
 
@@ -31,12 +28,8 @@ class TransformerVAE(nn.Module):
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=7)
 
         flat_size = self.d_model * input_time
-        self.fc_mu_layers = nn.ModuleDict({
-            band: nn.Linear(flat_size, latent_dim) for band in self.bands_list_order
-        })
-        self.fc_var_layers = nn.ModuleDict({
-            band: nn.Linear(flat_size, latent_dim) for band in self.bands_list_order
-        })
+        self.fc_mu = nn.Linear(flat_size, latent_dim)
+        self.fc_var = nn.Linear(flat_size, latent_dim)
 
         # Decoder with memory mechanism
         self.decoder_projection = nn.Linear(latent_dim, flat_size)
@@ -50,7 +43,7 @@ class TransformerVAE(nn.Module):
         
         self.output_projection = nn.Linear(self.d_model, input_channels * input_height * input_width)
 
-    def encode(self, x, band_idx):
+    def encode(self, x):
         batch_size, channels, height, width, time = x.size()  # [batch_size, 1, 33, 33, 5]
         
         x = x.permute(0, 4, 1, 2, 3)  # [batch, time, channels, height, width]
@@ -61,9 +54,8 @@ class TransformerVAE(nn.Module):
         memory = self.transformer_encoder(x)  # [time, batch, d_model]
         x = memory.transpose(0, 1).reshape(batch_size, -1)  # [batch, time*d_model]
 
-        band = self.bands_list_order[band_idx]
-        mu = self.fc_mu_layers[band](x)
-        log_var = self.fc_var_layers[band](x)
+        mu = self.fc_mu(x)
+        log_var = self.fc_var(x)
         return mu, log_var, memory
 
     def reparameterize(self, mu, log_var):
@@ -86,8 +78,8 @@ class TransformerVAE(nn.Module):
         x = x.view(batch_size, self.input_channels, self.input_height, self.input_width, self.input_time)
         return x
 
-    def forward(self, x, band_idx):
-        mu, log_var, memory = self.encode(x, band_idx)
+    def forward(self, x):
+        mu, log_var, memory = self.encode(x)
         z = self.reparameterize(mu, log_var)
         reconstruction = self.decode(z, memory)
         return reconstruction, mu, log_var

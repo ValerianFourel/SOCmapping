@@ -220,10 +220,14 @@ def main():
 
     # Prepare data paths
     samples_coordinates_array_path_1mil, data_array_path_1mil = separate_and_add_data_1mil_inference()
+    
     samples_coordinates_array_path_1mil = flatten_paths(samples_coordinates_array_path_1mil)
     data_array_path_1mil = flatten_paths(data_array_path_1mil)
     samples_coordinates_array_path_1mil = list(dict.fromkeys(samples_coordinates_array_path_1mil))
     data_array_path_1mil = list(dict.fromkeys(data_array_path_1mil))
+    # samples_coordinates_array_path_1mil = samples_coordinates_array_path_1mil[:13000]
+    # data_array_path_1mil= data_array_path_1mil[:13000]
+    # df_full = df_full[:13000]
 
     # Initialize dataset
     inference_dataset = MultiRasterDataset1MilMultiYears(

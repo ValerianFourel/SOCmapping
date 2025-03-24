@@ -5,6 +5,8 @@ import os
 import glob
 from config import bands_list_order, time_before, window_size
 import re
+from accelerate import Accelerator
+from torch.utils.data import DataLoader
 
 class RasterTensorDataset1Mil(Dataset):
     def __init__(self, base_path):
@@ -100,7 +102,6 @@ class MultiRasterDataset1MilMultiYears(Dataset):
         longitude, latitude = row["longitude"], row["latitude"]
         filtered_array = self.filter_by_season_or_year(row.get('season', ''), row.get('year', ''), self.seasonalityBased)
 
-        # Initialize band tensors dictionary
         band_tensors = {band: [] for band in bands_list_order}
 
         for subfolder in filtered_array:
@@ -121,29 +122,26 @@ class MultiRasterDataset1MilMultiYears(Dataset):
                         tensor = self.datasets[decremented_subfolder].get_tensor_by_location(id_num, x, y)
                         if tensor is not None:
                             band = subfolder_key.split(os.path.sep)[-2]
-                            if band in band_tensors:  # Ensure band is in bands_list_order
+                            if band in band_tensors:
                                 band_tensors[band].append(tensor)
 
-        # Stack tensors for each band, filling missing ones with zeros
         stacked_tensors = []
         for band in bands_list_order:
-            if not band_tensors[band]:  # If no tensors were added for this band
+            if not band_tensors[band]:
                 band_tensors[band] = [torch.zeros(window_size, window_size) for _ in range(self.time_before)]
-            elif len(band_tensors[band]) < self.time_before:  # Fill remaining time steps
+            elif len(band_tensors[band]) < self.time_before:
                 while len(band_tensors[band]) < self.time_before:
                     band_tensors[band].append(torch.zeros(window_size, window_size))
-            elif len(band_tensors[band]) > self.time_before:  # Truncate if too many
+            elif len(band_tensors[band]) > self.time_before:
                 band_tensors[band] = band_tensors[band][:self.time_before]
-            stacked_tensor = torch.stack(band_tensors[band])  # Shape: (time_before, window_size, window_size)
+            stacked_tensor = torch.stack(band_tensors[band])
             stacked_tensors.append(stacked_tensor)
 
-        # Ensure correct number of bands
         if len(stacked_tensors) != len(bands_list_order):
             raise ValueError(f"Expected {len(bands_list_order)} bands, but got {len(stacked_tensors)}")
 
-        final_tensor = torch.stack(stacked_tensors)  # Shape: (bands, time_before, window_size, window_size)
-        final_tensor = final_tensor.permute(0, 2, 3, 1)  # Shape: (bands, window_size, window_size, time_before)
-
+        final_tensor = torch.stack(stacked_tensors)
+        final_tensor = final_tensor.permute(0, 2, 3, 1)
         return longitude, latitude, final_tensor
 
     def __len__(self):
@@ -152,27 +150,16 @@ class MultiRasterDataset1MilMultiYears(Dataset):
     def get_tensor_by_location(self, subfolder, id_num, x, y):
         return self.datasets[subfolder].get_tensor_by_location(id_num, x, y)
 
-
 class NormalizedMultiRasterDataset1MilMultiYears(MultiRasterDataset1MilMultiYears):
-    """Wrapper around MultiRasterDataset1MilMultiYears that adds feature normalization"""
-    def __init__(self, samples_coordinates_array_subfolders, data_array_subfolders, dataframe, time_before=time_before):
-        super().__init__(samples_coordinates_array_subfolders, data_array_subfolders, dataframe, time_before)
-        self.compute_statistics()
+    """Wrapper around MultiRasterDatasetMultiYears that adds feature normalization"""
+    def __init__(self, samples_coordinates_array_path, data_array_path, df,feature_means,feature_stds,time_before):
+        super().__init__(samples_coordinates_array_path, data_array_path, df,time_before)
+        self.feature_means=feature_means
+        self.feature_stds=feature_stds
+        time_before=time_before
         
-    def compute_statistics(self):
-        """Compute mean and std across all features for normalization"""
-        features_list = []
-        for i in range(len(self)):
-            longitude, latitude, features = super().__getitem__(i)
-            features_list.append(features.numpy())
-            
-        features_array = np.stack(features_list)  # Shape: (samples, bands, window_size, window_size, time_before)
-        self.feature_means = torch.tensor(np.mean(features_array, axis=(0, 2, 3)), dtype=torch.float32)  # Mean over samples, height, width
-        self.feature_stds = torch.tensor(np.std(features_array, axis=(0, 2, 3)), dtype=torch.float32)    # Std over samples, height, width
-        self.feature_stds = torch.clamp(self.feature_stds, min=1e-8)  # Avoid division by zero
-        
+
     def __getitem__(self, idx):
         longitude, latitude, features = super().__getitem__(idx)
-        # Normalize features using precomputed mean and std
         features = (features - self.feature_means[:, None, None]) / self.feature_stds[:, None, None]
         return longitude, latitude, features

@@ -154,70 +154,65 @@ class MultiRasterDataset1MilMultiYears(Dataset):
         return filtered_array
 
     def __getitem__(self, index):
-        """
-        Retrieve tensor and metadata for a given index (inference mode).
-        Parameters:
-            index: int, index of the row in the dataframe
-        Returns:
-            tuple: (longitude, latitude, tensors_combined, indices_tensor)
-        """
+        # Get coordinates from dataframe
         row = self.dataframe.iloc[index]
         longitude, latitude = row["longitude"], row["latitude"]
+        
+        # Filter subfolders (this may need adjustment based on dataframe content)
         filtered_array = self.filter_by_season_or_year(row.get('season', ''), row.get('year', ''), self.seasonalityBased)
 
+        # Initialize data dictionary for all bands
         data_dict = {band: {} for band in bands_list_order}
         elevation_processed = False
 
-        # Process Elevation (1 step)
+        # Process Elevation (exactly 1 tensor)
         for subfolder in filtered_array:
             subfolder_key = self.get_last_three_folders(subfolder)
             if subfolder_key.split(os.path.sep)[-1] == 'Elevation' and not elevation_processed:
                 id_num, x, y = self.find_coordinates_index(subfolder_key, longitude, latitude)
                 tensor, type_of_band = self.datasets[subfolder_key].get_tensor_by_location(id_num, x, y)
-                if tensor is not None:
-                    data_dict['Elevation'][0] = tensor
-                else:
-                    data_dict['Elevation'][0] = torch.zeros((window_size, window_size))  # Pad if missing
+                data_dict['Elevation'][0] = tensor if tensor is not None else torch.zeros((window_size, window_size))
                 elevation_processed = True
 
-        # Process non-Elevation bands (ensure time_before steps per band)
-        num_channels = len(bands_list_order) - 1  # Exclude Elevation
+        # Collect tensors for non-Elevation bands
         for subfolder in filtered_array:
             subfolder_key = self.get_last_three_folders(subfolder)
             if subfolder_key.split(os.path.sep)[-1] != 'Elevation':
                 year = int(subfolder_key.split(os.path.sep)[-1])
                 band = subfolder_key.split(os.path.sep)[-2]
-                for decrement in range(self.time_before):
-                    current_year = year - decrement
-                    decremented_subfolder = os.path.sep.join(subfolder_key.split(os.path.sep)[:-1] + [str(current_year)])
-                    if decremented_subfolder in self.datasets:
-                        id_num, x, y = self.find_coordinates_index(decremented_subfolder, longitude, latitude)
-                        tensor, type_of_band = self.datasets[decremented_subfolder].get_tensor_by_location(id_num, x, y)
-                        if tensor is not None:
-                            data_dict[band][current_year] = tensor
-                        else:
-                            data_dict[band][current_year] = torch.zeros((window_size, window_size))  # Pad if tensor is None
-                    else:
-                        data_dict[band][current_year] = torch.zeros((window_size, window_size))  # Pad if year missing
+                if band not in data_dict:
+                    continue  # Skip unexpected bands
+                id_num, x, y = self.find_coordinates_index(subfolder_key, longitude, latitude)
+                tensor, type_of_band = self.datasets[subfolder_key].get_tensor_by_location(id_num, x, y)
+                data_dict[band][year] = tensor if tensor is not None else torch.zeros((window_size, window_size))
 
         # Ensure exactly time_before tensors per non-Elevation band
         for band in bands_list_order:
             if band != 'Elevation':
                 available_years = sorted(data_dict[band].keys(), reverse=True)
-                required_years = [year - i for i in range(self.time_before)]
-                for req_year in required_years:
-                    if req_year not in data_dict[band]:
-                        data_dict[band][req_year] = torch.zeros((window_size, window_size))  # Pad missing years
+                if available_years:
+                    most_recent_year = available_years[0]
+                    required_years = [most_recent_year - i for i in range(self.time_before)]
+                    band_data = {}
+                    for yr in required_years:
+                        band_data[yr] = data_dict[band].get(yr, torch.zeros((window_size, window_size)))
+                    data_dict[band] = band_data
+                else:
+                    # If no data, pad with time_before zero tensors
+                    data_dict[band] = {i: torch.zeros((window_size, window_size)) for i in range(self.time_before)}
 
+        # Consolidate tensors
         band_to_index = {v: k for k, v in bands_dict.items()}
         tensors_combined, indices_tensor = consolidate_tensors(data_dict, band_to_index)
 
-        # Validate shape
+        # Validate output shape
+        num_channels = len(bands_list_order) - 1  # Exclude Elevation
         expected_steps = 1 + num_channels * self.time_before
         if tensors_combined.shape[0] != expected_steps:
             raise ValueError(f"Output tensor has {tensors_combined.shape[0]} steps, expected {expected_steps}")
 
         return longitude, latitude, torch.from_numpy(tensors_combined).float(), torch.from_numpy(indices_tensor).long()
+
     def __len__(self):
         return len(self.dataframe)
 
