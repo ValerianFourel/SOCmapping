@@ -260,6 +260,13 @@ def main():
 
     # Run inference
     coordinates, predictions = run_inference(cnn_model, inference_loader, accelerator)
+    # Define save paths for the .npy files
+    save_path_coords = "coordinates.npy"  # You can modify the path/name as needed
+    save_path_preds = "predictions.npy"   # You can modify the path/name as needed
+    
+    # Save coordinates and predictions as .npy files
+    np.save(save_path_coords, coordinates)
+    np.save(save_path_preds, predictions)
 
     if accelerator.is_local_main_process:
         print(f"Inference completed. Coordinates shape: {coordinates.shape}, Predictions shape: {predictions.shape}")
