@@ -15,8 +15,8 @@ bands_list_order = ['Elevation','LAI','LST','MODIS_NPP','SoilEvaporation','Total
 MAX_OC = 160
 
 
-NUM_EPOCH_VAE_TRAINING = 1
-NUM_EPOCH_MLP_TRAINING = 2
+NUM_EPOCH_VAE_TRAINING = 3
+NUM_EPOCH_MLP_TRAINING = 3
 
 file_path_coordinates_Bavaria_1mil = "/home/vfourel/SOCProject/SOCmapping/Data/Coordinates1Mil/coordinates_Bavaria_1mil.csv"
 

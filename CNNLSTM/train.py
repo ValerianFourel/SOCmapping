@@ -22,7 +22,7 @@ from config import (TIME_BEGINNING, TIME_END, MAX_OC, seasons, years_padded,
 from models import RefittedCovLSTM
 
 def train_model(model, train_loader, val_loader, num_epochs=20, accelerator=None):
-    criterion = nn.MSELoss()
+    criterion = nn.L1Loss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     
     # Prepare with Accelerate

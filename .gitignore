@@ -521,3 +521,6 @@ Data/Coordinates1Mil/StaticValue/Elevation/coordinates.npy
 3DCNN/best_model.pth
 
 FoundationalModels/models
+
+**/*.pt
+

@@ -21,7 +21,7 @@ from accelerate import Accelerator
 
 
 # Load CNN model with Accelerator
-def load_cnn_model(model_path="/home/vfourel/SOCProject/SOCmapping/3DCNN/cnn_model_MAX_OC_160_TIME_BEGINNING_2007_TIME_END_2023.pth"):
+def load_cnn_model(model_path="/home/vfourel/SOCProject/SOCmapping/3DCNN/cnn_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023.pth"):
     accelerator = Accelerator()  # Initialize Accelerator
     device = accelerator.device  # Get the device (GPU or CPU) assigned to this process
     
