@@ -27,12 +27,23 @@ logger = logging.getLogger(__name__)
 BASE_VAE_LR = 0.001
 VAE_KLD_WEIGHT = 0.1
 VAE_NUM_HEADS = 16
-VAE_LATENT_DIM_ELEVATION = 24  # Smaller for Elevation
-VAE_LATENT_DIM_OTHERS = 48    # Larger for other bands
+VAE_LATENT_DIM_ELEVATION = 24
+VAE_LATENT_DIM_OTHERS = 48
 VAE_DROPOUT_RATE = 0.3
 VAE_BATCH_SIZE = 256
 VAE_ALPHA = 0.5
 ACCUM_STEPS = 2
+
+# Bands to normalize
+NORMALIZED_BANDS = ['LST', 'MODIS_NPP', 'TotalEvapotranspiration']
+
+# Band-specific KLD weights
+band_kld_weights = {
+    'LST': 0.03,
+    'MODIS_NPP': 50,
+    'SoilEvaporation': 1.0,
+    'TotalEvapotranspiration': 0.5
+}
 
 # Define base directory
 BASE_SAVE_DIR = Path('/home/vfourel/SOCProject/SOCmapping/VAETransformer/weights')
@@ -50,8 +61,7 @@ def composite_mse_l1_loss(outputs, targets, alpha=VAE_ALPHA):
 # VAE loss function
 def vae_loss(recon_x, x, mu, log_var, kld_weight=VAE_KLD_WEIGHT):
     recon_loss = composite_mse_l1_loss(recon_x, x)
-    kld_loss = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp())
-    kld_loss = torch.nan_to_num(kld_loss, nan=0.0) / mu.size(1) * 1e2  # Normalize by latent dim
+    kld_loss = -0.5 * torch.mean(1 + log_var - mu.pow(2) - log_var.exp() + 1e-6)
     total_loss = recon_loss + kld_weight * kld_loss
     return total_loss, recon_loss, kld_loss
 
@@ -62,16 +72,33 @@ def parse_args():
     parser.add_argument('--band', type=str, default=None, help='Specific band to train (e.g., NDVI); if None, train all bands')
     return parser.parse_args()
 
-def train_single_vae(vae, band_dataset, num_epochs, accelerator, band, save_dir, time_steps):
+def compute_band_statistics(band_dataset):
+    """Compute mean and std for a band's dataset using 1% of features"""
+    total_samples = len(band_dataset)
+    sample_size = max(1, int(total_samples * 0.01))  # 1% of dataset, at least 1 sample
+    indices = np.random.choice(total_samples, size=sample_size, replace=False)
+    subset = Subset(band_dataset, indices)
+    loader = DataLoader(subset, batch_size=VAE_BATCH_SIZE, shuffle=False, num_workers=4)
+    
+    all_features = []
+    for _, _, features, _ in loader:
+        features = torch.nan_to_num(features, nan=0.0)
+        all_features.append(features)
+    all_features = torch.cat(all_features, dim=0)
+    mean = torch.mean(all_features)
+    std = torch.std(all_features)
+    return mean.item(), std.item() if std.item() != 0 else 1.0  # Avoid division by zero
+
+def train_single_vae(vae, band_dataset, num_epochs, accelerator, band, save_dir, time_steps, kld_weight=VAE_KLD_WEIGHT, norm_stats=None):
     """
-    Train a single VAE on its band-specific dataset across all GPUs with dynamic 100k sampling per epoch,
-    logging loss and performance after each batch.
+    Train a single VAE with optional normalization for specific bands.
+    norm_stats: tuple (mean, std) for normalization, None if no normalization.
     """
     optimizer = optim.Adam(vae.parameters(), lr=BASE_VAE_LR)
     vae = accelerator.prepare(vae)
     optimizer = accelerator.prepare(optimizer)
 
-    logger.info(f"Training VAE for band {band} with {NUM_EPOCH_VAE_TRAINING} epochs, {time_steps} time steps, and dynamic 100k sampling.")
+    logger.info(f"Training VAE for band {band} with {num_epochs} epochs, {time_steps} time steps, and dynamic 100k sampling.")
     
     global_step = 0
     
@@ -85,15 +112,21 @@ def train_single_vae(vae, band_dataset, num_epochs, accelerator, band, save_dir,
         epoch_loss = 0.0
         
         for batch_idx, batch in enumerate(tqdm(train_loader, desc=f'VAE Epoch {epoch+1} - Band {band}', leave=False)):
-            _, _, features, _ = batch  # Shape: (batch_size, time_steps, window_size, window_size)
+            _, _, features, _ = batch
             features = torch.nan_to_num(features.to(accelerator.device), nan=0.0)
+            
+            # Normalize if band is in NORMALIZED_BANDS and stats are provided
+            if norm_stats and band in NORMALIZED_BANDS:
+                mean, std = norm_stats
+                features = (features - mean) / std
             
             optimizer.zero_grad()
             with accelerator.accumulate(vae):
                 with torch.autocast(device_type='cuda', dtype=torch.float16):
-                    features = features.permute(0, 2, 3, 1).unsqueeze(1)  # Shape: (batch_size, 1, window_size, window_size, time_steps)
+                    features = features.permute(0, 2, 3, 1).unsqueeze(1)
                     recon, mu, log_var = vae(features)
-                    total_loss, recon_loss, kld_loss = vae_loss(recon, features, mu, log_var)
+                    log_var = torch.clamp(log_var, min=-10, max=10)
+                    total_loss, recon_loss, kld_loss = vae_loss(recon, features, mu, log_var, kld_weight=kld_weight)
                 
                 accelerator.backward(total_loss)
                 optimizer.step()
@@ -158,7 +191,8 @@ if __name__ == "__main__":
         "vae_batch_size": VAE_BATCH_SIZE,
         "vae_alpha": VAE_ALPHA,
         "accum_steps": ACCUM_STEPS,
-        "trained_band": args.band if args.band else "all"
+        "trained_band": args.band if args.band else "all",
+        "normalized_bands": NORMALIZED_BANDS
     })
 
     from dataloader.dataloaderMultiYears1Mil import NormalizedMultiRasterDataset1MilMultiYears
@@ -188,6 +222,16 @@ if __name__ == "__main__":
     training_counter_start = max(existing_dirs) + 1 if existing_dirs else 1
 
     vae_models = {}
+    band_statistics = {}  # Store normalization stats for normalized bands
+
+    # Compute statistics for normalized bands
+    for band in NORMALIZED_BANDS:
+        if band in bands_to_train:
+            band_dataset = train_dataset.get_band_dataset(band)
+            mean, std = compute_band_statistics(band_dataset)
+            band_statistics[band] = (mean, std)
+            logger.info(f"Computed statistics for {band}: mean={mean}, std={std}")
+
     for band in bands_to_train:
         logger.info(f"Starting training for band: {band}")
         
@@ -196,10 +240,9 @@ if __name__ == "__main__":
         save_dir = SAVE_DIR / subfolder_name
         save_dir.mkdir(parents=True, exist_ok=True)
 
-        # Determine time steps and VAE complexity based on band
         time_steps = 1 if band == 'Elevation' else (TIME_END - TIME_BEGINNING + 1)
         latent_dim = VAE_LATENT_DIM_ELEVATION if band == 'Elevation' else VAE_LATENT_DIM_OTHERS
-        num_heads = VAE_NUM_HEADS if band == 'Elevation' else VAE_NUM_HEADS * 2  # Double heads for others
+        num_heads = VAE_NUM_HEADS if band == 'Elevation' else VAE_NUM_HEADS * 2
 
         vae = TransformerVAE(
             input_channels=1,
@@ -217,7 +260,9 @@ if __name__ == "__main__":
             vae.load_state_dict(torch.load(vae_path, map_location=device_map[band]))
         else:
             band_dataset = train_dataset.get_band_dataset(band)
-            vae = train_single_vae(vae, band_dataset, NUM_EPOCH_VAE_TRAINING, accelerator, band, save_dir, time_steps)
+            kld_weight = band_kld_weights.get(band, VAE_KLD_WEIGHT)
+            norm_stats = band_statistics.get(band, None)  # Get stats if band is in NORMALIZED_BANDS, else None
+            vae = train_single_vae(vae, band_dataset, NUM_EPOCH_VAE_TRAINING, accelerator, band, save_dir, time_steps, kld_weight=kld_weight, norm_stats=norm_stats)
         
         vae_models[band] = vae
         logger.info(f"Completed training for band: {band}")

@@ -56,6 +56,7 @@ class TransformerVAE(nn.Module):
 
         mu = self.fc_mu(x)
         log_var = self.fc_var(x)
+        log_var = torch.clamp(F.softplus(self.fc_var(x)), min=-10, max=10)  # Stabilize log_var
         return mu, log_var, memory
 
     def reparameterize(self, mu, log_var):
