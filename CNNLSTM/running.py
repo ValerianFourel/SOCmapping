@@ -52,8 +52,10 @@ def load_cnn_model(model_path="/home/vfourel/SOCProject/SOCmapping/CNNLSTM/cnnls
     
     return model, device, accelerator
 
+import os
+from pathlib import Path
 
-def run_inference(model, dataloader, accelerator):
+def run_inference(model, dataloader, accelerator, temp_dir="temp_results"):
     model.eval()
     all_coordinates = []
     all_predictions = []
@@ -65,23 +67,63 @@ def run_inference(model, dataloader, accelerator):
 
             # Run model inference
             outputs = model(tensors)  # Assuming model outputs a single value per sample
-            predictions = outputs.cpu().numpy()
-
-            # Store coordinates and predictions, ensuring tensors are moved to CPU
-            coords = np.stack([longitudes.cpu().numpy(), latitudes.cpu().numpy()], axis=1)
+            predictions = outputs
+            coords = torch.stack([longitudes, latitudes], dim=1)
             all_coordinates.append(coords)
             all_predictions.append(predictions)
 
-    # Concatenate local results
-    all_coordinates = np.concatenate(all_coordinates, axis=0) if all_coordinates else np.array([])
-    all_predictions = np.concatenate(all_predictions, axis=0) if all_predictions else np.array([])
+    # Concatenate locally on each process as tensors
+    all_coordinates = torch.cat(all_coordinates, dim=0) if all_coordinates else torch.tensor([], device=accelerator.device)
+    all_predictions = torch.cat(all_predictions, dim=0) if all_predictions else torch.tensor([], device=accelerator.device)
 
-    # Gather results from all GPUs
-    all_coordinates = accelerator.gather(torch.tensor(all_coordinates, device=accelerator.device)).cpu().numpy()
-    all_predictions = accelerator.gather(torch.tensor(all_predictions, device=accelerator.device)).cpu().numpy()
+    # Convert to numpy on each process
+    local_coordinates = all_coordinates.cpu().numpy()
+    local_predictions = all_predictions.cpu().numpy()
 
-    return all_coordinates, all_predictions
+    # Create temporary directory if it doesn't exist
+    temp_dir_path = Path(temp_dir)
+    if accelerator.is_local_main_process:
+        temp_dir_path.mkdir(exist_ok=True)
+    accelerator.wait_for_everyone()  # Ensure directory is created before all processes proceed
 
+    # Each process saves its results to a unique file
+    process_rank = accelerator.process_index
+    coord_file = temp_dir_path / f"coordinates_rank{process_rank}.npy"
+    pred_file = temp_dir_path / f"predictions_rank{process_rank}.npy"
+    np.save(coord_file, local_coordinates)
+    np.save(pred_file, local_predictions)
+
+    # Synchronize all processes to ensure all files are written
+    accelerator.wait_for_everyone()
+
+    # Only main process collects and concatenates results
+    if accelerator.is_local_main_process:
+        total_coordinates = []
+        total_predictions = []
+        num_processes = accelerator.num_processes
+
+        # Read results from each process
+        for rank in range(num_processes):
+            coord_file = temp_dir_path / f"coordinates_rank{rank}.npy"
+            pred_file = temp_dir_path / f"predictions_rank{rank}.npy"
+            coords = np.load(coord_file)
+            preds = np.load(pred_file)
+            total_coordinates.append(coords)
+            total_predictions.append(preds)
+
+        # Concatenate all results
+        total_coordinates = np.concatenate(total_coordinates, axis=0) if total_coordinates else np.array([])
+        total_predictions = np.concatenate(total_predictions, axis=0) if total_predictions else np.array([])
+
+        # Clean up temporary files
+        for rank in range(num_processes):
+            os.remove(temp_dir_path / f"coordinates_rank{rank}.npy")
+            os.remove(temp_dir_path / f"predictions_rank{rank}.npy")
+        os.rmdir(temp_dir_path)
+
+        return total_coordinates, total_predictions
+    else:
+        return np.array([]), np.array([])  # Non-main processes return empty arrays
 
 def flatten_paths(path_list):
     flattened = []
@@ -115,8 +157,8 @@ def main():
 
     samples_coordinates_array_path_1mil = list(dict.fromkeys(samples_coordinates_array_path_1mil))
     data_array_path_1mil = list(dict.fromkeys(data_array_path_1mil))
-
-    # Initialize dataset
+# Main code
+# Initialize dataset
     inference_dataset = MultiRasterDataset1MilMultiYears(
         samples_coordinates_array_subfolders=samples_coordinates_array_path_1mil,
         data_array_subfolders=data_array_path_1mil,
@@ -142,7 +184,8 @@ def main():
 
     # Run inference
     coordinates, predictions = run_inference(cnn_model, inference_loader, accelerator)
-    
+    np.save("coordinates_1mil.npy", coordinates)
+    np.save("predictions_1mil.npy", predictions)
     # Only the main process handles printing and visualization
     if accelerator.is_local_main_process:
         print(f"Inference completed. Coordinates shape: {coordinates.shape}, Predictions shape: {predictions.shape}")
@@ -153,7 +196,6 @@ def main():
             save_path_predictions_plots
         )
         print(f"Visualizations saved to {save_path_predictions_plots}")
-
 
 if __name__ == "__main__":
     main()

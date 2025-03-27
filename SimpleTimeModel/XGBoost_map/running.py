@@ -230,7 +230,11 @@ def main():
         batch_size=8,
         num_threads=num_cpus 
     )
+    save_path_coords = "coordinates_1mil.npy"
+    save_path_preds = "predictions_1mil.npy"
 
+    np.save(save_path_coords, coordinates)
+    np.save(save_path_preds, predictions)
     ###########################################################
     # Create scatter plot
     plt.figure(figsize=(10, 8))

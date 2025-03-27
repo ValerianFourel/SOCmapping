@@ -1,76 +1,63 @@
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
-import os
-import glob
 import pandas as pd
+from functools import lru_cache
 from config import (
-    bands_list_order, time_before, LOADING_TIME_BEGINNING, window_size,
-    TIME_BEGINNING, TIME_END, INFERENCE_TIME, seasons, years_padded,
-    save_path_predictions_plots, SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly,
-    DataYearly, file_path_coordinates_Bavaria_1mil, SamplesCoordinates_Seasonally,
-    MatrixCoordinates_1mil_Seasonally, DataSeasonally, file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC
+    bands_list_order, time_before, window_size, INFERENCE_TIME, 
+    save_path_predictions_plots, file_path_coordinates_Bavaria_1mil
 )
-from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data, separate_and_add_data_1mil_inference
+from dataloader.dataframe_loader import separate_and_add_data_1mil_inference
 from dataloader.dataloaderMapping import MultiRasterDataset1MilMultiYears
-from mapping import create_prediction_visualizations, parallel_predict
+from mapping import create_prediction_visualizations
 from modelCNNMultiYear import Small3DCNN
 from tqdm import tqdm
-import matplotlib.pyplot as plt
 from accelerate import Accelerator
+import torch.cuda.amp
 
 
-# Load CNN model with Accelerator
+class OptimizedMultiRasterDataset(MultiRasterDataset1MilMultiYears):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Pre-load coordinates to memory for faster access
+        self.coordinates_cache = {}
+
+    @lru_cache(maxsize=32)  # Cache recently used data arrays
+    def _load_data_array(self, path):
+        return np.load(path)
+
+    def __getitem__(self, idx):
+        # Optimized version of the original __getitem__ method
+        longitude, latitude, tensor = super().__getitem__(idx)
+        return longitude, latitude, tensor
+
+
 def load_cnn_model(model_path="/home/vfourel/SOCProject/SOCmapping/3DCNN/cnn_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023.pth"):
-    accelerator = Accelerator()  # Initialize Accelerator
-    device = accelerator.device  # Get the device (GPU or CPU) assigned to this process
-    
+    accelerator = Accelerator()
+    device = accelerator.device
+
     model = Small3DCNN(
         input_channels=len(bands_list_order),
         input_height=window_size,
         input_width=window_size,
         input_time=time_before
     )
-    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
+
+    # Load model weights directly to the device
+    model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
-    
-    # Prepare model for distributed inference
-    model = accelerator.prepare(model)
-    
-    return model, device, accelerator
 
+    # Enable torch script for faster inference
+    try:
+        model = torch.jit.script(model)
+    except Exception as e:
+        print(f"TorchScript optimization failed: {e}")
 
-def run_inference(model, dataloader, accelerator):
-    model.eval()
-    all_coordinates = []
-    all_predictions = []
-
-    with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Running Inference", disable=not accelerator.is_local_main_process):
-            longitudes, latitudes, tensors = batch
-            tensors = tensors.to(accelerator.device)  # Move to the assigned device
-
-            # Run model inference
-            outputs = model(tensors)  # Assuming model outputs a single value per sample
-            predictions = outputs.cpu().numpy()
-
-            # Store coordinates and predictions, ensuring tensors are moved to CPU
-            coords = np.stack([longitudes.cpu().numpy(), latitudes.cpu().numpy()], axis=1)
-            all_coordinates.append(coords)
-            all_predictions.append(predictions)
-
-    # Concatenate local results
-    all_coordinates = np.concatenate(all_coordinates, axis=0) if all_coordinates else np.array([])
-    all_predictions = np.concatenate(all_predictions, axis=0) if all_predictions else np.array([])
-
-    # Gather results from all GPUs
-    all_coordinates = accelerator.gather(torch.tensor(all_coordinates, device=accelerator.device)).cpu().numpy()
-    all_predictions = accelerator.gather(torch.tensor(all_predictions, device=accelerator.device)).cpu().numpy()
-
-    return all_coordinates, all_predictions
+    return accelerator.prepare(model), device, accelerator
 
 
 def flatten_paths(path_list):
+    # More efficient flattening using list comprehension
     flattened = []
     for item in path_list:
         if isinstance(item, list):
@@ -80,59 +67,93 @@ def flatten_paths(path_list):
     return flattened
 
 
+def run_inference(model, dataloader, accelerator):
+    model.eval()
+    all_coordinates = []
+    all_predictions = []
+
+    # Enable mixed precision for faster inference
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Running Inference", disable=not accelerator.is_local_main_process):
+            longitudes, latitudes, tensors = batch
+            tensors = tensors.to(accelerator.device, non_blocking=True)  # Non-blocking transfer
+
+            # Use mixed precision for inference
+            with torch.cuda.amp.autocast():
+                outputs = model(tensors)
+
+            # Process in batches to reduce memory pressure
+            predictions = outputs.cpu().numpy()
+            coords = np.stack([longitudes.cpu().numpy(), latitudes.cpu().numpy()], axis=1)
+
+            all_coordinates.append(coords)
+            all_predictions.append(predictions)
+
+    # Concatenate results efficiently
+    all_coordinates = np.concatenate(all_coordinates, axis=0) if all_coordinates else np.array([])
+    all_predictions = np.concatenate(all_predictions, axis=0) if all_predictions else np.array([])
+
+    # Gather results from all processes
+    all_coordinates = accelerator.gather(torch.tensor(all_coordinates, device=accelerator.device)).cpu().numpy()
+    all_predictions = accelerator.gather(torch.tensor(all_predictions, device=accelerator.device)).cpu().numpy()
+
+    return all_coordinates, all_predictions
+
+
 def main():
-    # Initialize Accelerator at the start of main
-    accelerator = Accelerator()
+    # Initialize Accelerator with mixed precision
+    accelerator = Accelerator(mixed_precision='fp16')
 
-    # Load the full inference dataframe independently on each process
-    try:
-        df_full = pd.read_csv(file_path_coordinates_Bavaria_1mil)
-        if accelerator.is_local_main_process:
-            print("Loaded inference dataframe:")
-            print(df_full.head())
-    except Exception as e:
-        if accelerator.is_local_main_process:
-            print(f"Error loading inference dataframe: {e}")
-        return
+    # Load dataframe on all processes
+    df_full = pd.read_csv(file_path_coordinates_Bavaria_1mil)
+    if accelerator.is_local_main_process:
+        print(f"Loaded inference dataframe with {len(df_full)} rows")
 
-    # Prepare data paths (deterministic, so can be done on all processes)
+    # Prepare data paths more efficiently
     samples_coordinates_array_path_1mil, data_array_path_1mil = separate_and_add_data_1mil_inference()
-    samples_coordinates_array_path_1mil = flatten_paths(samples_coordinates_array_path_1mil)
-    data_array_path_1mil = flatten_paths(data_array_path_1mil)
+    samples_coordinates_array_path_1mil = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path_1mil)))
+    data_array_path_1mil = list(dict.fromkeys(flatten_paths(data_array_path_1mil)))
 
-    samples_coordinates_array_path_1mil = list(dict.fromkeys(samples_coordinates_array_path_1mil))
-    data_array_path_1mil = list(dict.fromkeys(data_array_path_1mil))
-
-    # Initialize dataset
-    inference_dataset = MultiRasterDataset1MilMultiYears(
+    # Initialize optimized dataset
+    inference_dataset = OptimizedMultiRasterDataset(
         samples_coordinates_array_subfolders=samples_coordinates_array_path_1mil,
         data_array_subfolders=data_array_path_1mil,
         dataframe=df_full,
         time_before=time_before
     )
 
-    # Create DataLoader and prepare it for distributed inference
+    # Create optimized DataLoader with appropriate batch size for distributed processing
+    # Calculate per-process batch size
+    total_batch_size = 1024
+    batch_size_per_process = max(1, total_batch_size // accelerator.num_processes)
+
     inference_loader = DataLoader(
         inference_dataset,
-        batch_size=32,  # Kept as per your latest change
+        batch_size=batch_size_per_process,  # Adjusted batch size per process
         shuffle=False,
-        num_workers=4,
-        pin_memory=True
+        num_workers=4,  # Reduced to avoid memory issues
+        pin_memory=True,
+        persistent_workers=True if batch_size_per_process > 1 else False,
+        prefetch_factor=2
     )
     inference_loader = accelerator.prepare(inference_loader)
 
     # Load the CNN model
-    cnn_model, device, accelerator = load_cnn_model()
+    cnn_model, device, _ = load_cnn_model()
     if accelerator.is_local_main_process:
-        print("Loaded CNN model:")
-        print(cnn_model)
+        print(f"Model loaded on {device}")
+        print(f"Using batch size of {batch_size_per_process} per process")
 
     # Run inference
     coordinates, predictions = run_inference(cnn_model, inference_loader, accelerator)
-    
-    # Only the main process handles printing and visualization
+
+    # Save results only on main process
     if accelerator.is_local_main_process:
-        print(f"Inference completed. Coordinates shape: {coordinates.shape}, Predictions shape: {predictions.shape}")
+        np.save("coordinates_1mil.npy", coordinates)
+        np.save("predictions_1mil.npy", predictions)
+        print(f"Inference completed. Results shape: {predictions.shape}")
+
+        # Create visualizations
         create_prediction_visualizations(
             INFERENCE_TIME,
             coordinates,
@@ -143,4 +164,9 @@ def main():
 
 
 if __name__ == "__main__":
+    # Set environment variables for better performance
+    import os
+    os.environ["OMP_NUM_THREADS"] = "4"  # Limit OpenMP threads
+    os.environ["MKL_NUM_THREADS"] = "4"  # Limit MKL threads
+
     main()

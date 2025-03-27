@@ -13,14 +13,43 @@ from config import (
     MatrixCoordinates_1mil_Seasonally, DataSeasonally, file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC,
     MAX_OC, bands_dict
 )
-from dataloader.dataframe_loader import separate_and_add_data_1mil_inference, filter_dataframe, create_balanced_dataset, separate_and_add_data
-from dataloader.dataloaderMapping import MultiRasterDataset1MilMultiYears, MultiRasterDatasetMultiYears
+from dataloader.dataframe_loader import separate_and_add_data_1mil_inference, separate_and_add_data,filter_dataframe
+from dataloader.dataloaderMapping import MultiRasterDataset1MilMultiYears
+from dataloader.dataloaderMultiYears import MultiRasterDatasetMultiYears
 from mapping import create_prediction_visualizations
 from model_transformer import TransformerRegressor
 from tqdm import tqdm
 from accelerate import Accelerator
 from IEEE_TPAMI_SpectralGPT.models_mae_spectral import MaskedAutoencoderViT
 from IEEE_TPAMI_SpectralGPT import models_vit_tensor
+
+def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
+    bins = pd.qcut(df['OC'], q=n_bins, labels=False, duplicates='drop')
+    df['bin'] = bins
+    bin_counts = df['bin'].value_counts()
+    max_samples = bin_counts.max()
+    min_samples = max(int(max_samples * min_ratio), 5)
+    validation_indices = []
+    training_dfs = []
+    for bin_idx in range(len(bin_counts)):
+        bin_data = df[df['bin'] == bin_idx]
+        if len(bin_data) >= 4:
+            val_samples = bin_data.sample(n=min(8, len(bin_data)))
+            validation_indices.extend(val_samples.index)
+            train_samples = bin_data.drop(val_samples.index)
+            if len(train_samples) > 0:
+                if len(train_samples) < min_samples:
+                    resampled = train_samples.sample(n=min_samples, replace=True)
+                    training_dfs.append(resampled)
+                else:
+                    training_dfs.append(train_samples)
+    if not training_dfs or not validation_indices:
+        raise ValueError("No training or validation data available after binning")
+    training_df = pd.concat(training_dfs).drop('bin', axis=1)
+    validation_df = df.loc[validation_indices].drop('bin', axis=1)
+    return training_df, validation_df
+
+
 
 def transform_data(stacked_tensor, metadata):
     B, total_steps, H, W = stacked_tensor.shape
@@ -97,7 +126,7 @@ def process_batch_to_embeddings(longitude, latitude, elevation_instrument, remai
 
 def load_models(
     vit_checkpoint_path="/home/vfourel/SOCProject/SOCmapping/FoundationalModels/models/SpectralGPT/SpectralGPT+.pth",
-    transformer_path="/home/vfourel/SOCProject/SOCmapping/FoundationalModels/spectralGPT_TransformerRegressor_MAX_OC_180_TIME_BEGINNING_2007_TIME_END_2023.pth"
+    transformer_path="/home/vfourel/SOCProject/SOCmapping/FoundationalModels/spectralGPT_TransformerRegressor_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023.pth"
 ):
     accelerator = Accelerator()
     device = accelerator.device
@@ -143,7 +172,7 @@ def load_models(
 
     return vit_model, transformer_model, device, accelerator
 
-def run_inference(vit_model, transformer_model, dataloader, accelerator, oc_mean, oc_range):
+def run_inference(vit_model, transformer_model, dataloader, accelerator, oc_mean, oc_std):
     vit_model.eval()
     transformer_model.eval()
     all_coordinates = []
@@ -153,7 +182,7 @@ def run_inference(vit_model, transformer_model, dataloader, accelerator, oc_mean
 
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Running Inference", disable=not accelerator.is_local_main_process):
-            longitude, latitude, stacked_tensor, metadata, _ = batch  # Ignore normalized OC since it's not needed
+            longitude, latitude, stacked_tensor, metadata = batch  # Ignore normalized OC since it's not needed
             stacked_tensor = stacked_tensor.to(accelerator.device)
             metadata = metadata.to(accelerator.device)
 
@@ -164,9 +193,9 @@ def run_inference(vit_model, transformer_model, dataloader, accelerator, oc_mean
             embeddings = embeddings.to(torch.float32)
 
             outputs = transformer_model(embeddings)
-            # Denormalize predictions from [-1, 1] to original OC scale
-            predictions_normalized = outputs.squeeze()  # Assuming model outputs are in [-1, 1]
-            predictions = (predictions_normalized / 2 * oc_range) + oc_mean  # Reverse normalization
+            # Denormalize predictions using the provided mean and std
+            predictions_normalized = outputs.squeeze()  # Model outputs normalized predictions
+            predictions = (predictions_normalized * oc_std) + oc_mean  # Reverse normalization: y = (x * std) + mean
             predictions = predictions.cpu().numpy()
 
             coords = np.stack([longitude.cpu().numpy(), latitude.cpu().numpy()], axis=1)
@@ -204,13 +233,18 @@ def compute_oc_statistics():
         dataframe=train_df,
         time_before=time_before
     )
-    
-    return train_dataset.oc_mean, train_dataset.oc_range
-
+    train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
+    all_targets = []
+    print('get the OC: \n ')    
+    for _, _, _, _, oc in train_loader:
+        all_targets.append(oc)
+    all_targets = torch.cat(all_targets)
+    target_mean, target_std = all_targets.mean().item(), all_targets.std().item()
+    return target_mean, target_std
 def main():
     # Compute OC statistics from training data before inference
-    oc_mean, oc_range = compute_oc_statistics()
-    print(f"OC statistics from training data: mean={oc_mean}, range={oc_range}")
+    oc_mean, oc_std = compute_oc_statistics()
+    print(f"OC statistics from training data: mean={oc_mean}, range={oc_std}")
 
     accelerator = Accelerator()
 
@@ -254,7 +288,7 @@ def main():
     vit_model, transformer_model, device, accelerator = load_models()
 
     # Run inference with OC statistics
-    coordinates, predictions = run_inference(vit_model, transformer_model, inference_loader, accelerator, oc_mean, oc_range)
+    coordinates, predictions = run_inference(vit_model, transformer_model, inference_loader, accelerator, oc_mean, oc_std)
 
     # Define save paths
     save_path_coords = "coordinates_1mil.npy"

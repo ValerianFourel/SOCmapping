@@ -95,40 +95,6 @@ def load_SimpleTransformer_model(model_path="/home/vfourel/SOCProject/SOCmapping
         model = accelerator.prepare(model)
     return model, device, accelerator
 
-def run_inference(model, dataloader, accelerator):
-    model.eval()
-    all_coordinates = []
-    all_predictions = []
-
-    with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Running Inference", disable=not accelerator.is_local_main_process):
-            longitudes, latitudes, tensors = batch
-            tensors = tensors.to(accelerator.device)
-            outputs = model(tensors)
-            # Keep as tensors instead of converting to numpy immediately
-            predictions = outputs
-            coords = torch.stack([longitudes, latitudes], dim=1)
-            all_coordinates.append(coords)
-            all_predictions.append(predictions)
-
-    # Concatenate locally on each process as tensors
-    all_coordinates = torch.cat(all_coordinates, dim=0) if all_coordinates else torch.tensor([])
-    all_predictions = torch.cat(all_predictions, dim=0) if all_predictions else torch.tensor([])
-
-    # Gather results from all processes to main process
-    coordinates_gathered = accelerator.gather(all_coordinates)
-    predictions_gathered = accelerator.gather(all_predictions)
-
-    # Convert to numpy only on main process
-    if accelerator.is_local_main_process:
-        coordinates_gathered = coordinates_gathered.cpu().numpy()
-        predictions_gathered = predictions_gathered.cpu().numpy()
-    else:
-        # Return empty arrays for non-main processes to maintain consistent return type
-        coordinates_gathered = np.array([])
-        predictions_gathered = np.array([])
-
-    return coordinates_gathered, predictions_gathered
 
 def flatten_paths(path_list):
     flattened = []
@@ -160,6 +126,35 @@ def compute_training_statistics():
     
     return feature_means, feature_stds
 
+def run_inference(model, dataloader, accelerator):
+    model.eval()
+    all_coordinates = []
+    all_predictions = []
+
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Running Inference", disable=not accelerator.is_local_main_process):
+            longitudes, latitudes, tensors = batch
+            tensors = tensors.to(accelerator.device)  # Move to the assigned device
+
+            # Run model inference
+            outputs = model(tensors)  # Assuming model outputs a single value per sample
+            predictions = outputs.cpu().numpy()
+
+            # Store coordinates and predictions, ensuring tensors are moved to CPU
+            coords = np.stack([longitudes.cpu().numpy(), latitudes.cpu().numpy()], axis=1)
+            all_coordinates.append(coords)
+            all_predictions.append(predictions)
+
+    # Concatenate local results
+    all_coordinates = np.concatenate(all_coordinates, axis=0) if all_coordinates else np.array([])
+    all_predictions = np.concatenate(all_predictions, axis=0) if all_predictions else np.array([])
+
+    # Gather results from all GPUs
+    all_coordinates = accelerator.gather(torch.tensor(all_coordinates, device=accelerator.device)).cpu().numpy()
+    all_predictions = accelerator.gather(torch.tensor(all_predictions, device=accelerator.device)).cpu().numpy()
+
+    return all_coordinates, all_predictions
+
 def main():
     feature_means, feature_stds = compute_training_statistics()
     accelerator = Accelerator()
@@ -184,9 +179,9 @@ def main():
     data_1mil = list(dict.fromkeys(flatten_paths(data_1mil)))
 
     inference_dataset = NormalizedMultiRasterDataset1MilMultiYears(
-        samples_coordinates_array_path=samples_coords_1mil[:20000],
-        data_array_path=data_1mil[:20000],
-        df=df_full[:20000],
+        samples_coordinates_array_path=samples_coords_1mil,
+        data_array_path=data_1mil,
+        df=df_full,
         feature_means=feature_means,
         feature_stds=feature_stds,
         time_before=time_before
@@ -213,33 +208,19 @@ def main():
 
     coordinates, predictions = run_inference(model, inference_loader, accelerator)
 
-    # Process results only on main process
+    np.save("coordinates_1mil.npy", coordinates)
+    np.save("predictions_1mil.npy", predictions)
+    # Only the main process handles printing and visualization
     if accelerator.is_local_main_process:
-        # Remove any potential duplicates if processes overlapped
-        unique_indices = np.unique(coordinates, axis=0, return_index=True)[1]
-        total_coordinates = coordinates[unique_indices]
-        total_predictions = predictions[unique_indices]
-        
-        # Save results
-        np.save("coordinates_20k.npy", total_coordinates)
-        np.save("predictions_20k.npy", total_predictions)
-        
-        # Create structured array
-        results = np.zeros(len(total_coordinates), dtype=[('longitude', 'f4'), ('latitude', 'f4'), ('prediction', 'f4')])
-        results['longitude'] = total_coordinates[:, 0]
-        results['latitude'] = total_coordinates[:, 1]
-        results['prediction'] = total_predictions.flatten()
-        np.save("results_20k.npy", results)
-        
-        # Print summary
-        print(f"Inference completed across all processes:")
-        print(f"Total Coordinates shape: {total_coordinates.shape}")
-        print(f"Total Predictions shape: {total_predictions.shape}")
-        print(f"Number of unique samples: {len(total_coordinates)}")
-        
-        # Create visualizations
-        create_prediction_visualizations(INFERENCE_TIME, total_coordinates, total_predictions, save_path_predictions_plots)
+        print(f"Inference completed. Coordinates shape: {coordinates.shape}, Predictions shape: {predictions.shape}")
+        create_prediction_visualizations(
+            INFERENCE_TIME,
+            coordinates,
+            predictions,
+            save_path_predictions_plots
+        )
         print(f"Visualizations saved to {save_path_predictions_plots}")
+
 
 if __name__ == "__main__":
     main()

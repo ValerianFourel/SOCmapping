@@ -118,30 +118,40 @@ dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
 """
 
 
+from torch.utils.data import Dataset
+import numpy as np
+import torch
+from pathlib import Path
+import os
+
 class MultiRasterDatasetMapping(Dataset):
-    def __init__(self, subfolders, dataframe):
+    def __init__(self, subfolders, dataframe, bands_list_order=None):
         """
         Parameters:
-        subfolders: list of str, names of subfolders to include
-        dataframe: pandas.DataFrame, contains columns GPS_LONG, GPS_LAT, and OC (target variable)
+        subfolders: list of str, paths to directories containing raster data and coordinates.npy (e.g., /path/to/LAI/2015)
+        dataframe: pandas.DataFrame, contains columns 'longitude' and 'latitude'
+        bands_list_order: list of str, order of bands (e.g., ['Elevation', 'LAI', ...])
         """
         self.subfolders = subfolders
         self.dataframe = dataframe
-        self.datasets = {
-            subfolder: RasterTensorDatasetMapping(subfolder)
-            for subfolder in subfolders
-        }
-        self.coordinates = {
-            subfolder: np.load(f"{subfolder}/coordinates.npy")
-            for subfolder in subfolders
-        }
+        self.bands_list_order = bands_list_order if bands_list_order is not None else []
+        self.datasets = {}
+        self.coordinates = {}
+
+        # Initialize datasets and coordinates with error checking
+        for subfolder in subfolders:
+            coord_file = f"{subfolder}/coordinates.npy"
+            if not Path(coord_file).exists():
+                raise FileNotFoundError(f"Coordinates file not found: {coord_file}")
+            self.coordinates[subfolder] = np.load(coord_file)
+            self.datasets[subfolder] = RasterTensorDatasetMapping(subfolder)  # Assuming this class exists
 
     def find_coordinates_index(self, subfolder, longitude, latitude):
         """
         Finds the index of the matching coordinates in the subfolder's coordinates.npy file.
 
         Parameters:
-        subfolder: str, name of the subfolder
+        subfolder: str, path to the subfolder (e.g., /path/to/LAI/2015)
         longitude: float, longitude to match
         latitude: float, latitude to match
 
@@ -149,33 +159,71 @@ class MultiRasterDatasetMapping(Dataset):
         tuple: (id_num, x, y) if match is found, otherwise raises an error
         """
         coords = self.coordinates[subfolder]
-        # Assuming the first two columns of `coordinates.npy` are longitude and latitude
         match = np.where((coords[:, 1] == longitude) & (coords[:, 0] == latitude))[0]
         if match.size == 0:
             raise ValueError(f"Coordinates ({longitude}, {latitude}) not found in {subfolder}")
-
-        # Return id_num, x, y from the same row
         return coords[match[0], 2], coords[match[0], 3], coords[match[0], 4]
+
+    def filter_by_year(self, inference_year):
+        """
+        Filter subfolders for a single inference year.
+
+        Parameters:
+        inference_year: str, the year for inference (e.g., '2015')
+
+        Returns:
+        dict: {band: subfolder path for the specified year}
+        """
+        filtered_paths = {band: None for band in self.bands_list_order}
+        for subfolder in self.subfolders:
+            parts = subfolder.split('/')
+            band = parts[-2] if 'Elevation' not in subfolder else 'Elevation'
+            subfolder_year = parts[-1] if 'Elevation' not in subfolder else None
+
+            if band in self.bands_list_order:
+                if band == 'Elevation':
+                    filtered_paths['Elevation'] = subfolder
+                elif subfolder_year == inference_year:
+                    filtered_paths[band] = subfolder
+        return filtered_paths
 
     def __getitem__(self, index):
         """
-        Retrieve tensor and target value for a given index.
+        Retrieve tensor and coordinates for a given index for a single year.
 
         Parameters:
         index: int, index of the row in the dataframe
 
         Returns:
-        tuple: (tensor, OC), where tensor is the data and OC is the target variable
+        tuple: (tensor, coordinates), where tensor is (num_bands, height, width)
+               and coordinates are (longitude, latitude)
         """
         row = self.dataframe.iloc[index]
         longitude, latitude = row["longitude"], row["latitude"]
+        inference_year = "2015"  # Hardcoded to INFERENCE_TIME; adjust if needed in dataframe
 
-        tensors = {}
-        for subfolder in self.subfolders:
-            id_num, x, y = self.find_coordinates_index(subfolder, longitude, latitude)
-            tensors[subfolder] = self.datasets[subfolder].get_tensor_by_location(id_num, x, y)
+        # Filter subfolders by year
+        filtered_paths = self.filter_by_year(inference_year)
 
-        return longitude, latitude, tensors
+        # Initialize band tensors
+        band_tensors = []
+        window_size = 33  # From your config
+
+        # Collect tensors for each band for the single year
+        for band in self.bands_list_order:
+            subfolder = filtered_paths[band]
+            if subfolder:
+                id_num, x, y = self.find_coordinates_index(subfolder, longitude, latitude)
+                tensor = self.datasets[subfolder].get_tensor_by_location(id_num, x, y)
+                band_tensors.append(tensor if tensor is not None else torch.zeros(window_size, window_size))
+            else:
+                band_tensors.append(torch.zeros(window_size, window_size))
+
+        if len(band_tensors) != len(self.bands_list_order):
+            raise ValueError(f"Expected {len(self.bands_list_order)} bands, but got {len(band_tensors)}")
+
+        final_tensor = torch.stack(band_tensors)  # Shape: (num_bands, height, width)
+        return final_tensor, torch.tensor([longitude, latitude], dtype=torch.float32)
 
     def __len__(self):
         """

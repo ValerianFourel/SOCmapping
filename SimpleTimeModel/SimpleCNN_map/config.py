@@ -12,7 +12,7 @@ LOADING_TIME_BEGINNING = str(int(TIME_BEGINNING)-time_before)
 TIME_END = '2023'
 INFERENCE_TIME = '2015'
 bands_list_order = ['Elevation','LAI','LST','MODIS_NPP','SoilEvaporation','TotalEvapotranspiration']
-MAX_OC = 160
+MAX_OC = 150
 num_epochs = 100
 
 
