@@ -13,8 +13,8 @@ from config import (
     MatrixCoordinates_1mil_Seasonally, DataSeasonally, file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC,
     MAX_OC, bands_dict
 )
-from dataloader.dataframe_loader import separate_and_add_data_1mil_inference
-from dataloader.dataloaderMapping import MultiRasterDataset1MilMultiYears
+from dataloader.dataframe_loader import separate_and_add_data_1mil_inference, filter_dataframe, create_balanced_dataset, separate_and_add_data
+from dataloader.dataloaderMapping import MultiRasterDataset1MilMultiYears, MultiRasterDatasetMultiYears
 from mapping import create_prediction_visualizations
 from model_transformer import TransformerRegressor
 from tqdm import tqdm
@@ -28,7 +28,6 @@ def transform_data(stacked_tensor, metadata):
     num_channels = len(bands_list_order) - 1  # Number of non-elevation bands
     expected_steps = 1 + num_channels * time_before
 
-    # Handle mismatched steps
     if total_steps != expected_steps:
         if total_steps < expected_steps:
             print(f"Warning: total_steps ({total_steps}) < expected_steps ({expected_steps}). Padding with zeros.")
@@ -55,7 +54,7 @@ def transform_data(stacked_tensor, metadata):
             if not elevation_mask[b, i]:
                 band_idx = int(metadata[b, i, 0])
                 year = int(metadata[b, i, 1])
-                channel = band_idx - 1  # Adjust for 1-based indexing
+                channel = band_idx - 1
                 if channel not in channel_year_data:
                     channel_year_data[channel] = []
                 channel_year_data[channel].append((year, stacked_tensor[b, i]))
@@ -84,13 +83,11 @@ def process_batch_to_embeddings(longitude, latitude, elevation_instrument, remai
         for idx in range(B):
             sample_embeddings = []
             elevation_input = elevation_instrument[idx:idx+1].unsqueeze(1).to(device).expand(1, 1, 3, 96, 96)
-            # Fix: Access patch_embed via .module for DDP compatibility
             elevation_emb = vit_model.module.patch_embed(elevation_input).squeeze().flatten()
             sample_embeddings.append(elevation_emb)
             for channel in range(num_channels):
                 for time in range(num_times):
                     x = remaining_tensor[idx, channel, time].unsqueeze(0).unsqueeze(0).to(device).expand(1, 1, 3, 96, 96)
-                    # Fix: Access patch_embed via .module for DDP compatibility
                     emb = vit_model.module.patch_embed(x).squeeze().flatten()
                     sample_embeddings.append(emb)
             sample_embeddings = torch.cat(sample_embeddings, dim=0)
@@ -105,7 +102,6 @@ def load_models(
     accelerator = Accelerator()
     device = accelerator.device
 
-    # Load ViT model
     vit_model = models_vit_tensor.vit_base_patch8(
         drop_path_rate=0.1,
         num_classes=62
@@ -126,7 +122,6 @@ def load_models(
             print(f"Loaded ViT checkpoint: {msg}")
     vit_model.eval()
 
-    # Load Transformer model
     num_patches = (96 // 8) * (96 // 8)
     embedding_dim_per_patch = 768
     total_embedding_dim = embedding_dim_per_patch * num_patches * (1 + (len(bands_list_order) - 1) * time_before)
@@ -142,16 +137,13 @@ def load_models(
         output_dim=1
     )
 
-    # Prepare models for distributed inference *before* loading state dict
     vit_model, transformer_model = accelerator.prepare(vit_model, transformer_model)
-
-    # Load the state dictionary *after* preparing
     transformer_model.load_state_dict(torch.load(transformer_path, map_location=device, weights_only=True))
     transformer_model.eval()
 
     return vit_model, transformer_model, device, accelerator
 
-def run_inference(vit_model, transformer_model, dataloader, accelerator, target_mean, target_std):
+def run_inference(vit_model, transformer_model, dataloader, accelerator, oc_mean, oc_range):
     vit_model.eval()
     transformer_model.eval()
     all_coordinates = []
@@ -161,35 +153,29 @@ def run_inference(vit_model, transformer_model, dataloader, accelerator, target_
 
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Running Inference", disable=not accelerator.is_local_main_process):
-            longitude, latitude, stacked_tensor, metadata = batch
+            longitude, latitude, stacked_tensor, metadata, _ = batch  # Ignore normalized OC since it's not needed
             stacked_tensor = stacked_tensor.to(accelerator.device)
             metadata = metadata.to(accelerator.device)
 
-            # Transform data into elevation and remaining tensors
             elevation_instrument, remaining_tensor, metadata_strings = transform_data(stacked_tensor, metadata)
-
-            # Process into embeddings using ViT
             embeddings = process_embeddings(longitude, latitude, elevation_instrument, remaining_tensor, metadata_strings)
 
-            # Normalize embeddings (as done in training)
             embeddings = (embeddings - embeddings.mean(dim=1, keepdim=True)) / (embeddings.std(dim=1, keepdim=True) + 1e-8)
             embeddings = embeddings.to(torch.float32)
 
-            # Run Transformer inference
             outputs = transformer_model(embeddings)
-            # Denormalize predictions (assuming training normalized targets)
-            predictions = (outputs.squeeze() * target_std + target_mean).cpu().numpy()
+            # Denormalize predictions from [-1, 1] to original OC scale
+            predictions_normalized = outputs.squeeze()  # Assuming model outputs are in [-1, 1]
+            predictions = (predictions_normalized / 2 * oc_range) + oc_mean  # Reverse normalization
+            predictions = predictions.cpu().numpy()
 
-            # Store coordinates and predictions
             coords = np.stack([longitude.cpu().numpy(), latitude.cpu().numpy()], axis=1)
             all_coordinates.append(coords)
             all_predictions.append(predictions)
 
-    # Concatenate local results
     all_coordinates = np.concatenate(all_coordinates, axis=0) if all_coordinates else np.array([])
     all_predictions = np.concatenate(all_predictions, axis=0) if all_predictions else np.array([])
 
-    # Gather results from all GPUs
     all_coordinates = accelerator.gather(torch.tensor(all_coordinates, device=accelerator.device)).cpu().numpy()
     all_predictions = accelerator.gather(torch.tensor(all_predictions, device=accelerator.device)).cpu().numpy()
 
@@ -204,7 +190,28 @@ def flatten_paths(path_list):
             flattened.append(item)
     return flattened
 
+def compute_oc_statistics():
+    """Compute OC statistics from the training dataset"""
+    df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
+    train_df, _ = create_balanced_dataset(df)
+    train_coords, train_data = separate_and_add_data()
+    train_coords = list(dict.fromkeys(flatten_paths(train_coords)))
+    train_data = list(dict.fromkeys(flatten_paths(train_data)))
+
+    train_dataset = MultiRasterDatasetMultiYears(
+        samples_coordinates_array_subfolders=train_coords,
+        data_array_subfolders=train_data,
+        dataframe=train_df,
+        time_before=time_before
+    )
+    
+    return train_dataset.oc_mean, train_dataset.oc_range
+
 def main():
+    # Compute OC statistics from training data before inference
+    oc_mean, oc_range = compute_oc_statistics()
+    print(f"OC statistics from training data: mean={oc_mean}, range={oc_range}")
+
     accelerator = Accelerator()
 
     # Load inference dataframe
@@ -220,14 +227,10 @@ def main():
 
     # Prepare data paths
     samples_coordinates_array_path_1mil, data_array_path_1mil = separate_and_add_data_1mil_inference()
-    
     samples_coordinates_array_path_1mil = flatten_paths(samples_coordinates_array_path_1mil)
     data_array_path_1mil = flatten_paths(data_array_path_1mil)
     samples_coordinates_array_path_1mil = list(dict.fromkeys(samples_coordinates_array_path_1mil))
     data_array_path_1mil = list(dict.fromkeys(data_array_path_1mil))
-    # samples_coordinates_array_path_1mil = samples_coordinates_array_path_1mil[:13000]
-    # data_array_path_1mil= data_array_path_1mil[:13000]
-    # df_full = df_full[:13000]
 
     # Initialize dataset
     inference_dataset = MultiRasterDataset1MilMultiYears(
@@ -250,16 +253,18 @@ def main():
     # Load models
     vit_model, transformer_model, device, accelerator = load_models()
 
-    # Hardcoded target mean and std (should ideally be saved from training)
-    target_mean = 0.0  # Placeholder; replace with actual value from training
-    target_std = 1.0   # Placeholder; replace with actual value from training
-    if accelerator.is_local_main_process:
-        print(f"Using target_mean={target_mean}, target_std={target_std} for denormalization")
+    # Run inference with OC statistics
+    coordinates, predictions = run_inference(vit_model, transformer_model, inference_loader, accelerator, oc_mean, oc_range)
 
-    # Run inference
-    coordinates, predictions = run_inference(vit_model, transformer_model, inference_loader, accelerator, target_mean, target_std)
+    # Define save paths
+    save_path_coords = "coordinates_1mil.npy"
+    save_path_preds = "predictions_1mil.npy"
+    
+    # Save results
+    np.save(save_path_coords, coordinates)
+    np.save(save_path_preds, predictions)
 
-    # Only the main process handles visualization
+    # Main process handles visualization
     if accelerator.is_local_main_process:
         print(f"Inference completed. Coordinates shape: {coordinates.shape}, Predictions shape: {predictions.shape}")
         create_prediction_visualizations(
