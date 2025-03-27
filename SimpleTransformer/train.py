@@ -41,7 +41,7 @@ def parse_args():
     parser.add_argument('--num_heads', type=int, default=NUM_HEADS, help='Number of attention heads')
     parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of transformer layers')
     parser.add_argument('--loss_alpha', type=float, default=0.5, help='Weight for L1 loss in composite loss')
-    parser.add_argument('--use_validation', action='store_true', default=False, help='Whether to use validation set')
+    parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')
     return parser.parse_args()
 
 def create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=True):

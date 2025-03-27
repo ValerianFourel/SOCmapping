@@ -321,3 +321,6 @@ class NormalizedMultiRasterDatasetMultiYears(MultiRasterDatasetMultiYears):
          longitude, latitude, features, target = super().__getitem__(idx)
          features = (features - self.feature_means[:, None, None]) / self.feature_stds[:, None, None]
          return longitude, latitude, features, target
+     
+     def getStatistics(self):
+         return self.feature_means, self.feature_stds
