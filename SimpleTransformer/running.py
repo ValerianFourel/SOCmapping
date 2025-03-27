@@ -5,7 +5,7 @@ import os
 import glob
 import pandas as pd
 from config import (
-    bands_list_order, time_before, LOADING_TIME_BEGINNING, window_size,
+    bands_list_order, time_before, LOADING_TIME_BEGINNING, window_size,MAX_OC,
     TIME_BEGINNING, TIME_END, INFERENCE_TIME, seasons, years_padded, NUM_HEADS, NUM_LAYERS,
     save_path_predictions_plots, SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly,
     DataYearly, file_path_coordinates_Bavaria_1mil, SamplesCoordinates_Seasonally,
@@ -13,6 +13,7 @@ from config import (
 )
 from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data, separate_and_add_data_1mil_inference
 from dataloader.dataloaderMapping import NormalizedMultiRasterDataset1MilMultiYears, RasterTensorDataset1Mil , MultiRasterDataset1MilMultiYears
+from dataloader.dataloaderMultiYears import NormalizedMultiRasterDatasetMultiYears
 from mapping import create_prediction_visualizations, parallel_predict
 from modelSimpleTransformer import SimpleTransformer
 from tqdm import tqdm
@@ -21,8 +22,69 @@ from accelerate import Accelerator
 import json
 from datetime import datetime
 import argparse
+from accelerate import Accelerator
+import torch
+from torch.utils.data import DataLoader
+import numpy as np
+import pandas as pd
+import argparse
 
-def load_cnn_model(model_path="/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/transformer_model_MAX_OC_160_TIME_BEGINNING_2007_TIME_END_2023_R2_0_5578.pth", accelerator=None):
+
+def create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=True):
+    """
+    Create a balanced dataset by binning OC values and resampling.
+    If use_validation is True, splits into training and validation sets.
+    If use_validation is False, returns only a balanced training set.
+    """
+    bins = pd.qcut(df['OC'], q=n_bins, labels=False, duplicates='drop')
+    df['bin'] = bins
+    bin_counts = df['bin'].value_counts()
+    max_samples = bin_counts.max()
+    min_samples = max(int(max_samples * min_ratio), 5)
+    
+    training_dfs = []
+    
+    if use_validation:
+        validation_indices = []
+        
+        for bin_idx in range(len(bin_counts)):
+            bin_data = df[df['bin'] == bin_idx]
+            if len(bin_data) >= 4:
+                val_samples = bin_data.sample(n=min(8, len(bin_data)))
+                validation_indices.extend(val_samples.index)
+                train_samples = bin_data.drop(val_samples.index)
+                if len(train_samples) > 0:
+                    if len(train_samples) < min_samples:
+                        resampled = train_samples.sample(n=min_samples, replace=True)
+                        training_dfs.append(resampled)
+                    else:
+                        training_dfs.append(train_samples)
+        
+        if not training_dfs or not validation_indices:
+            raise ValueError("No training or validation data available after binning")
+        
+        training_df = pd.concat(training_dfs).drop('bin', axis=1)
+        validation_df = df.loc[validation_indices].drop('bin', axis=1)
+        return training_df, validation_df
+    
+    else:
+        for bin_idx in range(len(bin_counts)):
+            bin_data = df[df['bin'] == bin_idx]
+            if len(bin_data) > 0:
+                if len(bin_data) < min_samples:
+                    resampled = bin_data.sample(n=min_samples, replace=True)
+                    training_dfs.append(resampled)
+                else:
+                    training_dfs.append(bin_data)
+        
+        if not training_dfs:
+            raise ValueError("No training data available after binning")
+        
+        training_df = pd.concat(training_dfs).drop('bin', axis=1)
+        return training_df
+
+
+def load_SimpleTransformer_model(model_path="/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/transformer_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1_0000.pth", accelerator=None):
     device = accelerator.device
     model = SimpleTransformer(
         input_channels=len(bands_list_order),
@@ -46,101 +108,6 @@ def load_cnn_model(model_path="/home/vfourel/SOCProject/SOCmapping/SimpleTransfo
     # Prepare the model for multi-GPU usage with Accelerate
     model = accelerator.prepare(model)
     return model, device
-
-def compute_statistics(accelerator, samples_coordinates_array_path_1mil, data_array_path_1mil, dataframe, batch_size=128, num_workers=4, sample_fraction=0.05):
-    """Compute mean and std across a sampled fraction of features using MultiRasterDataset1MilMultiYears."""
-    def features_only_collate(batch):
-        features = [item[2] for item in batch]  # Extract features from (longitude, latitude, features)
-        return torch.stack(features)
-
-    # Sample a fraction of the dataframe
-    sample_size = max(1, int(len(dataframe) * sample_fraction))
-    sampled_df = dataframe.sample(n=sample_size, random_state=42)  # Reproducible sampling
-    if accelerator.is_local_main_process:
-        print(f"Computing statistics on {sample_fraction*100}% of data ({sample_size} samples)")
-
-    # Use the non-normalized dataset for statistics
-    stats_dataset = MultiRasterDataset1MilMultiYears(
-        samples_coordinates_array_subfolders=samples_coordinates_array_path_1mil,
-        data_array_subfolders=data_array_path_1mil,
-        dataframe=sampled_df,
-        time_before=time_before
-    )
-    
-    stats_loader = DataLoader(
-        stats_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True,
-        collate_fn=features_only_collate
-    )
-    stats_loader = accelerator.prepare(stats_loader)
-
-    # Initialize accumulators on GPU for efficiency
-    total_sum = torch.zeros((len(bands_list_order), time_before), device=accelerator.device)
-    total_sum_squares = torch.zeros((len(bands_list_order), time_before), device=accelerator.device)
-    total_count = 0
-
-    # Accumulate statistics
-    for batch in tqdm(stats_loader, desc="Computing Statistics", disable=not accelerator.is_local_main_process):
-        features = batch.to(accelerator.device)
-        B, bands, H, W, T = features.shape  # [batch, bands, height, width, time]
-        batch_sum = features.sum(dim=(0, 2, 3))  # Sum over batch, height, width
-        batch_sum_squares = (features ** 2).sum(dim=(0, 2, 3))
-        total_sum += batch_sum
-        total_sum_squares += batch_sum_squares
-        total_count += B * H * W
-
-    # Synchronize across processes
-    total_sum = accelerator.reduce(total_sum, reduction='sum')
-    total_sum_squares = accelerator.reduce(total_sum_squares, reduction='sum')
-    total_count = accelerator.reduce(torch.tensor(total_count, device=accelerator.device), reduction='sum').item()
-
-    # Compute mean and std on GPU, then move to CPU
-    feature_means = total_sum / total_count
-    feature_stds = torch.sqrt(torch.clamp((total_sum_squares / total_count) - (feature_means ** 2), min=0))
-    feature_stds = torch.clamp(feature_stds, min=1e-8)  # Avoid division by zero
-
-    # Move to CPU for use in dataset
-    feature_means = feature_means.cpu()
-    feature_stds = feature_stds.cpu()
-
-    # Save statistics on main process
-    if accelerator.is_main_process:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        cache_dir = "stats_cache"
-        os.makedirs(cache_dir, exist_ok=True)
-        cache_file = os.path.join(cache_dir, f"stats_{timestamp}.pt")
-        metadata = {
-            "timestamp": timestamp,
-            "sample_fraction": sample_fraction,
-            "sample_size": sample_size,
-            "total_size": len(dataframe),
-            "feature_means": feature_means.tolist(),
-            "feature_stds": feature_stds.tolist()
-        }
-        torch.save({"metadata": metadata, "feature_means": feature_means, "feature_stds": feature_stds}, cache_file)
-        print(f"Saved statistics to {cache_file}")
-
-    return feature_means, feature_stds
-
-def load_statistics(accelerator, stats_file):
-    """Load statistics from a previous run."""
-    if not os.path.exists(stats_file):
-        raise FileNotFoundError(f"Stats file {stats_file} not found")
-    
-    data = torch.load(stats_file)
-    feature_means = data["feature_means"]
-    feature_stds = data["feature_stds"]
-    metadata = data["metadata"]
-    
-    if accelerator.is_local_main_process:
-        print(f"Loaded statistics from {stats_file}:")
-        print(f"Timestamp: {metadata['timestamp']}")
-        print(f"Sample fraction: {metadata['sample_fraction']*100}% ({metadata['sample_size']}/{metadata['total_size']} samples)")
-    
-    return feature_means, feature_stds
 
 def run_inference(model, dataloader, accelerator):
     model.eval()
@@ -173,110 +140,112 @@ def flatten_paths(path_list):
             flattened.append(item)
     return flattened
 
+
+
+def compute_training_statistics():
+    """Compute feature statistics from training dataset before Accelerate initialization"""
+    df_train = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
+    train_coords, train_data = separate_and_add_data()
+    train_coords = list(dict.fromkeys(flatten_paths(train_coords)))
+    train_data = list(dict.fromkeys(flatten_paths(train_data)))
+    train_df = create_balanced_dataset(df_train)
+    
+    # Initialize training dataset and compute statistics
+    train_dataset = NormalizedMultiRasterDatasetMultiYears(train_coords, train_data, train_df)
+    feature_means, feature_stds = train_dataset.getStatistics()
+    
+    print(f"Computed training statistics - Means: {feature_means}, Stds: {feature_stds}")
+    
+    # Verify channel consistency
+    expected_channels = len(bands_list_order)
+    if feature_means.shape[0] != expected_channels:
+        raise ValueError(f"Training feature_means has {feature_means.shape[0]} channels, but expected {expected_channels}")
+    
+    return feature_means, feature_stds
+
 def main():
-    # Argument parser for command-line options
-    parser = argparse.ArgumentParser(description="Run inference with optional precomputed statistics")
-    parser.add_argument("--use-previous-stats", type=str, default=None, help="Path to previous stats file (e.g., stats_cache/stats_20230324_123456.pt)")
+    # Compute training statistics before Accelerate
+    feature_means, feature_stds = compute_training_statistics()
+    
+    # Initialize Accelerator after statistics computation
+    accelerator = Accelerator()
+    
+    parser = argparse.ArgumentParser(description="Accelerated inference script with multi-GPU support")
+    parser.add_argument("--model-path", type=str, 
+                       default="/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/transformer_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1_0000.pth", 
+                       help="Path to the trained model")
     args = parser.parse_args()
 
-    accelerator = Accelerator()
-
-    # Load inference dataframe
-    try:
-        df_full = pd.read_csv(file_path_coordinates_Bavaria_1mil)
-        if accelerator.is_local_main_process:
-            print("Loaded inference dataframe:")
-            print(df_full.head())
-    except Exception as e:
-        if accelerator.is_local_main_process:
-            print(f"Error loading inference dataframe: {e}")
-        return
-
-    # Prepare data paths
-    samples_coordinates_array_path_1mil, data_array_path_1mil = separate_and_add_data_1mil_inference()
-    samples_coordinates_array_path_1mil = flatten_paths(samples_coordinates_array_path_1mil)
-    data_array_path_1mil = flatten_paths(data_array_path_1mil)
-    samples_coordinates_array_path_1mil = list(dict.fromkeys(samples_coordinates_array_path_1mil))
-    data_array_path_1mil = list(dict.fromkeys(data_array_path_1mil))
-    ###################
-    # TMP: 
-    #
-    #samples_coordinates_array_path_1mil = samples_coordinates_array_path_1mil[:200]
-    #data_array_path_1mil = data_array_path_1mil[:200]
-    #df_full = df_full[:200]
-    #########################
-    if accelerator.is_local_main_process:
-        print('Finished getting the 200 paths')
-
-    # Load or compute statistics
-    if args.use_previous_stats:
+    # Load inference dataframe only on main process initially
+    if accelerator.is_main_process:
         try:
-            feature_means, feature_stds = load_statistics(accelerator, args.use_previous_stats)
+            df_full = pd.read_csv(file_path_coordinates_Bavaria_1mil)
+            print(f"Loaded inference dataframe with {len(df_full)} samples")
         except Exception as e:
-            if accelerator.is_local_main_process:
-                print(f"Failed to load previous stats: {e}. Computing new statistics.")
-            feature_means, feature_stds = compute_statistics(
-                accelerator,
-                samples_coordinates_array_path_1mil,
-                data_array_path_1mil,
-                df_full,
-                sample_fraction=0.01  # 1% of the dataset
-            )
-    else:
-        feature_means, feature_stds = compute_statistics(
-            accelerator,
-            samples_coordinates_array_path_1mil,
-            data_array_path_1mil,
-            df_full,
-            sample_fraction=0.05  # 5% of the dataset
-        )
-    print(feature_means, feature_stds)
+            print(f"Error loading inference dataframe: {e}")
+            return
+    
+    # Wait for all processes to sync
+    accelerator.wait_for_everyone()
 
-    # Initialize normalized dataset
+    # Prepare inference data paths (done on all processes)
+    samples_coords_1mil, data_1mil = separate_and_add_data_1mil_inference()
+    samples_coords_1mil = list(dict.fromkeys(flatten_paths(samples_coords_1mil)))
+    data_1mil = list(dict.fromkeys(flatten_paths(data_1mil)))
+
+    # Load df_full on other processes after sync
+    if not accelerator.is_main_process:
+        df_full = pd.read_csv(file_path_coordinates_Bavaria_1mil)
+
+    # Initialize inference dataset with pre-computed statistics
     inference_dataset = NormalizedMultiRasterDataset1MilMultiYears(
-        samples_coordinates_array_path=samples_coordinates_array_path_1mil,
-        data_array_path=data_array_path_1mil,
+        samples_coordinates_array_path=samples_coords_1mil,
+        data_array_path=data_1mil,
         df=df_full,
         feature_means=feature_means,
-        feature_stds=feature_stds,
-        time_before=time_before
+        feature_stds=feature_stds
     )
 
-    # Create DataLoader
+    # Create DataLoader with DistributedSampler
     inference_loader = DataLoader(
         inference_dataset,
         batch_size=64,
         shuffle=False,
         num_workers=4,
-        pin_memory=True
+        pin_memory=True,
+        sampler=torch.utils.data.distributed.DistributedSampler(
+            inference_dataset,
+            num_replicas=accelerator.num_processes,
+            rank=accelerator.process_index
+        )
     )
-    inference_loader = accelerator.prepare(inference_loader)
 
-    # Load the CNN model
-    cnn_model, device = load_cnn_model(accelerator=accelerator)
-    if accelerator.is_local_main_process:
-        print("Loaded CNN model:")
-        print(cnn_model)
+    # Load and prepare model
+    model = load_SimpleTransformer_model(args.model_path)
+    model = accelerator.prepare(model)
+    inference_loader = accelerator.prepare(inference_loader)
+    
+    print(f"Loaded model on {accelerator.device} (Process {accelerator.process_index})")
 
     # Run inference
-    coordinates, predictions = run_inference(cnn_model, inference_loader, accelerator)
-    # Define save paths for the .npy files
-    save_path_coords = "coordinates.npy"  # You can modify the path/name as needed
-    save_path_preds = "predictions.npy"   # You can modify the path/name as needed
+    coordinates, predictions = run_inference(model, inference_loader)
     
-    # Save coordinates and predictions as .npy files
-    np.save(save_path_coords, coordinates)
-    np.save(save_path_preds, predictions)
-
-    if accelerator.is_local_main_process:
-        print(f"Inference completed. Coordinates shape: {coordinates.shape}, Predictions shape: {predictions.shape}")
-        create_prediction_visualizations(
-            INFERENCE_TIME,
-            coordinates,
-            predictions,
-            save_path_predictions_plots
-        )
+    # Gather results from all processes
+    all_coordinates = accelerator.gather(coordinates)
+    all_predictions = accelerator.gather(predictions)
+    
+    # Save results and create visualizations only on main process
+    if accelerator.is_main_process:
+        # Convert to numpy arrays if needed
+        all_coordinates = np.concatenate(all_coordinates, axis=0)
+        all_predictions = np.concatenate(all_predictions, axis=0)
+        
+        np.save("coordinates_1mil.npy", all_coordinates)
+        np.save("predictions_1mil.npy", all_predictions)
+        print(f"Inference completed: Coordinates shape: {all_coordinates.shape}, Predictions shape: {all_predictions.shape}")
+        
+        create_prediction_visualizations(INFERENCE_TIME, all_coordinates, all_predictions, save_path_predictions_plots)
         print(f"Visualizations saved to {save_path_predictions_plots}")
 
 if __name__ == "__main__":
-    main()
+    main()  # Call main directly; use 'accelerate launch' from command line

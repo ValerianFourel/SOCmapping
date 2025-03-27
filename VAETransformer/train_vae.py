@@ -39,8 +39,8 @@ NORMALIZED_BANDS = ['LST', 'MODIS_NPP', 'TotalEvapotranspiration']
 
 # Band-specific KLD weights
 band_kld_weights = {
-    'LST': 0.03,
-    'MODIS_NPP': 50,
+    'LST': 0.003,
+    'MODIS_NPP': 1.0,
     'SoilEvaporation': 1.0,
     'TotalEvapotranspiration': 0.5
 }

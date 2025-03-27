@@ -1,103 +1,185 @@
+from functools import partial
 import numpy as np
-import xgboost as xgb
-import matplotlib.pyplot as plt
-from dataloader.dataloader import MultiRasterDataset 
-from dataloader.dataloaderMapping import MultiRasterDatasetMapping
-from dataloader.dataframe_loader import filter_dataframe , separate_and_add_data
-import pandas as pd
-import numpy as np
-from tqdm import tqdm
-from pathlib import Path
-from config import   (TIME_BEGINNING ,TIME_END , INFERENCE_TIME, seasons, years_padded , 
-                    SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, DataYearly, 
-                    SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, 
-                    DataSeasonally ,file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC )
-from mapping import  create_prediction_visualizations , parallel_predict
-
-import matplotlib.pyplot as plt
-from torch.utils.data import Dataset, DataLoader
-
-from modelCNN import SmallCNN
 import torch
+from torch.utils.data import Dataset, DataLoader
+import os
+import glob
+import pandas as pd
+from config import (
+    bands_list_order, time_before, LOADING_TIME_BEGINNING, window_size,
+    TIME_BEGINNING, TIME_END, INFERENCE_TIME, seasons, years_padded,
+    save_path_predictions_plots, SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly,
+    DataYearly, file_path_coordinates_Bavaria_1mil, SamplesCoordinates_Seasonally,
+    MatrixCoordinates_1mil_Seasonally, DataSeasonally, file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC,
+    MAX_OC, bands_dict
+)
+from dataloader.dataframe_loader import separate_and_add_data_1mil_inference, filter_dataframe, create_balanced_dataset
+from dataloader.dataloaderMapping import MultiRasterDataset1MilMultiYears, MultiRasterDatasetMultiYears
+from mapping import create_prediction_visualizations
+from model_transformer import TransformerRegressor
+from tqdm import tqdm
+from accelerate import Accelerator
+from IEEE_TPAMI_SpectralGPT.models_mae_spectral import MaskedAutoencoderViT
+from IEEE_TPAMI_SpectralGPT import models_vit_tensor
 
-def load_cnn_model(model_path="/home/vfourel/SOCProject/SOCmapping/SimpleTimeModel/SimpleCNN_map/cnn_model_MAX_OC_150_TIME_BEGINNING_2002_TIME_END_2023.pth"):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = SmallCNN()
-    model.load_state_dict(torch.load(model_path, map_location=device))
-    model.eval()
-    return model
+def transform_data(stacked_tensor, metadata):
+    B, total_steps, H, W = stacked_tensor.shape
+    index_to_band = {k: v for k, v in bands_dict.items()}
+    num_channels = len(bands_list_order) - 1  # Number of non-elevation bands
+    expected_steps = 1 + num_channels * time_before
 
+    if total_steps != expected_steps:
+        if total_steps < expected_steps:
+            print(f"Warning: total_steps ({total_steps}) < expected_steps ({expected_steps}). Padding with zeros.")
+            padding = torch.zeros((B, expected_steps - total_steps, H, W), device=stacked_tensor.device)
+            stacked_tensor = torch.cat([stacked_tensor, padding], dim=1)
+            metadata_padding = torch.zeros((B, expected_steps - total_steps, 2), device=metadata.device)
+            metadata = torch.cat([metadata, metadata_padding], dim=1)
+        elif total_steps > expected_steps:
+            print(f"Warning: total_steps ({total_steps}) > expected_steps ({expected_steps}). Truncating.")
+            stacked_tensor = stacked_tensor[:, :expected_steps]
+            metadata = metadata[:, :expected_steps]
+        total_steps = expected_steps
 
+    elevation_mask = (metadata[:, :, 0] == 0) & (metadata[:, :, 1] == 0)
+    elevation_indices = elevation_mask.nonzero(as_tuple=True)
+    elevation_instrument = stacked_tensor[elevation_indices[0], elevation_indices[1], :, :].reshape(B, 1, H, W)
 
+    metadata_strings = [[[[] for _ in range(time_before)] for _ in range(num_channels)] for _ in range(B)]
+    channel_time_data = {c: {t: [] for t in range(time_before)} for c in range(num_channels)}
 
-def modify_matrix_coordinates(MatrixCoordinates_1mil_Yearly=MatrixCoordinates_1mil_Yearly,
-    MatrixCoordinates_1mil_Seasonally = MatrixCoordinates_1mil_Seasonally, INFERENCE_TIME= INFERENCE_TIME):
-    # For MatrixCoordinates_1mil_Seasonally
-    for path in MatrixCoordinates_1mil_Seasonally:
-        folders = path.split('/')
-        last_folder = folders[-1]
+    for b in range(B):
+        channel_year_data = {}
+        for i in range(total_steps):
+            if not elevation_mask[b, i]:
+                band_idx = int(metadata[b, i, 0])
+                year = int(metadata[b, i, 1])
+                channel = band_idx - 1
+                if channel not in channel_year_data:
+                    channel_year_data[channel] = []
+                channel_year_data[channel].append((year, stacked_tensor[b, i]))
 
-        if last_folder == 'Elevation':
-            continue  # Skip Elevation folders
-        elif last_folder == 'MODIS_NPP':
-            # Add just the year (first 4 characters of TIME_END)
-            new_path = f"{path}/{INFERENCE_TIME[:4]}"
-        else:
-            # Add full TIME_END
-            new_path = f"{path}/{INFERENCE_TIME}"
+        for channel in channel_year_data:
+            sorted_data = sorted(channel_year_data[channel], key=lambda x: x[0], reverse=True)
+            for time_idx, (year, tensor_data) in enumerate(sorted_data[:time_before]):
+                metadata_strings[b][channel][time_idx] = f"{index_to_band[channel+1]}_{year}"
+                channel_time_data[channel][time_idx].append(tensor_data)
 
-        folders = path.split('/')
-        folders.append(TIME_END if last_folder != 'MODIS_NPP' else INFERENCE_TIME[:4])
-        new_path = '/'.join(folders)
-        MatrixCoordinates_1mil_Seasonally[MatrixCoordinates_1mil_Seasonally.index(path)] = new_path
+    remaining_tensor = torch.zeros((B, num_channels, time_before, H, W))
+    for c in range(num_channels):
+        for t in range(time_before):
+            if channel_time_data[c][t]:
+                data = torch.stack(channel_time_data[c][t])
+                remaining_tensor[:len(data), c, t] = data
 
-    # For MatrixCoordinates_1mil_Yearly
-    for path in MatrixCoordinates_1mil_Yearly:
-        folders = path.split('/')
-        last_folder = folders[-1]
+    return elevation_instrument, remaining_tensor, metadata_strings
 
-        if last_folder == 'Elevation':
-            continue  # Skip Elevation folders
-        else:
-            # Add just the year (first 4 characters of TIME_END)
-            folders.append(INFERENCE_TIME[:4])
-            new_path = '/'.join(folders)
-            MatrixCoordinates_1mil_Yearly[MatrixCoordinates_1mil_Yearly.index(path)] = new_path
+def process_batch_to_embeddings(longitude, latitude, elevation_instrument, remaining_tensor, metadata_strings, vit_model, device):
+    B = longitude.shape[0]
+    num_channels = remaining_tensor.shape[1]
+    num_times = remaining_tensor.shape[2]
+    all_embeddings = []
+    with torch.no_grad():
+        for idx in range(B):
+            sample_embeddings = []
+            elevation_input = elevation_instrument[idx:idx+1].unsqueeze(1).to(device).expand(1, 1, 3, 96, 96)
+            elevation_emb = vit_model.module.patch_embed(elevation_input).squeeze().flatten()
+            sample_embeddings.append(elevation_emb)
+            for channel in range(num_channels):
+                for time in range(num_times):
+                    x = remaining_tensor[idx, channel, time].unsqueeze(0).unsqueeze(0).to(device).expand(1, 1, 3, 96, 96)
+                    emb = vit_model.module.patch_embed(x).squeeze().flatten()
+                    sample_embeddings.append(emb)
+            sample_embeddings = torch.cat(sample_embeddings, dim=0)
+            all_embeddings.append(sample_embeddings)
+    all_embeddings = torch.stack(all_embeddings, dim=0)
+    return all_embeddings
 
-    return MatrixCoordinates_1mil_Yearly, MatrixCoordinates_1mil_Seasonally
+def load_models(
+    vit_checkpoint_path="/home/vfourel/SOCProject/SOCmapping/FoundationalModels/models/SpectralGPT/SpectralGPT+.pth",
+    transformer_path="/home/vfourel/SOCProject/SOCmapping/FoundationalModels/spectralGPT_TransformerRegressor_MAX_OC_180_TIME_BEGINNING_2007_TIME_END_2023.pth"
+):
+    accelerator = Accelerator()
+    device = accelerator.device
 
+    vit_model = models_vit_tensor.vit_base_patch8(
+        drop_path_rate=0.1,
+        num_classes=62
+    )
+    if vit_checkpoint_path:
+        checkpoint = torch.load(vit_checkpoint_path, map_location='cpu')
+        checkpoint_model = checkpoint['model']
+        skip_keys = [
+            'patch_embed.0.proj.weight', 'patch_embed.1.proj.weight',
+            'patch_embed.2.proj.weight', 'patch_embed.2.proj.bias',
+            'head.weight', 'head.bias'
+        ]
+        for k in skip_keys:
+            if k in checkpoint_model and checkpoint_model[k].shape != vit_model.state_dict()[k].shape:
+                del checkpoint_model[k]
+        msg = vit_model.load_state_dict(checkpoint_model, strict=False)
+        if accelerator.is_local_main_process:
+            print(f"Loaded ViT checkpoint: {msg}")
+    vit_model.eval()
 
+    num_patches = (96 // 8) * (96 // 8)
+    embedding_dim_per_patch = 768
+    total_embedding_dim = embedding_dim_per_patch * num_patches * (1 + (len(bands_list_order) - 1) * time_before)
+    num_tokens = 1 + (len(bands_list_order) - 1) * time_before
 
-##################################################################
+    transformer_model = TransformerRegressor(
+        input_dim=total_embedding_dim,
+        num_tokens=num_tokens,
+        d_model=512,
+        nhead=8,
+        num_layers=2,
+        dim_feedforward=1024,
+        output_dim=1
+    )
 
-# Drawing the mapping
+    vit_model, transformer_model = accelerator.prepare(vit_model, transformer_model)
+    transformer_model.load_state_dict(torch.load(transformer_path, map_location=device, weights_only=True))
+    transformer_model.eval()
 
+    return vit_model, transformer_model, device, accelerator
 
-def get_top_sampling_years(file_path, top_n=3):
-    """
-    Read the Excel file and return the top n years with the most samples
+def run_inference(vit_model, transformer_model, dataloader, accelerator, oc_mean, oc_range):
+    vit_model.eval()
+    transformer_model.eval()
+    all_coordinates = []
+    all_predictions = []
 
-    Parameters:
-    file_path: str, path to the Excel file
-    top_n: int, number of top years to return (default=3)
-    """
-    try:
-        # Read the Excel file
-        df = pd.read_excel(file_path)
+    process_embeddings = partial(process_batch_to_embeddings, vit_model=vit_model, device=accelerator.device)
 
-        # Count samples per year and sort in descending order
-        year_counts = df['year'].value_counts()
-        top_years = year_counts.head(top_n)
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Running Inference", disable=not accelerator.is_local_main_process):
+            longitude, latitude, stacked_tensor, metadata, _ = batch  # Ignore normalized OC since it's not needed
+            stacked_tensor = stacked_tensor.to(accelerator.device)
+            metadata = metadata.to(accelerator.device)
 
-        print(f"\nTop {top_n} years with the most samples:")
-        for year, count in top_years.items():
-            print(f"Year {year}: {count} samples")
+            elevation_instrument, remaining_tensor, metadata_strings = transform_data(stacked_tensor, metadata)
+            embeddings = process_embeddings(longitude, latitude, elevation_instrument, remaining_tensor, metadata_strings)
 
-        return df, top_years
+            embeddings = (embeddings - embeddings.mean(dim=1, keepdim=True)) / (embeddings.std(dim=1, keepdim=True) + 1e-8)
+            embeddings = embeddings.to(torch.float32)
 
-    except Exception as e:
-        print(f"Error reading file: {str(e)}")
+            outputs = transformer_model(embeddings)
+            # Denormalize predictions from [-1, 1] to original OC scale
+            predictions_normalized = outputs.squeeze()  # Assuming model outputs are in [-1, 1]
+            predictions = (predictions_normalized / 2 * oc_range) + oc_mean  # Reverse normalization
+            predictions = predictions.cpu().numpy()
 
+            coords = np.stack([longitude.cpu().numpy(), latitude.cpu().numpy()], axis=1)
+            all_coordinates.append(coords)
+            all_predictions.append(predictions)
+
+    all_coordinates = np.concatenate(all_coordinates, axis=0) if all_coordinates else np.array([])
+    all_predictions = np.concatenate(all_predictions, axis=0) if all_predictions else np.array([])
+
+    all_coordinates = accelerator.gather(torch.tensor(all_coordinates, device=accelerator.device)).cpu().numpy()
+    all_predictions = accelerator.gather(torch.tensor(all_predictions, device=accelerator.device)).cpu().numpy()
+
+    return all_coordinates, all_predictions
 
 def flatten_paths(path_list):
     flattened = []
@@ -108,58 +190,90 @@ def flatten_paths(path_list):
             flattened.append(item)
     return flattened
 
+def compute_oc_statistics():
+    """Compute OC statistics from the training dataset"""
+    df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
+    train_df, _ = create_balanced_dataset(df)
+    train_coords, train_data = separate_and_add_data()
+    train_coords = list(dict.fromkeys(flatten_paths(train_coords)))
+    train_data = list(dict.fromkeys(flatten_paths(train_data)))
 
+    train_dataset = MultiRasterDatasetMultiYears(
+        samples_coordinates_array_subfolders=train_coords,
+        data_array_subfolders=train_data,
+        dataframe=train_df,
+        time_before=time_before
+    )
+    
+    return train_dataset.oc_mean, train_dataset.oc_range
 
 def main():
-    file_path = file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC
+    # Compute OC statistics from training data before inference
+    oc_mean, oc_range = compute_oc_statistics()
+    print(f"OC statistics from training data: mean={oc_mean}, range={oc_range}")
 
+    accelerator = Accelerator()
 
-    # Loop to update variables dynamically
-    samples_coordinates_array_path ,  data_array_path = separate_and_add_data()
-    samples_coordinates_array_path = flatten_paths(samples_coordinates_array_path)
-    data_array_path = flatten_paths(data_array_path)
-
-    # Remove duplicates
-    samples_coordinates_array_path = list(dict.fromkeys(samples_coordinates_array_path))
-    data_array_path = list(dict.fromkeys(data_array_path))
-
-
-    #############################
-
-    # Example usage
-    # Define the file path
-    file_path = "/home/vfourel/SOCProject/SOCmapping/Data/Coordinates1Mil/coordinates_Bavaria_1mil.csv"
-
-    # Load the CSV file into a DataFrame
+    # Load inference dataframe
     try:
-        df_full = pd.read_csv(file_path)
-        df_full.head()  # Display the first few rows of the DataFrame
+        df_full = pd.read_csv(file_path_coordinates_Bavaria_1mil)
+        if accelerator.is_local_main_process:
+            print("Loaded inference dataframe:")
+            print(df_full.head())
     except Exception as e:
-        print(e)
+        if accelerator.is_local_main_process:
+            print(f"Error loading inference dataframe: {e}")
+        return
 
-    # Display the first few rows
-    print(df_full.head())
+    # Prepare data paths
+    samples_coordinates_array_path_1mil, data_array_path_1mil = separate_and_add_data_1mil_inference()
+    samples_coordinates_array_path_1mil = flatten_paths(samples_coordinates_array_path_1mil)
+    data_array_path_1mil = flatten_paths(data_array_path_1mil)
+    samples_coordinates_array_path_1mil = list(dict.fromkeys(samples_coordinates_array_path_1mil))
+    data_array_path_1mil = list(dict.fromkeys(data_array_path_1mil))
 
-    # df_full = df_full.iloc[::4]
-
-
-    BandsYearly_1milPoints, _ = modify_matrix_coordinates()
-
-    # Usage
-    cnn_model = load_cnn_model()
-    print(cnn_model)
-
-    # Call the parallel prediction function
-    coordinates, predictions = parallel_predict(
-        df_full=df_full,
-        cnn_model=cnn_model,
-        bands_yearly=BandsYearly_1milPoints,
-        batch_size=8
+    # Initialize dataset
+    inference_dataset = MultiRasterDataset1MilMultiYears(
+        samples_coordinates_array_subfolders=samples_coordinates_array_path_1mil,
+        data_array_subfolders=data_array_path_1mil,
+        dataframe=df_full,
+        time_before=time_before
     )
 
+    # Create DataLoader
+    inference_loader = DataLoader(
+        inference_dataset,
+        batch_size=32,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True
+    )
+    inference_loader = accelerator.prepare(inference_loader)
 
-    save_path = '/home/vfourel/SOCProject/SOCmapping/predictions_plots/cnnsimple_plots'
-    create_prediction_visualizations(INFERENCE_TIME, coordinates, predictions, save_path)
+    # Load models
+    vit_model, transformer_model, device, accelerator = load_models()
+
+    # Run inference with OC statistics
+    coordinates, predictions = run_inference(vit_model, transformer_model, inference_loader, accelerator, oc_mean, oc_range)
+
+    # Define save paths
+    save_path_coords = "coordinates_1mil.npy"
+    save_path_preds = "predictions_1mil.npy"
+    
+    # Save results
+    np.save(save_path_coords, coordinates)
+    np.save(save_path_preds, predictions)
+
+    # Main process handles visualization
+    if accelerator.is_local_main_process:
+        print(f"Inference completed. Coordinates shape: {coordinates.shape}, Predictions shape: {predictions.shape}")
+        create_prediction_visualizations(
+            INFERENCE_TIME,
+            coordinates,
+            predictions,
+            save_path_predictions_plots
+        )
+        print(f"Visualizations saved to {save_path_predictions_plots}")
 
 if __name__ == "__main__":
     main()
