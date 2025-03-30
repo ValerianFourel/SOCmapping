@@ -144,8 +144,9 @@ dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
 """
 
 
+
 class MultiRasterDatasetMultiYears(Dataset):
-    def __init__(self, samples_coordinates_array_subfolders ,  data_array_subfolders , dataframe, time_before = time_before):
+    def __init__(self, samples_coordinates_array_subfolders, data_array_subfolders, dataframe, time_before=time_before):
         """
         Parameters:
         subfolders: list of str, names of subfolders to include
@@ -158,121 +159,93 @@ class MultiRasterDatasetMultiYears(Dataset):
         self.dataframe = dataframe
         self.datasets = {
             self.get_last_three_folders(subfolder): RasterTensorDataset(subfolder)
-            for subfolder in  self.data_array_subfolders
+            for subfolder in self.data_array_subfolders
         }
         
         self.coordinates = {
-            self.get_last_three_folders(subfolder): np.load(f"{subfolder}/coordinates.npy")#[np.isfinite(np.load(f"{subfolder}/coordinates.npy"))]
+            self.get_last_three_folders(subfolder): np.load(f"{subfolder}/coordinates.npy")
             for subfolder in self.samples_coordinates_array_subfolders
         }
 
-    def check_seasonality(self,data_array_subfolders):
+    def check_seasonality(self, data_array_subfolders):
         seasons = ['winter', 'spring', 'summer', 'autumn']
-
-        # Check if any subfolder contains a season name
         is_seasonal = any(
             any(season in subfolder.lower() for season in seasons)
             for subfolder in data_array_subfolders
         )
-
         return 1 if is_seasonal else 0
 
-
-    def get_last_three_folders(self,path):
-        # Split the path into components
+    def get_last_three_folders(self, path):
         parts = path.rstrip('/').split('/')
-        # Return last 3 components, or all if less than 3
         return '/'.join(parts[-2:])
 
     def find_coordinates_index(self, subfolder, longitude, latitude):
-        """
-        Finds the index of the matching coordinates in the subfolder's coordinates.npy file.
-
-        Parameters:
-        subfolder: str, name of the subfolder
-        longitude: float, longitude to match
-        latitude: float, latitude to match
-
-        Returns:
-        tuple: (id_num, x, y) if match is found, otherwise raises an error
-        """
         coords = self.coordinates[subfolder]
-        # Assuming the first two columns of `coordinates.npy` are longitude and latitude
         match = np.where((coords[:, 1] == longitude) & (coords[:, 0] == latitude))[0]
         if match.size == 0:
-            raise ValueError(f"{coords} Coordinates ({longitude}, {latitude}) not found in {subfolder}")
-
-        # Return id_num, x, y from the same row
+            raise ValueError(f"Coordinates ({longitude}, {latitude}) not found in {subfolder}")
         return coords[match[0], 2], coords[match[0], 3], coords[match[0], 4]
 
     def __getitem__(self, index):
         """
-        Retrieve tensor and target value for a given index.
-
-        Parameters:
-        index: int, index of the row in the dataframe
+        Retrieve tensor, encoding tensor, and target value for a given index.
 
         Returns:
-        tuple: (tensor, OC), where tensor is the data and OC is the target variable
+        tuple: (longitude, latitude, final_tensor, encoding_tensor, oc)
+        where final_tensor is the data, encoding_tensor tracks valid data, and oc is the target variable
         """
         row = self.dataframe.iloc[index]
         longitude, latitude, oc = row["GPS_LONG"], row["GPS_LAT"], row["OC"]
-        tensors = []
-        
-        filtered_array = self.filter_by_season_or_year(row['season'],row['year'],self.seasonalityBased)
-                # Initialize a dictionary to hold the tensors for each band
         band_tensors = {band: [] for band in bands_list_order}
+        encodings = {band: [] for band in bands_list_order}  # To store encoding for each timestep
+        
+        filtered_array = self.filter_by_season_or_year(row['season'], row['year'], self.seasonalityBased)
 
         for subfolder in filtered_array:
-            subfolder = self.get_last_three_folders(subfolder)
+            subfolder_key = self.get_last_three_folders(subfolder)
+            band = subfolder_key.split(os.path.sep)[-2]  # Extract band name
 
-            # Check if the forelast subfolder is 'Elevation'
-            if subfolder.split(os.path.sep)[-1] == 'Elevation':
-                # Get the tensor for 'Elevation'
-                id_num, x, y = self.find_coordinates_index(subfolder, longitude, latitude)
-                elevation_tensor = self.datasets[subfolder].get_tensor_by_location(id_num, x, y)
-
+            if band == 'Elevation':
+                id_num, x, y = self.find_coordinates_index(subfolder_key, longitude, latitude)
+                elevation_tensor = self.datasets[subfolder_key].get_tensor_by_location(id_num, x, y)
                 if elevation_tensor is not None:
-                    # Repeat the 'Elevation' tensor self.time_before times
                     for _ in range(self.time_before):
                         band_tensors['Elevation'].append(elevation_tensor)
+                        encodings['Elevation'].append(torch.tensor(1.0))  # 1.0 for valid data
             else:
-                # Get the year from the last subfolder
-                year = int(subfolder.split(os.path.sep)[-1])
-
-                # Decrement the year by self.time_before
+                year = int(subfolder_key.split(os.path.sep)[-1])
                 for decrement in range(self.time_before):
                     current_year = year - decrement
+                    decremented_subfolder = os.path.sep.join(subfolder_key.split(os.path.sep)[:-1] + [str(current_year)])
+                    
+                    try:
+                        id_num, x, y = self.find_coordinates_index(decremented_subfolder, longitude, latitude)
+                        tensor = self.datasets[decremented_subfolder].get_tensor_by_location(id_num, x, y)
+                        encoding = torch.tensor(1.0) if tensor is not None else torch.tensor(0.0)
+                        tensor = tensor if tensor is not None else torch.zeros(window_size, window_size)
+                    except (ValueError, KeyError):
+                        tensor = torch.zeros(window_size, window_size)
+                        encoding = torch.tensor(0.0)
+                    
+                    band_tensors[band].append(tensor)
+                    encodings[band].append(encoding)
 
-                    # Construct the subfolder with the decremented year
-                    decremented_subfolder = os.path.sep.join(subfolder.split(os.path.sep)[:-1] + [str(current_year)])
-
-                    id_num, x, y = self.find_coordinates_index(decremented_subfolder, longitude, latitude)
-                    tensor = self.datasets[decremented_subfolder].get_tensor_by_location(id_num, x, y)
-
-                    if tensor is not None:
-                        # Append the tensor to the corresponding band in the dictionary
-                        band = subfolder.split(os.path.sep)[-2]
-                        band_tensors[band].append(tensor)
-
-        # Stack the tensors for each band
+        # Stack tensors and encodings for each band
         stacked_tensors = []
+        stacked_encodings = []
         for band in bands_list_order:
             if band_tensors[band]:
-                # Stack the tensors for the current band
-                stacked_tensor = torch.stack(band_tensors[band])
+                stacked_tensor = torch.stack(band_tensors[band])  # Shape: (time_steps, window_size, window_size)
                 stacked_tensors.append(stacked_tensor)
+                stacked_encodings.append(torch.stack(encodings[band]))  # Shape: (time_steps)
 
-        # Concatenate all stacked tensors along the band dimension
-        final_tensor = torch.stack(stacked_tensors)
-        final_tensor = final_tensor.permute(0, 2, 3, 1)
+        final_tensor = torch.stack(stacked_tensors)  # Shape: (bands, time_steps, window_size, window_size)
+        encoding_tensor = torch.stack(stacked_encodings)  # Shape: (bands, time_steps)
+        final_tensor = final_tensor.permute(0, 2, 3, 1)  # Shape: (bands, window_size, window_size, time_steps)
 
-        return longitude, latitude, final_tensor, oc
-       
+        return longitude, latitude, final_tensor, encoding_tensor, oc
 
-    
-    def filter_by_season_or_year(self, season,year,Season_or_year):
-
+    def filter_by_season_or_year(self, season, year, Season_or_year):
         if Season_or_year:
             filtered_array = [
                 path for path in self.samples_coordinates_array_subfolders
@@ -280,47 +253,43 @@ class MultiRasterDatasetMultiYears(Dataset):
                 ('MODIS_NPP' in path and path.endswith(str(year))) or
                 (not 'Elevation' in path and not 'MODIS_NPP' in path and path.endswith(season))
             ]
-            
         else:
             filtered_array = [
-                            path for path in self.samples_coordinates_array_subfolders
-                            if ('Elevation' in path) or
-                            (not 'Elevation' in path and path.endswith(str(year)))
-                        ]
+                path for path in self.samples_coordinates_array_subfolders
+                if ('Elevation' in path) or
+                (not 'Elevation' in path and path.endswith(str(year)))
+            ]
         return filtered_array
 
     def __len__(self):
-        """
-        Return the number of samples in the dataset.
-        """
         return len(self.dataframe)
 
     def get_tensor_by_location(self, subfolder, id_num, x, y):
-        """Get tensor from specific subfolder dataset"""
         return self.datasets[subfolder].get_tensor_by_location(id_num, x, y)
 
+
 class NormalizedMultiRasterDatasetMultiYears(MultiRasterDatasetMultiYears):
-     """Wrapper around MultiRasterDatasetMultiYears that adds feature normalization"""
-     def __init__(self, samples_coordinates_array_path, data_array_path, df):
-         super().__init__(samples_coordinates_array_path, data_array_path, df)
-         self.compute_statistics()
-         
-     def compute_statistics(self):
-         """Compute mean and std across all features for normalization"""
-         features_list = []
-         for i in range(len(self)):
-             _, _, features, _ = super().__getitem__(i)
-             features_list.append(features.numpy())
-             
-         features_array = np.stack(features_list)
-         self.feature_means = torch.tensor(np.mean(features_array, axis=(0, 2, 3)), dtype=torch.float32)
-         self.feature_stds = torch.tensor(np.std(features_array, axis=(0, 2, 3)), dtype=torch.float32)
-         self.feature_stds = torch.clamp(self.feature_stds, min=1e-8)
-         
-     def __getitem__(self, idx):
-         longitude, latitude, features, target = super().__getitem__(idx)
-         features = (features - self.feature_means[:, None, None]) / self.feature_stds[:, None, None]
-         return longitude, latitude, features, target
-     
-     def getStatistics(self):
-         return self.feature_means, self.feature_stds
+    """Wrapper around MultiRasterDatasetMultiYears that adds feature normalization"""
+    def __init__(self, samples_coordinates_array_path, data_array_path, df):
+        super().__init__(samples_coordinates_array_path, data_array_path, df)
+        self.compute_statistics()
+        
+    def compute_statistics(self):
+        """Compute mean and std across all features for normalization"""
+        features_list = []
+        for i in range(len(self)):
+            _, _, features, _, _ = super().__getitem__(i)
+            features_list.append(features.numpy())
+            
+        features_array = np.stack(features_list)
+        self.feature_means = torch.tensor(np.mean(features_array, axis=(0, 2, 3)), dtype=torch.float32)
+        self.feature_stds = torch.tensor(np.std(features_array, axis=(0, 2, 3)), dtype=torch.float32)
+        self.feature_stds = torch.clamp(self.feature_stds, min=1e-8)
+        
+    def __getitem__(self, idx):
+        longitude, latitude, features, encoding_tensor, target = super().__getitem__(idx)
+        features = (features - self.feature_means[:, None, None]) / self.feature_stds[:, None, None]
+        return longitude, latitude, features, encoding_tensor, target
+    
+    def getStatistics(self):
+        return self.feature_means, self.feature_stds
