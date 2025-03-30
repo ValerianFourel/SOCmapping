@@ -17,7 +17,8 @@ from config import (
     file_path_coordinates_Bavaria_1mil, SamplesCoordinates_Yearly, DataYearly,
     SamplesCoordinates_Seasonally, DataSeasonally
 )
-from dataloader.dataframe_loader import separate_and_add_data_1mil_inference
+from dataloader.dataframe_loader import separate_and_add_data , filter_dataframe
+
 from modelTransformerVAE import TransformerVAE  # Assuming this is the VAE model used
 
 # Logging Setup
@@ -31,6 +32,36 @@ VAE_LATENT_DIM_ELEVATION = 24
 VAE_LATENT_DIM_OTHERS = 48
 VAE_DROPOUT_RATE = 0.3
 NORMALIZED_BANDS = ['LST', 'MODIS_NPP', 'TotalEvapotranspiration']
+
+
+def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
+    """
+    Create a balanced dataset by binning OC values and resampling.
+    If use_validation is True, splits into training and validation sets.
+    If use_validation is False, returns only a balanced training set.
+    """
+    bins = pd.qcut(df['OC'], q=n_bins, labels=False, duplicates='drop')
+    df['bin'] = bins
+    bin_counts = df['bin'].value_counts()
+    max_samples = bin_counts.max()
+    min_samples = max(int(max_samples * min_ratio), 5)
+    
+    training_dfs = []
+    
+    for bin_idx in range(len(bin_counts)):
+        bin_data = df[df['bin'] == bin_idx]
+        if len(bin_data) > 0:
+            if len(bin_data) < min_samples:
+                resampled = bin_data.sample(n=min_samples, replace=True)
+                inference_dfs.append(resampled)
+            else:
+                inference_dfs.append(bin_data)
+        
+    if not training_dfs:
+        raise ValueError("No training data available after binning")
+        
+    inference_df = pd.concat(inference_dfs).drop('bin', axis=1)
+    return inference_df
 
 # Helper Functions
 def flatten_paths(path_list):
@@ -125,18 +156,20 @@ if __name__ == "__main__":
 
     # Load Dataset Coordinates and Paths
     logger.info("Loading Bavaria 1M dataset coordinates and paths...")
-    train_dataset_df_full_1mil = pd.read_csv(file_path_coordinates_Bavaria_1mil).fillna(0.0)
-    samples_coordinates_array_path_1mil, data_array_path_1mil = separate_and_add_data_1mil_inference()
+    df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
+    df_full_inference_oc = create_balanced_dataset(df)
+    # train_dataset_df_full_1mil = pd.read_csv(file_path_coordinates_Bavaria_1mil).fillna(0.0)
+    samples_coordinates_array_path, data_array_path = separate_and_add_data()
 
-    samples_coordinates_array_path_1mil = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path_1mil)))
-    data_array_path_1mil = list(dict.fromkeys(flatten_paths(data_array_path_1mil)))
+    samples_coordinates_array_path = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path)))
+    data_array_path = list(dict.fromkeys(flatten_paths(data_array_path)))
 
     # Instantiate Dataset
     logger.info(f"Instantiating dataset for inference (preload={args.preload_dataset})...")
     inference_dataset = MultiRasterDatasetMultiYears(
-        samples_coordinates_array_subfolders=samples_coordinates_array_path_1mil,
-        data_array_subfolders=data_array_path_1mil,
-        dataframe=train_dataset_df_full_1mil,
+        samples_coordinates_array_subfolders=samples_coordinates_array_path,
+        data_array_subfolders=data_array_path,
+        dataframe=df_full_inference_oc,
         time_before=args.time_before
     )
 
