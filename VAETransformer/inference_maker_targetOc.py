@@ -17,8 +17,7 @@ from config import (
     file_path_coordinates_Bavaria_1mil, SamplesCoordinates_Yearly, DataYearly,
     SamplesCoordinates_Seasonally, DataSeasonally
 )
-from dataloader.dataframe_loader import separate_and_add_data , filter_dataframe
-
+from dataloader.dataframe_loader import separate_and_add_data, filter_dataframe
 from modelTransformerVAE import TransformerVAE  # Assuming this is the VAE model used
 
 # Logging Setup
@@ -33,20 +32,25 @@ VAE_LATENT_DIM_OTHERS = 48
 VAE_DROPOUT_RATE = 0.3
 NORMALIZED_BANDS = ['LST', 'MODIS_NPP', 'TotalEvapotranspiration']
 
+# Helper Functions
+def flatten_paths(path_list):
+    flattened = []
+    for item in path_list:
+        if isinstance(item, list):
+            flattened.extend(flatten_paths(item))
+        else:
+            flattened.append(item)
+    return flattened
 
 def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
-    """
-    Create a balanced dataset by binning OC values and resampling.
-    If use_validation is True, splits into training and validation sets.
-    If use_validation is False, returns only a balanced training set.
-    """
+    """Create a balanced dataset by binning OC values and resampling."""
     bins = pd.qcut(df['OC'], q=n_bins, labels=False, duplicates='drop')
     df['bin'] = bins
     bin_counts = df['bin'].value_counts()
     max_samples = bin_counts.max()
     min_samples = max(int(max_samples * min_ratio), 5)
     
-    training_dfs = []
+    inference_dfs = []
     
     for bin_idx in range(len(bin_counts)):
         bin_data = df[df['bin'] == bin_idx]
@@ -57,21 +61,11 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
             else:
                 inference_dfs.append(bin_data)
         
-    if not training_dfs:
-        raise ValueError("No training data available after binning")
+    if not inference_dfs:
+        raise ValueError("No inference data available after binning")
         
     inference_df = pd.concat(inference_dfs).drop('bin', axis=1)
     return inference_df
-
-# Helper Functions
-def flatten_paths(path_list):
-    flattened = []
-    for item in path_list:
-        if isinstance(item, list):
-            flattened.extend(flatten_paths(item))
-        else:
-            flattened.append(item)
-    return flattened
 
 def compute_band_statistics(dataset, band_name, band_index, batch_size=512, sample_percentage=0.01):
     """Compute mean and std for a specific band using a sample of the dataset."""
@@ -94,16 +88,15 @@ def compute_band_statistics(dataset, band_name, band_index, batch_size=512, samp
 
     for batch in tqdm(loader, desc=f"Computing Stats ({band_name})", leave=False):
         try:
-            # Batch format: lon, lat, features, encoding_tensor, oc
-            _, _, features_batch, encoding_tensor, _ = batch
+            _, _, features_batch, _, _ = batch  # Batch: lon, lat, features, encoding_tensor, oc
             band_features = features_batch[:, band_index, :, :, :]  # Shape: (batch_size, W, H, T)
 
             if is_elevation:
                 if band_features.shape[-1] != time_before:
                     logger.warning(f"Elevation band '{band_name}' has unexpected time dim {band_features.shape[-1]}. Using first slice.")
-                current_features = band_features[:, :, :, 0].reshape(-1)  # Flatten to (batch_size * W * H)
+                current_features = band_features[:, :, :, 0].reshape(-1)
             else:
-                current_features = band_features.reshape(-1)  # Flatten to (batch_size * W * H * T)
+                current_features = band_features.reshape(-1)
 
             current_features = torch.nan_to_num(current_features.float(), nan=0.0)
             all_band_features.append(current_features.cpu())
@@ -137,7 +130,7 @@ def parse_args():
     parser.add_argument('--model_dir', type=str, required=True, help='Directory containing trained VAE model .pth files')
     parser.add_argument('--inference_year', type=int, required=True, help=f'Target year for inference ({TIME_BEGINNING}-{TIME_END})')
     parser.add_argument('--time_before', type=int, default=time_before, help='Number of years before inference_year to include')
-    parser.add_argument('--output_file', type=str, required=True, help='Path to save the output .npy file containing latent z')
+    parser.add_argument('--output_file', type=str, required=True, help='Path to save the output .parquet file containing latent z and oc')
     parser.add_argument('--batch_size', type=int, default=256, help='Batch size for inference')
     parser.add_argument('--preload_dataset', action='store_true', help='Preload dataset into memory')
     return parser.parse_args()
@@ -146,7 +139,7 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
     accelerator = Accelerator(mixed_precision='fp16' if torch.cuda.is_available() else 'no')
-    output_path = Path(args.output_file)
+    output_path = Path(args.output_file).with_suffix('.parquet')  # Ensure .parquet extension
     output_path.parent.mkdir(parents=True, exist_ok=True)
     model_dir = Path(args.model_dir)
 
@@ -155,10 +148,9 @@ if __name__ == "__main__":
         raise ValueError(f"Inference year {args.inference_year} must be between {TIME_BEGINNING} and {TIME_END}")
 
     # Load Dataset Coordinates and Paths
-    logger.info("Loading Bavaria 1M dataset coordinates and paths...")
+    logger.info("Loading dataset coordinates and paths...")
     df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
     df_full_inference_oc = create_balanced_dataset(df)
-    # train_dataset_df_full_1mil = pd.read_csv(file_path_coordinates_Bavaria_1mil).fillna(0.0)
     samples_coordinates_array_path, data_array_path = separate_and_add_data()
 
     samples_coordinates_array_path = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path)))
@@ -239,24 +231,27 @@ if __name__ == "__main__":
         raise ValueError(f"Start year index {start_year_index} > end year index {end_year_index}")
     inference_time_indices = list(range(start_year_index, end_year_index + 1))
     num_inference_years = len(inference_time_indices)
-    logger.info(f"Inference for years {TIME_BEGINNING + start_year_index} to {TIME_BEGINNING + end_year_index}")
+    inference_years_range = list(range(TIME_BEGINNING + start_year_index, TIME_BEGINNING + end_year_index + 1))
+    logger.info(f"Inference for years {inference_years_range[0]} to {inference_years_range[-1]}")
 
     # Prepare Storage for Results
     all_coordinates_list = []
     all_elevation_latents_z_list = []
+    all_oc_list = []
     other_bands_latents_z_batches = {band: [] for band in bands_list_order if band != 'Elevation'}
 
     # Inference Loop
-    logger.info("Starting inference to extract latent variable z...")
+    logger.info("Starting inference to extract latent variable z and oc...")
     with torch.no_grad():
         for batch_idx, batch in enumerate(tqdm(inference_loader, desc="Inference Progress")):
             try:
                 # Batch format: longitude, latitude, features, encoding_tensor, oc
-                lon, lat, features_batch, encoding_tensor, _ = batch
+                lon, lat, features_batch, encoding_tensor, oc = batch
                 current_batch_size = lon.size(0)
 
                 coords_batch = torch.stack((lon.cpu(), lat.cpu()), dim=1).numpy()
                 all_coordinates_list.append(coords_batch)
+                all_oc_list.append(oc.cpu().numpy())  # Store oc values
 
                 batch_elevation_latent_z = None
                 batch_other_latents_z = {
@@ -277,7 +272,7 @@ if __name__ == "__main__":
                         features_elev_vae_input = features_elev_slice.unsqueeze(1)  # (B, 1, W, H)
 
                         with torch.autocast(device_type=accelerator.device_type, enabled=accelerator.mixed_precision != 'no'):
-                            mu, log_var = vae.encode(features_elev_vae_input)[:2]  # Assuming encode returns (mu, log_var, ...)
+                            mu, log_var = vae.encode(features_elev_vae_input)[:2]
                             z = vae.reparameterize(mu, log_var)
                         batch_elevation_latent_z = z.cpu()
                         del features_elev_slice, features_elev_vae_input, mu, log_var, z
@@ -302,7 +297,7 @@ if __name__ == "__main__":
                 for band in batch_other_latents_z:
                     other_bands_latents_z_batches[band].append(batch_other_latents_z[band])
 
-                del lon, lat, features_batch, encoding_tensor, batch_elevation_latent_z, batch_other_latents_z
+                del lon, lat, features_batch, encoding_tensor, oc, batch_elevation_latent_z, batch_other_latents_z
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
@@ -319,6 +314,7 @@ if __name__ == "__main__":
     # Consolidate Results
     final_coordinates = np.concatenate(all_coordinates_list, axis=0) if all_coordinates_list else np.array([])
     final_elevation_latent_z = torch.cat(all_elevation_latents_z_list, dim=0).numpy() if all_elevation_latents_z_list else np.array([])
+    final_oc = np.concatenate(all_oc_list, axis=0) if all_oc_list else np.array([])
     final_other_latents_z = {}
     for band in other_bands_latents_z_batches:
         if other_bands_latents_z_batches[band]:
@@ -327,16 +323,39 @@ if __name__ == "__main__":
             logger.warning(f"No latent vectors collected for band {band}. Saving empty array.")
             final_other_latents_z[band] = np.empty((0, num_inference_years, VAE_LATENT_DIM_OTHERS))
 
-    # Create Output Data Structure
-    output_data = {
-        'coordinates': final_coordinates,
-        'elevation_latent_z': final_elevation_latent_z,
-        'other_bands_latent_z': final_other_latents_z,
-        'inference_years_range': list(range(TIME_BEGINNING + start_year_index, TIME_BEGINNING + end_year_index + 1)),
+    # Prepare DataFrame for Parquet
+    logger.info("Preparing DataFrame for Parquet output...")
+    data_dict = {
+        'longitude': final_coordinates[:, 0],
+        'latitude': final_coordinates[:, 1],
+        'oc': final_oc,
+        'elevation_latent_z': [row.tolist() for row in final_elevation_latent_z]  # Convert to list for parquet compatibility
+    }
+
+    # Add other bands' latent z with time dimension
+    for band in final_other_latents_z:
+        for t, year in enumerate(inference_years_range):
+            col_name = f'{band}_latent_z_t{t}_year{year}'
+            data_dict[col_name] = [row[t].tolist() for row in final_other_latents_z[band]]
+
+    # Add metadata as a separate column or handle separately if needed
+    metadata = {
+        'inference_years_range': inference_years_range,
         'bands_order': bands_list_order
     }
 
-    # Save Output
-    logger.info(f"Saving consolidated results (latent z) to {output_path}...")
-    np.save(output_path, output_data, allow_pickle=True)
+    # Create DataFrame
+    output_df = pd.DataFrame(data_dict)
+
+    # Save to Parquet
+    logger.info(f"Saving consolidated results to {output_path}...")
+    output_df.to_parquet(output_path, engine='pyarrow', index=False)
+
+    # Optionally save metadata separately if needed
+    metadata_path = output_path.with_suffix('.metadata.json')
+    import json
+    with open(metadata_path, 'w') as f:
+        json.dump(metadata, f)
+    logger.info(f"Saved metadata to {metadata_path}")
+
     logger.info("Inference finished successfully.")
