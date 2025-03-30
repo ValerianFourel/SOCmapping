@@ -16,11 +16,12 @@ from config import (
     bands_list_order, window_size, time_before
 )
 import logging
-from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data
+from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data_1mil
 
 from modelTransformerVAE import TransformerVAE
-from dataloader.dataloaderMultiYears import MultiRasterDatasetMultiYears
-from dataloader.dataframe_loader import separate_and_add_data_1mil
+
+# Assuming the new dataset classes are in a file called dataloader_new.py
+from dataloader.dataloaderMultiYears import RasterTensorDataset, MultiRasterDatasetMultiYears, NormalizedMultiRasterDatasetMultiYears
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -133,10 +134,36 @@ def load_vae_models(weights_dir, bands_list_order, device_map):
     
     return vae_models
 
-def get_latent_representations(vae_models, dataset, accelerator, batch_size):
-    """Perform inference with VAEs to get latent space z."""
+def compute_band_statistics(dataset, band_idx, batch_size=256):
+    """Compute mean and std for a band's dataset using 1% of features."""
+    total_samples = len(dataset)
+    sample_size = max(1, int(total_samples * 0.01))  # 1% of dataset, at least 1 sample
+    indices = np.random.choice(total_samples, size=sample_size, replace=False)
+    subset = torch.utils.data.Subset(dataset, indices)
+    loader = DataLoader(subset, batch_size=batch_size, shuffle=False, num_workers=4)
+    
+    all_features = []
+    for _, _, features, _ in loader:
+        band_features = features[:, band_idx:band_idx+1, :, :, :].reshape(-1)
+        band_features = torch.nan_to_num(band_features, nan=0.0)
+        all_features.append(band_features)
+    all_features = torch.cat(all_features, dim=0)
+    mean = torch.mean(all_features)
+    std = torch.std(all_features)
+    return mean.item(), std.item() if std.item() != 0 else 1.0  # Avoid division by zero
+
+def get_latent_representations(vae_models, dataset, accelerator, batch_size, normalized_bands=['LST', 'MODIS_NPP', 'TotalEvapotranspiration']):
+    """Perform inference with VAEs to get latent space z with band-specific normalization."""
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4)
     dataloader = accelerator.prepare(dataloader)
+    
+    # Compute normalization statistics for specified bands
+    band_statistics = {}
+    for band_idx, band in enumerate(bands_list_order):
+        if band in normalized_bands:
+            mean, std = compute_band_statistics(dataset, band_idx)
+            band_statistics[band] = (mean, std)
+            logger.info(f"Computed statistics for {band}: mean={mean}, std={std}")
     
     all_latents = []
     all_targets = []
@@ -144,15 +171,20 @@ def get_latent_representations(vae_models, dataset, accelerator, batch_size):
     
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Extracting latent representations"):
-            longitude, latitude, features, oc, _ = batch
+            longitude, latitude, features, oc = batch
             batch_latents = []
             
             for band_idx, band in enumerate(bands_list_order):
                 if band in vae_models:
                     vae = vae_models[band].to(accelerator.device)
                     band_features = features[:, band_idx:band_idx+1, :, :, :]
+                    
+                    # Normalize if band is in normalized_bands
+                    if band in normalized_bands and band in band_statistics:
+                        mean, std = band_statistics[band]
+                        band_features = (band_features - mean) / std
+                    
                     recon, mu, log_var = vae(band_features)
-                    # Sample z from the latent distribution
                     z = vae.reparameterize(mu, log_var)
                     batch_latents.append(z)
             
@@ -270,12 +302,14 @@ def main():
         "time_beginning": TIME_BEGINNING,
         "time_end": TIME_END,
         "window_size": window_size,
+        "time_before": time_before,
         "bands": bands_list_order,
         "mlp_epochs": args.num_epochs_mlp,
         "batch_size": args.batch_size,
         "hidden_dim": args.hidden_dim,
         "weights_dir": args.weights_dir,
-        "use_validation": args.use_validation
+        "use_validation": args.use_validation,
+        "normalized_bands": ['LST', 'MODIS_NPP', 'TotalEvapotranspiration']
     })
     
     # Load and balance dataset
@@ -305,9 +339,13 @@ def main():
     vae_models = load_vae_models(args.weights_dir, bands_list_order, device_map)
     
     # Get latent representations (z)
-    train_latents, train_targets, train_coordinates = get_latent_representations(vae_models, train_dataset, accelerator, args.batch_size)
+    train_latents, train_targets, train_coordinates = get_latent_representations(
+        vae_models, train_dataset, accelerator, args.batch_size
+    )
     if args.use_validation:
-        val_latents, val_targets, val_coordinates = get_latent_representations(vae_models, val_dataset, accelerator, args.batch_size)
+        val_latents, val_targets, val_coordinates = get_latent_representations(
+            vae_models, val_dataset, accelerator, args.batch_size
+        )
     else:
         val_latents, val_targets, val_coordinates = None, None, None
     

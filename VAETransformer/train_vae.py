@@ -14,7 +14,7 @@ from config import (
     file_path_coordinates_Bavaria_1mil, bands_list_order, window_size
 )
 import logging
-from modelTransformerVAE import TransformerVAE
+from modelTransformerVAE import TransformerVAE  # Assuming this is the updated single-frame VAE
 
 TIME_BEGINNING = int(TIME_BEGINNING)
 TIME_END = int(TIME_END)
@@ -50,6 +50,16 @@ BASE_SAVE_DIR = Path('/home/vfourel/SOCProject/SOCmapping/VAETransformer/weights
 BASE_SAVE_DIR.mkdir(parents=True, exist_ok=True)
 SAVE_DIR = BASE_SAVE_DIR
 
+
+def flatten_paths(path_list):
+    flattened = []
+    for item in path_list:
+        if isinstance(item, list):
+            flattened.extend(flatten_paths(item))
+        else:
+            flattened.append(item)
+    return flattened
+
 # Composite MSE-L1 loss with NaN handling
 def composite_mse_l1_loss(outputs, targets, alpha=VAE_ALPHA):
     outputs = torch.nan_to_num(outputs, nan=0.0)
@@ -72,8 +82,8 @@ def parse_args():
     parser.add_argument('--band', type=str, default=None, help='Specific band to train (e.g., NDVI); if None, train all bands')
     return parser.parse_args()
 
-def compute_band_statistics(band_dataset):
-    """Compute mean and std for a band's dataset using 1% of features"""
+def compute_band_statistics(band_dataset, time_steps):
+    """Compute mean and std across all time steps for a band's dataset using 1% of features"""
     total_samples = len(band_dataset)
     sample_size = max(1, int(total_samples * 0.01))  # 1% of dataset, at least 1 sample
     indices = np.random.choice(total_samples, size=sample_size, replace=False)
@@ -82,6 +92,12 @@ def compute_band_statistics(band_dataset):
     
     all_features = []
     for _, _, features, _ in loader:
+        if len(features.shape) == 5:  # [batch, channels, height, width, time]
+            features = features.view(-1, *features.shape[2:4])  # [batch*time, height, width]
+        elif len(features.shape) == 4:  # [batch, channels, height, width]
+            pass  # Already in correct form for Elevation
+        else:
+            raise ValueError(f"Unexpected features shape in compute_band_statistics: {features.shape}")
         features = torch.nan_to_num(features, nan=0.0)
         all_features.append(features)
     all_features = torch.cat(all_features, dim=0)
@@ -90,21 +106,20 @@ def compute_band_statistics(band_dataset):
     return mean.item(), std.item() if std.item() != 0 else 1.0  # Avoid division by zero
 
 def train_single_vae(vae, band_dataset, num_epochs, accelerator, band, save_dir, time_steps, kld_weight=VAE_KLD_WEIGHT, norm_stats=None):
-    """
-    Train a single VAE with optional normalization for specific bands.
-    norm_stats: tuple (mean, std) for normalization, None if no normalization.
-    """
+    """Train a single VAE for a band with randomized sampling across time and coordinates, ensuring [batch_size, 1, 33, 33] output"""
     optimizer = optim.Adam(vae.parameters(), lr=BASE_VAE_LR)
     vae = accelerator.prepare(vae)
     optimizer = accelerator.prepare(optimizer)
 
-    logger.info(f"Training VAE for band {band} with {num_epochs} epochs, {time_steps} time steps, and dynamic 100k sampling.")
+    logger.info(f"Training VAE for band {band} with {num_epochs} epochs and random sampling across {time_steps} time steps")
     
     global_step = 0
     
     for epoch in range(num_epochs):
-        indices = np.random.choice(len(band_dataset), size=100000, replace=False)
-        band_dataset_subset = Subset(band_dataset, indices)
+        # Randomly sample coordinates
+        total_samples = len(band_dataset)
+        coord_indices = np.random.choice(total_samples, size=400000, replace=False)
+        band_dataset_subset = Subset(band_dataset, coord_indices)
         train_loader = DataLoader(band_dataset_subset, batch_size=VAE_BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
         train_loader = accelerator.prepare(train_loader)
 
@@ -112,8 +127,57 @@ def train_single_vae(vae, band_dataset, num_epochs, accelerator, band, save_dir,
         epoch_loss = 0.0
         
         for batch_idx, batch in enumerate(tqdm(train_loader, desc=f'VAE Epoch {epoch+1} - Band {band}', leave=False)):
-            _, _, features, _ = batch
-            features = torch.nan_to_num(features.to(accelerator.device), nan=0.0)
+            _, _, features, _ = batch  # Expected: [batch, time, height, width] for non-Elevation, [batch, channels, height, width] for Elevation
+            batch_size = features.size(0)
+            
+            # Log the initial shape for debugging
+            if batch_idx == 0 and epoch == 0:
+                logger.info(f"Initial features shape for band {band}: {features.shape}")
+            
+# Process features to ensure [batch_size*8, 1, 33, 33]
+            if band != 'Elevation':
+                # Expecting [batch, time, height, width] since dataset gives 17 as time
+                if features.dim() != 4:
+                    raise ValueError(f"Expected 4D tensor [batch, time, height, width] for band {band}, got {features.shape}")
+                if features.shape[2:4] != (33, 33):
+                    raise ValueError(f"Expected spatial dimensions (33, 33) for band {band}, got {features.shape}")
+
+                # Original batch size
+                original_batch_size = features.shape[0]
+                # Number of time samples per batch element
+                samples_per_batch = 8
+                # New batch size
+                new_batch_size = original_batch_size * samples_per_batch
+
+                # Create expanded batch indices
+                batch_indices = torch.repeat_interleave(torch.arange(original_batch_size, device=features.device), samples_per_batch)
+
+                # Randomly sample 8 time indices for each batch element
+                time_indices = torch.randint(0, time_steps, (new_batch_size,), device=features.device)
+
+                # Sample features using the batch and time indices
+                features_expanded = features[batch_indices, time_indices, :, :]  # [batch*8, height, width]
+
+                # Add channel dimension
+                features_expanded = features_expanded.unsqueeze(1)  # [batch*8, 1, 33, 33]
+
+                # Replace original features with expanded version
+                features = features_expanded
+            else:  # Elevation has no time dimension
+                if features.dim() != 4:
+                    raise ValueError(f"Expected 4D tensor [batch, channels, height, width] for Elevation, got {features.shape}")
+                if features.shape[1] != 1 or features.shape[2:4] != (33, 33):
+                    raise ValueError(f"Expected channels=1 and spatial dimensions (33, 33) for Elevation, got {features.shape}")
+            
+            # Final shape check
+            #if features.shape != (batch_size, 1, 33, 33):
+            #    raise ValueError(f"Expected final shape [batch_size, 1, 33, 33] for band {band}, got {features.shape}")
+            
+            features = torch.nan_to_num(features.to(accelerator.device), nan=0.0)  # [batch_size, 1, 33, 33]
+            
+            # Log shape after processing
+            if batch_idx == 0 and epoch == 0:
+                logger.info(f"Features shape after processing for band {band}: {features.shape}")
             
             # Normalize if band is in NORMALIZED_BANDS and stats are provided
             if norm_stats and band in NORMALIZED_BANDS:
@@ -123,8 +187,7 @@ def train_single_vae(vae, band_dataset, num_epochs, accelerator, band, save_dir,
             optimizer.zero_grad()
             with accelerator.accumulate(vae):
                 with torch.autocast(device_type='cuda', dtype=torch.float16):
-                    features = features.permute(0, 2, 3, 1).unsqueeze(1)
-                    recon, mu, log_var = vae(features)
+                    recon, mu, log_var = vae(features)  # Input: [batch_size, 1, 33, 33]
                     log_var = torch.clamp(log_var, min=-10, max=10)
                     total_loss, recon_loss, kld_loss = vae_loss(recon, features, mu, log_var, kld_weight=kld_weight)
                 
@@ -157,15 +220,6 @@ def train_single_vae(vae, band_dataset, num_epochs, accelerator, band, save_dir,
         wandb.save(str(vae_path))
     
     return vae
-
-def flatten_paths(path_list):
-    flattened = []
-    for item in path_list:
-        if isinstance(item, list):
-            flattened.extend(flatten_paths(item))
-        else:
-            flattened.append(item)
-    return flattened
 
 if __name__ == "__main__":
     args = parse_args()
@@ -222,13 +276,15 @@ if __name__ == "__main__":
     training_counter_start = max(existing_dirs) + 1 if existing_dirs else 1
 
     vae_models = {}
-    band_statistics = {}  # Store normalization stats for normalized bands
+    band_statistics = {}
+
+    time_steps = TIME_END - TIME_BEGINNING + 1 if 'Elevation' not in bands_to_train else 1
 
     # Compute statistics for normalized bands
     for band in NORMALIZED_BANDS:
         if band in bands_to_train:
             band_dataset = train_dataset.get_band_dataset(band)
-            mean, std = compute_band_statistics(band_dataset)
+            mean, std = compute_band_statistics(band_dataset, time_steps)
             band_statistics[band] = (mean, std)
             logger.info(f"Computed statistics for {band}: mean={mean}, std={std}")
 
@@ -240,15 +296,13 @@ if __name__ == "__main__":
         save_dir = SAVE_DIR / subfolder_name
         save_dir.mkdir(parents=True, exist_ok=True)
 
-        time_steps = 1 if band == 'Elevation' else (TIME_END - TIME_BEGINNING + 1)
         latent_dim = VAE_LATENT_DIM_ELEVATION if band == 'Elevation' else VAE_LATENT_DIM_OTHERS
         num_heads = VAE_NUM_HEADS if band == 'Elevation' else VAE_NUM_HEADS * 2
 
         vae = TransformerVAE(
-            input_channels=1,
-            input_height=window_size,
-            input_width=window_size,
-            input_time=time_steps,
+            input_channels=1,    # Single channel for all bands
+            input_height=33,     # Fixed height
+            input_width=33,      # Fixed width
             num_heads=num_heads,
             latent_dim=latent_dim,
             dropout_rate=VAE_DROPOUT_RATE
@@ -261,8 +315,18 @@ if __name__ == "__main__":
         else:
             band_dataset = train_dataset.get_band_dataset(band)
             kld_weight = band_kld_weights.get(band, VAE_KLD_WEIGHT)
-            norm_stats = band_statistics.get(band, None)  # Get stats if band is in NORMALIZED_BANDS, else None
-            vae = train_single_vae(vae, band_dataset, NUM_EPOCH_VAE_TRAINING, accelerator, band, save_dir, time_steps, kld_weight=kld_weight, norm_stats=norm_stats)
+            norm_stats = band_statistics.get(band, None)
+            vae = train_single_vae(
+                vae, 
+                band_dataset, 
+                NUM_EPOCH_VAE_TRAINING, 
+                accelerator, 
+                band, 
+                save_dir, 
+                time_steps if band != 'Elevation' else 1, 
+                kld_weight=kld_weight, 
+                norm_stats=norm_stats
+            )
         
         vae_models[band] = vae
         logger.info(f"Completed training for band: {band}")

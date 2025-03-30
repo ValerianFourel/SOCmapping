@@ -10,7 +10,7 @@ from torch.utils.data import Dataset, DataLoader, TensorDataset
 import os
 
 from dataloader.dataloader import MultiRasterDataset 
-from dataloader.dataloaderMapping import MultiRasterDatasetMapping  # Updated class above
+from dataloader.dataloaderMapping import MultiRasterDatasetMapping
 from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data
 from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, seasons, years_padded, 
                    SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, 
@@ -20,7 +20,6 @@ from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, seasons, years_pad
                    window_size, bands_list_order)
 from mapping import create_prediction_visualizations
 from modelCNN import SmallCNN
-
 
 def load_cnn_model(model_path="/home/vfourel/SOCProject/SOCmapping/SimpleTimeModel/SimpleCNN_map/simpletimecnn_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023.pth"):
     print("1. Entering load_cnn_model")
@@ -46,7 +45,6 @@ def load_cnn_model(model_path="/home/vfourel/SOCProject/SOCmapping/SimpleTimeMod
         print(f"Error loading model: {e}")
         raise
 
-
 def separate_and_add_data_1mil_inference(TIME_END=INFERENCE_TIME, 
                                         SamplesCoordinates_Yearly=MatrixCoordinates_1mil_Yearly):
     print("8. Entering separate_and_add_data_1mil_inference")
@@ -65,15 +63,13 @@ def separate_and_add_data_1mil_inference(TIME_END=INFERENCE_TIME,
     print("9. Returning samples paths:", len(samples_paths))
     return samples_paths
 
-
 def flatten_paths(path_list):
     print("10. Entering flatten_paths with input length:", len(path_list))
     flattened = [item for sublist in path_list for item in (flatten_paths(sublist) if isinstance(sublist, list) else [sublist])]
     print("11. Flattened paths length:", len(flattened))
     return flattened
 
-
-def accelerated_predict(df_full, cnn_model, subfolders, batch_size=8):
+def accelerated_predict(df_full, cnn_model, subfolders, batch_size=512):
     print("12. Entering accelerated_predict")
     print("13. df_full shape:", df_full.shape)
     print("14. subfolders:", subfolders[:5])
@@ -98,22 +94,29 @@ def accelerated_predict(df_full, cnn_model, subfolders, batch_size=8):
             print("20. Starting inference loop")
             for i, batch in enumerate(tqdm(dataloader, desc="Processing batches")):
                 inputs, coords = batch  # inputs: (batch, num_bands, h, w), coords: (batch, 2)
-
-
                 outputs = model(inputs)
 
+                # Gather outputs and coordinates across all processes
                 gathered_outputs = accelerator.gather(outputs)
                 gathered_coords = accelerator.gather(coords)
 
                 if accelerator.is_main_process:
-                    all_predictions.append(gathered_outputs.cpu().numpy())
-                    all_coordinates.append(gathered_coords.cpu().numpy())
+                    # Flatten predictions if necessary (assuming outputs are 2D or higher)
+                    gathered_outputs = gathered_outputs.view(-1).cpu().numpy()  # Flatten to 1D
+                    gathered_coords = gathered_coords.view(-1, 2).cpu().numpy()  # Ensure coords are (N, 2)
+                    all_predictions.append(gathered_outputs)
+                    all_coordinates.append(gathered_coords)
 
         if accelerator.is_main_process:
-            predictions = np.vstack(all_predictions)
-            coordinates = np.vstack(all_coordinates)
+            predictions = np.concatenate(all_predictions, axis=0)
+            coordinates = np.concatenate(all_coordinates, axis=0)
             print("27. Final predictions shape:", predictions.shape)
             print("28. Final coordinates shape:", coordinates.shape)
+            
+            # Ensure lengths match
+            if len(predictions) != len(coordinates):
+                raise ValueError(f"Mismatch between predictions ({len(predictions)}) and coordinates ({len(coordinates)})")
+            
             return coordinates, predictions
         else:
             print("29. Not main process, returning None")
@@ -126,7 +129,6 @@ def accelerated_predict(df_full, cnn_model, subfolders, batch_size=8):
         if 'accelerator' in locals():
             accelerator.free_memory()
             accelerator.wait_for_everyone()
-
 
 def main():
     print("30. Entering main")
@@ -174,7 +176,6 @@ def main():
     except Exception as e:
         print(f"Error in main: {e}")
         raise
-
 
 if __name__ == "__main__":
     main()

@@ -3,12 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class TransformerVAE(nn.Module):
-    def __init__(self, input_channels=1, input_height=33, input_width=33, input_time=5, 
+    def __init__(self, input_channels=1, input_height=33, input_width=33, 
                  num_heads=2, latent_dim=4, dropout_rate=0.2):
         super(TransformerVAE, self).__init__()
 
         self.input_channels = input_channels  # Fixed to 1 for single band
-        self.input_time = input_time
         self.input_height = input_height
         self.input_width = input_width
 
@@ -27,12 +26,11 @@ class TransformerVAE(nn.Module):
         )
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=7)
 
-        flat_size = self.d_model * input_time
-        self.fc_mu = nn.Linear(flat_size, latent_dim)
-        self.fc_var = nn.Linear(flat_size, latent_dim)
+        self.fc_mu = nn.Linear(self.d_model, latent_dim)
+        self.fc_var = nn.Linear(self.d_model, latent_dim)
 
         # Decoder with memory mechanism
-        self.decoder_projection = nn.Linear(latent_dim, flat_size)
+        self.decoder_projection = nn.Linear(latent_dim, self.d_model)
         decoder_layer = nn.TransformerDecoderLayer(
             d_model=self.d_model,
             nhead=num_heads,
@@ -44,18 +42,16 @@ class TransformerVAE(nn.Module):
         self.output_projection = nn.Linear(self.d_model, input_channels * input_height * input_width)
 
     def encode(self, x):
-        batch_size, channels, height, width, time = x.size()  # [batch_size, 1, 33, 33, 5]
+        batch_size, channels, height, width = x.size()  # [batch_size, 1, 33, 33]
         
-        x = x.permute(0, 4, 1, 2, 3)  # [batch, time, channels, height, width]
-        x = x.reshape(batch_size, time, -1)
-        x = self.input_projection(x)
+        x = x.reshape(batch_size, -1)  # Flatten to [batch_size, channels*height*width]
+        x = self.input_projection(x)  # [batch_size, d_model]
 
-        x = x.transpose(0, 1)  # [time, batch, d_model]
-        memory = self.transformer_encoder(x)  # [time, batch, d_model]
-        x = memory.transpose(0, 1).reshape(batch_size, -1)  # [batch, time*d_model]
+        x = x.unsqueeze(0)  # [1, batch_size, d_model] (time=1)
+        memory = self.transformer_encoder(x)  # [1, batch_size, d_model]
+        x = memory.squeeze(0)  # [batch_size, d_model]
 
         mu = self.fc_mu(x)
-        log_var = self.fc_var(x)
         log_var = torch.clamp(F.softplus(self.fc_var(x)), min=-10, max=10)  # Stabilize log_var
         return mu, log_var, memory
 
@@ -67,16 +63,14 @@ class TransformerVAE(nn.Module):
     def decode(self, z, memory):
         batch_size = z.size(0)
         
-        x = self.decoder_projection(z)  # [batch, flat_size]
-        x = x.view(batch_size, self.input_time, self.d_model)
-        x = x.transpose(0, 1)  # [time, batch, d_model]
+        x = self.decoder_projection(z)  # [batch_size, d_model]
+        x = x.unsqueeze(0)  # [1, batch_size, d_model] (time=1)
 
-        x = self.transformer_decoder(x, memory)  # [time, batch, d_model]
+        x = self.transformer_decoder(x, memory)  # [1, batch_size, d_model]
+        x = x.squeeze(0)  # [batch_size, d_model]
         
-        x = x.transpose(0, 1)  # [batch, time, d_model]
-        x = self.output_projection(x)  # [batch, time, channels*height*width]
-        
-        x = x.view(batch_size, self.input_channels, self.input_height, self.input_width, self.input_time)
+        x = self.output_projection(x)  # [batch_size, channels*height*width]
+        x = x.view(batch_size, self.input_channels, self.input_height, self.input_width)
         return x
 
     def forward(self, x):

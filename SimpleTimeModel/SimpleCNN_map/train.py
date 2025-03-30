@@ -54,7 +54,7 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
     return training_df, validation_df
 
 def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelerator=None):
-    criterion = nn.MSELoss()
+    criterion = nn.L1Loss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     
     # Prepare with Accelerate
@@ -150,7 +150,7 @@ if __name__ == "__main__":
             "max_oc": MAX_OC,
             "time_beginning": TIME_BEGINNING,
             "time_end": TIME_END,
-            "epochs": 200,
+            "epochs": 100,
             "batch_size": 256,
             "learning_rate": 0.001,
             "input_channels": 6

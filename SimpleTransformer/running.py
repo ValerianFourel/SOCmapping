@@ -156,6 +156,7 @@ def run_inference(model, dataloader, accelerator):
     return all_coordinates, all_predictions
 
 def main():
+    print(' 2nd Third  ')
     feature_means, feature_stds = compute_training_statistics()
     accelerator = Accelerator()
 
@@ -177,11 +178,12 @@ def main():
     samples_coords_1mil, data_1mil = separate_and_add_data_1mil_inference()
     samples_coords_1mil = list(dict.fromkeys(flatten_paths(samples_coords_1mil)))
     data_1mil = list(dict.fromkeys(flatten_paths(data_1mil)))
-
+    
+    third_size = len(df_full) // 3
     inference_dataset = NormalizedMultiRasterDataset1MilMultiYears(
         samples_coordinates_array_path=samples_coords_1mil,
         data_array_path=data_1mil,
-        df=df_full,
+        df=df_full[third_size:2*third_size],
         feature_means=feature_means,
         feature_stds=feature_stds,
         time_before=time_before
@@ -195,7 +197,7 @@ def main():
 
     inference_loader = DataLoader(
         inference_dataset,
-        batch_size=64,
+        batch_size=256,
         shuffle=False,
         num_workers=4,
         pin_memory=True
@@ -208,8 +210,8 @@ def main():
 
     coordinates, predictions = run_inference(model, inference_loader, accelerator)
 
-    np.save("coordinates_1mil.npy", coordinates)
-    np.save("predictions_1mil.npy", predictions)
+    np.save("coordinates_1mil_2ndThird.npy", coordinates)
+    np.save("predictions_1mil_2ndThird.npy", predictions)
     # Only the main process handles printing and visualization
     if accelerator.is_local_main_process:
         print(f"Inference completed. Coordinates shape: {coordinates.shape}, Predictions shape: {predictions.shape}")

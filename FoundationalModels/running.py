@@ -242,13 +242,16 @@ def compute_oc_statistics():
     target_mean, target_std = all_targets.mean().item(), all_targets.std().item()
     return target_mean, target_std
 def main():
-    # Compute OC statistics from training data before inference
-    oc_mean, oc_std = compute_oc_statistics()
-    print(f"OC statistics from training data: mean={oc_mean}, range={oc_std}")
+    print('4th quarter')
+    # oc_mean, oc_std = compute_oc_statistics()
+    oc_mean = 23.3523966756125
+    oc_std= 22.460167800508092
+    print(f"OC statistics from training data: mean={oc_mean}, std={oc_std}")
+    # OC statistics from training data: mean=23.3523966756125, range=22.460167800508092
 
-    accelerator = Accelerator()
+    accelerator = Accelerator(device_placement=False)  # Disable auto device placement
+    torch.cuda.set_device(0)  # Force GPU 0
 
-    # Load inference dataframe
     try:
         df_full = pd.read_csv(file_path_coordinates_Bavaria_1mil)
         if accelerator.is_local_main_process:
@@ -259,46 +262,40 @@ def main():
             print(f"Error loading inference dataframe: {e}")
         return
 
-    # Prepare data paths
     samples_coordinates_array_path_1mil, data_array_path_1mil = separate_and_add_data_1mil_inference()
     samples_coordinates_array_path_1mil = flatten_paths(samples_coordinates_array_path_1mil)
     data_array_path_1mil = flatten_paths(data_array_path_1mil)
     samples_coordinates_array_path_1mil = list(dict.fromkeys(samples_coordinates_array_path_1mil))
     data_array_path_1mil = list(dict.fromkeys(data_array_path_1mil))
 
-    # Initialize dataset
+    # Calculate the size of each quarter and select the 1st quarter
+    quarter_size = len(df_full) // 4
+    #print(len(samples_coordinates_array_path_1mil))
+    #print(len(data_array_path_1mil))
+    print(df_full)
     inference_dataset = MultiRasterDataset1MilMultiYears(
         samples_coordinates_array_subfolders=samples_coordinates_array_path_1mil,
         data_array_subfolders=data_array_path_1mil,
-        dataframe=df_full,
+        dataframe=df_full[3*quarter_size:],
         time_before=time_before
     )
 
-    # Create DataLoader
     inference_loader = DataLoader(
         inference_dataset,
-        batch_size=32,
+        batch_size=128,
         shuffle=False,
         num_workers=4,
         pin_memory=True
     )
-    inference_loader = accelerator.prepare(inference_loader)
 
-    # Load models
     vit_model, transformer_model, device, accelerator = load_models()
-
-    # Run inference with OC statistics
     coordinates, predictions = run_inference(vit_model, transformer_model, inference_loader, accelerator, oc_mean, oc_std)
 
-    # Define save paths
-    save_path_coords = "coordinates_1mil.npy"
-    save_path_preds = "predictions_1mil.npy"
-    
-    # Save results
+    save_path_coords = "coordinates_1mil_4thQuarter.npy"
+    save_path_preds = "predictions_1mil_4thQuarter.npy"
     np.save(save_path_coords, coordinates)
     np.save(save_path_preds, predictions)
 
-    # Main process handles visualization
     if accelerator.is_local_main_process:
         print(f"Inference completed. Coordinates shape: {coordinates.shape}, Predictions shape: {predictions.shape}")
         create_prediction_visualizations(

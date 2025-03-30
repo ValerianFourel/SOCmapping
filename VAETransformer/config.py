@@ -14,6 +14,7 @@ INFERENCE_TIME = '2015'
 bands_list_order = ['Elevation','LAI','LST','MODIS_NPP','SoilEvaporation','TotalEvapotranspiration']
 MAX_OC = 160
 
+LOADING_TIME_BEGINNING_INFERENCE = str(int(INFERENCE_TIME)-time_before)
 
 NUM_EPOCH_VAE_TRAINING = 3
 NUM_EPOCH_MLP_TRAINING = 3

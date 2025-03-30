@@ -1,5 +1,5 @@
 
-from config import LOADING_TIME_BEGINNING, TIME_BEGINNING ,TIME_END , seasons, years_padded  , SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, DataYearly, SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, DataSeasonally ,file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC 
+from config import LOADING_TIME_BEGINNING, TIME_BEGINNING ,TIME_END , INFERENCE_TIME, LOADING_TIME_BEGINNING_INFERENCE, seasons, years_padded  , SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, DataYearly, SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, DataSeasonally ,file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC 
 import pandas as pd
 import numpy as np
 
@@ -324,3 +324,34 @@ def add_season_column(dataframe):
     )
 
     return dataframe
+
+
+
+def separate_and_add_data_1mil_inference(LOADING_TIME_BEGINNING=LOADING_TIME_BEGINNING_INFERENCE, TIME_END=INFERENCE_TIME, seasons=seasons, years_padded=years_padded, 
+                         SamplesCoordinates_Yearly=MatrixCoordinates_1mil_Yearly, DataYearly=DataYearly,
+                         SamplesCoordinates_Seasonally=MatrixCoordinates_1mil_Seasonally, DataSeasonally=DataSeasonally):
+
+    # Define seasons list for matching
+    seasons_list = ['winter', 'spring', 'summer', 'autumn']
+
+    # Check if LOADING_TIME_BEGINNING is a season
+    is_season = any(season in LOADING_TIME_BEGINNING.lower() for season in seasons_list)
+
+    if is_season:
+        # Handle seasons case
+        start_idx = next(i for i, season in enumerate(seasons) 
+                        if LOADING_TIME_BEGINNING.lower() in season.lower())
+        end_idx = next(i for i, season in enumerate(seasons) 
+                      if TIME_END.lower() in season.lower())
+
+        # Get the seasonal range
+        selected_seasons = seasons[start_idx:end_idx + 1]
+
+
+        # Add seasonal data pairs
+        return create_path_arrays(SamplesCoordinates_Seasonally, DataSeasonally, selected_seasons)
+    else:
+        start_idx = years_padded.index(LOADING_TIME_BEGINNING)
+        end_idx = years_padded.index(TIME_END)
+        selected_years = years_padded[start_idx:end_idx + 1]
+        return create_path_arrays_yearly(SamplesCoordinates_Yearly, DataYearly, selected_years)
