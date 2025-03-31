@@ -7,7 +7,6 @@ from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 import wandb
 from dataloader.dataloaderMultiYears import MultiRasterDatasetMultiYears
-from dataloader.dataloaderMapping import MultiRasterDatasetMapping
 from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data
 from timm.models.layers import trunc_normal_
 from IEEE_TPAMI_SpectralGPT.util import video_vit
@@ -16,7 +15,7 @@ from IEEE_TPAMI_SpectralGPT.util.pos_embed import interpolate_pos_embed
 from IEEE_TPAMI_SpectralGPT.models_mae_spectral import MaskedAutoencoderViT
 from IEEE_TPAMI_SpectralGPT import models_vit_tensor
 from config import (
-    LOADING_TIME_BEGINNING, TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,num_epochs,
+    LOADING_TIME_BEGINNING, TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC, num_epochs,
     seasons, years_padded, time_before, imageSize, bands_dict, SamplesCoordinates_Yearly,
     MatrixCoordinates_1mil_Yearly, DataYearly, SamplesCoordinates_Seasonally,
     bands_list_order, MatrixCoordinates_1mil_Seasonally, DataSeasonally,
@@ -46,6 +45,7 @@ def parse_args():
     parser.add_argument('--epochs', default=num_epochs, type=int, help='Number of training epochs')
     parser.add_argument('--lr', default=1e-4, type=float, help='Learning rate for Transformer')
     parser.add_argument('--accum_steps', default=8, type=int, help='Gradient accumulation steps')
+    parser.add_argument('--use_validation', default=True, type=bool, help='Full Training Or Not')
     return parser.parse_args()
 
 def load_model(model, args, device='cuda'):
@@ -72,31 +72,52 @@ def load_model(model, args, device='cuda'):
     print(f'Number of parameters: {n_parameters/1e6:.2f}M')
     return model
 
-def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
+def create_balanced_dataset(df, use_validation=True, n_bins=128, min_ratio=3/4):
     bins = pd.qcut(df['OC'], q=n_bins, labels=False, duplicates='drop')
     df['bin'] = bins
     bin_counts = df['bin'].value_counts()
     max_samples = bin_counts.max()
     min_samples = max(int(max_samples * min_ratio), 5)
-    validation_indices = []
+    
     training_dfs = []
-    for bin_idx in range(len(bin_counts)):
-        bin_data = df[df['bin'] == bin_idx]
-        if len(bin_data) >= 4:
-            val_samples = bin_data.sample(n=min(8, len(bin_data)))
-            validation_indices.extend(val_samples.index)
-            train_samples = bin_data.drop(val_samples.index)
-            if len(train_samples) > 0:
-                if len(train_samples) < min_samples:
-                    resampled = train_samples.sample(n=min_samples, replace=True)
+    
+    if use_validation:
+        validation_indices = []
+        for bin_idx in range(len(bin_counts)):
+            bin_data = df[df['bin'] == bin_idx]
+            if len(bin_data) >= 4:
+                val_samples = bin_data.sample(n=min(8, len(bin_data)))
+                validation_indices.extend(val_samples.index)
+                train_samples = bin_data.drop(val_samples.index)
+                if len(train_samples) > 0:
+                    if len(train_samples) < min_samples:
+                        resampled = train_samples.sample(n=min_samples, replace=True)
+                        training_dfs.append(resampled)
+                    else:
+                        training_dfs.append(train_samples)
+        
+        if not training_dfs or not validation_indices:
+            raise ValueError("No training or validation data available after binning")
+        
+        training_df = pd.concat(training_dfs).drop('bin', axis=1)
+        validation_df = df.loc[validation_indices].drop('bin', axis=1)
+        return training_df, validation_df
+    
+    else:
+        for bin_idx in range(len(bin_counts)):
+            bin_data = df[df['bin'] == bin_idx]
+            if len(bin_data) > 0:
+                if len(bin_data) < min_samples:
+                    resampled = bin_data.sample(n=min_samples, replace=True)
                     training_dfs.append(resampled)
                 else:
-                    training_dfs.append(train_samples)
-    if not training_dfs or not validation_indices:
-        raise ValueError("No training or validation data available after binning")
-    training_df = pd.concat(training_dfs).drop('bin', axis=1)
-    validation_df = df.loc[validation_indices].drop('bin', axis=1)
-    return training_df, validation_df
+                    training_dfs.append(bin_data)
+        
+        if not training_dfs:
+            raise ValueError("No training data available after binning")
+        
+        training_df = pd.concat(training_dfs).drop('bin', axis=1)
+        return training_df, None
 
 def transform_data(stacked_tensor, metadata):
     B, total_steps, H, W = stacked_tensor.shape
@@ -174,13 +195,17 @@ def train_transformer(train_loader, val_loader, vit_model, args, accelerator):
     criterion = nn.L1Loss()
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
-    train_loader, val_loader, transformer_model, optimizer = accelerator.prepare(train_loader, val_loader, transformer_model, optimizer)
+    train_loader, transformer_model, optimizer = accelerator.prepare(train_loader, transformer_model, optimizer)
+    if val_loader is not None:
+        val_loader = accelerator.prepare(val_loader)
 
     all_targets = []
     for _, _, _, _, oc in train_loader:
         all_targets.append(oc)
     all_targets = torch.cat(all_targets)
     target_mean, target_std = all_targets.mean().item(), all_targets.std().item()
+
+    best_r_squared = 0.0
 
     for epoch in range(args.epochs):
         transformer_model.train()
@@ -214,60 +239,94 @@ def train_transformer(train_loader, val_loader, vit_model, args, accelerator):
                     'epoch': epoch + 1
                 })
 
-        transformer_model.eval()
-        total_val_loss = 0
-        val_outputs = []
-        val_targets_list = []
+        avg_train_loss = total_train_loss / len(train_loader.dataset)
+        r_squared = 0.0
 
-        with torch.no_grad():
-            for batch in val_loader:
-                longitude, latitude, stacked_tensor, metadata, oc = batch
-                elevation_instrument, remaining_tensor, metadata_strings = transform_data(stacked_tensor, metadata)
-                embeddings, targets = process_batch_to_embeddings(
-                    longitude, latitude, elevation_instrument, remaining_tensor, metadata_strings, oc, vit_model, accelerator.device
-                )
-                embeddings = (embeddings - embeddings.mean(dim=1, keepdim=True)) / (embeddings.std(dim=1, keepdim=True) + 1e-8)
-                targets = (targets - target_mean) / (target_std + 1e-8)
-                embeddings, targets = embeddings.to(torch.float32), targets.to(torch.float32)
-                outputs = transformer_model(embeddings)
-                loss = criterion(outputs.squeeze(), targets)
-                total_val_loss += loss.item()
-                val_outputs.extend(outputs.squeeze().cpu().numpy())
-                val_targets_list.extend(targets.cpu().numpy())
+        if val_loader is not None:
+            transformer_model.eval()
+            total_val_loss = 0
+            val_outputs = []
+            val_targets_list = []
 
-        if accelerator.is_main_process:
-            avg_train_loss = total_train_loss / len(train_loader.dataset)
-            avg_val_loss = total_val_loss / len(val_loader.dataset)
-            
-            # Calculate additional metrics
-            val_outputs = np.array(val_outputs)
-            val_targets_list = np.array(val_targets_list)
-            correlation = np.corrcoef(val_outputs, val_targets_list)[0, 1]
+            with torch.no_grad():
+                for batch in val_loader:
+                    longitude, latitude, stacked_tensor, metadata, oc = batch
+                    elevation_instrument, remaining_tensor, metadata_strings = transform_data(stacked_tensor, metadata)
+                    embeddings, targets = process_batch_to_embeddings(
+                        longitude, latitude, elevation_instrument, remaining_tensor, metadata_strings, oc, vit_model, accelerator.device
+                    )
+                    embeddings = (embeddings - embeddings.mean(dim=1, keepdim=True)) / (embeddings.std(dim=1, keepdim=True) + 1e-8)
+                    targets = (targets - target_mean) / (target_std + 1e-8)
+                    embeddings, targets = embeddings.to(torch.float32), targets.to(torch.float32)
+                    outputs = transformer_model(embeddings)
+                    loss = criterion(outputs.squeeze(), targets)
+                    total_val_loss += loss.item()
+                    val_outputs.extend(outputs.squeeze().cpu().numpy())
+                    val_targets_list.extend(targets.cpu().numpy())
+
+            if accelerator.is_main_process:
+                avg_val_loss = total_val_loss / len(val_loader.dataset)
+                val_outputs = np.array(val_outputs)
+                val_targets_list = np.array(val_targets_list)
+                correlation = np.corrcoef(val_outputs, val_targets_list)[0, 1]
+                r_squared = correlation ** 2
+                mse = np.mean((val_outputs - val_targets_list) ** 2)
+                rmse = np.sqrt(mse)
+
+                wandb.log({
+                    'epoch': epoch + 1,
+                    'avg_train_loss': avg_train_loss,
+                    'avg_val_loss': avg_val_loss,
+                    'correlation': correlation,
+                    'r_squared': r_squared,
+                    'mse': mse,
+                    'rmse': rmse,
+                    'learning_rate': optimizer.param_groups[0]['lr']
+                })
+
+                if avg_val_loss < wandb.run.summary.get('best_val_loss', float('inf')):
+                    wandb.run.summary['best_val_loss'] = avg_val_loss
+                    best_r_squared = r_squared
+
+                scheduler.step(avg_val_loss)
+        else:
+            # For no validation case, calculate R-squared on training data
+            transformer_model.eval()
+            train_outputs = []
+            train_targets_list = []
+            with torch.no_grad():
+                for batch in train_loader:
+                    longitude, latitude, stacked_tensor, metadata, oc = batch
+                    elevation_instrument, remaining_tensor, metadata_strings = transform_data(stacked_tensor, metadata)
+                    embeddings, targets = process_batch_to_embeddings(
+                        longitude, latitude, elevation_instrument, remainingcholine_tensor, metadata_strings, oc, vit_model, accelerator.device
+                    )
+                    embeddings = (embeddings - embeddings.mean(dim=1, keepdim=True)) / (embeddings.std(dim=1, keepdim=True) + 1e-8)
+                    targets = (targets - target_mean) / (target_std + 1e-8)
+                    embeddings, targets = embeddings.to(torch.float32), targets.to(torch.float32)
+                    outputs = transformer_model(embeddings)
+                    train_outputs.extend(outputs.squeeze().cpu().numpy())
+                    train_targets_list.extend(targets.cpu().numpy())
+
+            train_outputs = np.array(train_outputs)
+            train_targets_list = np.array(train_targets_list)
+            correlation = np.corrcoef(train_outputs, train_targets_list)[0, 1]
             r_squared = correlation ** 2
-            mse = np.mean((val_outputs - val_targets_list) ** 2)
-            rmse = np.sqrt(mse)
+            best_r_squared = max(best_r_squared, r_squared)
 
             wandb.log({
                 'epoch': epoch + 1,
                 'avg_train_loss': avg_train_loss,
-                'avg_val_loss': avg_val_loss,
-                'correlation': correlation,
                 'r_squared': r_squared,
-                'mse': mse,
-                'rmse': rmse,
                 'learning_rate': optimizer.param_groups[0]['lr']
             })
 
-            if avg_val_loss < wandb.run.summary.get('best_val_loss', float('inf')):
-                wandb.run.summary['best_val_loss'] = avg_val_loss
-
-            scheduler.step(avg_val_loss)
-
+        if accelerator.is_main_process:
             checkpoint_path = os.path.join(args.output_dir, f'transformer_epoch_{epoch+1}.pth')
             accelerator.save_state(checkpoint_path)
             wandb.save(checkpoint_path)
 
-    return transformer_model
+    return transformer_model, best_r_squared
 
 if __name__ == "__main__":
     args = parse_args()
@@ -275,7 +334,6 @@ if __name__ == "__main__":
     console = Console()
     console.print(f"Using device: {accelerator.device}")
 
-    # Initialize wandb
     wandb.init(
         project="socmapping-spectralGPT-TransformerRegressor",
         config={
@@ -290,7 +348,8 @@ if __name__ == "__main__":
             "time_beginning": TIME_BEGINNING,
             "time_end": TIME_END,
             "time_before": time_before,
-            "bands": len(bands_list_order)
+            "bands": len(bands_list_order),
+            "use_validation": args.use_validation
         }
     )
 
@@ -309,15 +368,19 @@ if __name__ == "__main__":
     samples_coordinates_array_path = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path)))
     data_array_path = list(dict.fromkeys(flatten_paths(data_array_path)))
 
-    train_df, val_df = create_balanced_dataset(df)
+    train_df, val_df = create_balanced_dataset(df, use_validation=args.use_validation)
     train_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
-    val_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df)
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
+    
+    if args.use_validation and val_df is not None:
+        val_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df)
+        val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
+    else:
+        val_loader = None
 
-    # Log dataset sizes
     wandb.run.summary["train_size"] = len(train_df)
-    wandb.run.summary["val_size"] = len(val_df)
+    if args.use_validation and val_df is not None:
+        wandb.run.summary["val_size"] = len(val_df)
 
     vit_model = models_vit_tensor.__dict__[args.model](
         drop_path_rate=args.drop_path,
@@ -325,18 +388,21 @@ if __name__ == "__main__":
     ).to(accelerator.device)
     vit_model = load_model(vit_model, args, accelerator.device)
 
-    # Log ViT model parameters
     n_parameters = sum(p.numel() for p in vit_model.parameters() if p.requires_grad)
     wandb.run.summary["vit_parameters"] = n_parameters
 
-    transformer_model = train_transformer(train_loader, val_loader, vit_model, args, accelerator)
+    transformer_model, final_r_squared = train_transformer(train_loader, val_loader, vit_model, args, accelerator)
 
-    # Define the save path
-    mlp_path = f'spectralGPT_TransformerRegressor_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}.pth'
+    # Format R-squared for filename
+    r_squared_str = f"{final_r_squared:.4f}".replace(".", "_")
+    validation_str = "FullData" if not args.use_validation else f"R2_{r_squared_str}"
+    
+    # Define the save path with R-squared and validation info
+    mlp_path = f'spectralGPT_TransformerRegressor_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}_{validation_str}.pth'
 
-    # Save the model (only on the main process in a distributed setup)
     if accelerator.is_main_process:
         accelerator.save(transformer_model.state_dict(), mlp_path)
         console.print(f"Model saved to {mlp_path}")
+        wandb.run.summary["final_r_squared"] = final_r_squared
 
     wandb.finish()

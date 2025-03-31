@@ -11,6 +11,19 @@ import pandas as pd
 from config import bands_list_order , time_before, LOADING_TIME_BEGINNING , window_size
 
 
+"""
+2025-03-31 02:46:54,563 - INFO - Computed statistics for LST: mean=14376.498046875, std=137.9790802001953
+2025-03-31 02:47:58,699 - INFO - Computed statistics for LST: mean=14378.6953125, std=135.72703552246094
+2025-03-31 02:48:30,907 - INFO - Computed statistics for LST: mean=14374.1533203125, std=139.667724609375
+2025-03-31 02:48:52,366 - INFO - Computed statistics for LST: mean=14376.5341796875, std=136.1621551513672
+2025-03-31 03:02:29,450 - INFO - Computed statistics for MODIS_NPP: mean=3861.095947265625, std=10117.994140625
+2025-03-31 03:03:46,635 - INFO - Computed statistics for MODIS_NPP: mean=3892.9384765625, std=10089.361328125
+2025-03-31 03:03:55,533 - INFO - Computed statistics for MODIS_NPP: mean=3929.460205078125, std=10022.7783203125
+2025-03-31 03:05:05,499 - INFO - Computed statistics for MODIS_NPP: mean=3915.517822265625, std=10055.5634765625
+2025-03-31 03:18:02,549 - INFO - Computed statistics for TotalEvapotranspiration: mean=120.5914306640625, std=18.143165588378906
+
+"""
+
 def get_metadata(self, id_num):
     """Get metadata from filename"""
     if id_num not in self.id_to_file:
@@ -190,45 +203,67 @@ class MultiRasterDatasetMultiYears(Dataset):
         """
         Retrieve tensor, encoding tensor, and target value for a given index.
 
+        Parameters:
+        index: int, index of the row in the dataframe
+
         Returns:
         tuple: (longitude, latitude, final_tensor, encoding_tensor, oc)
-        where final_tensor is the data, encoding_tensor tracks valid data, and oc is the target variable
+        where final_tensor is the data (bands, window_size, window_size, time_steps),
+        encoding_tensor tracks valid data (bands, time_steps), and oc is the target variable
         """
         row = self.dataframe.iloc[index]
         longitude, latitude, oc = row["GPS_LONG"], row["GPS_LAT"], row["OC"]
-        band_tensors = {band: [] for band in bands_list_order}
-        encodings = {band: [] for band in bands_list_order}  # To store encoding for each timestep
         
+        # Initialize dictionaries to hold tensors and encodings for each band
+        band_tensors = {band: [] for band in bands_list_order}
+        encodings = {band: [] for band in bands_list_order}
+        
+        # Filter subfolders based on season or year
         filtered_array = self.filter_by_season_or_year(row['season'], row['year'], self.seasonalityBased)
 
         for subfolder in filtered_array:
             subfolder_key = self.get_last_three_folders(subfolder)
-            band = subfolder_key.split(os.path.sep)[-2]  # Extract band name
-
-            if band == 'Elevation':
+            
+            # Extract the last part of the subfolder path
+            last_part = subfolder_key.split(os.path.sep)[-1]
+            
+            if last_part == 'Elevation':
+                # Handle Elevation (static, no year decrement)
                 id_num, x, y = self.find_coordinates_index(subfolder_key, longitude, latitude)
                 elevation_tensor = self.datasets[subfolder_key].get_tensor_by_location(id_num, x, y)
+                
                 if elevation_tensor is not None:
                     for _ in range(self.time_before):
                         band_tensors['Elevation'].append(elevation_tensor)
-                        encodings['Elevation'].append(torch.tensor(1.0))  # 1.0 for valid data
+                        encodings['Elevation'].append(torch.tensor(1.0))  # Valid data
+                else:
+                    for _ in range(self.time_before):
+                        band_tensors['Elevation'].append(torch.zeros(window_size, window_size))
+                        encodings['Elevation'].append(torch.tensor(0.0))  # Missing data
             else:
-                year = int(subfolder_key.split(os.path.sep)[-1])
-                for decrement in range(self.time_before):
-                    current_year = year - decrement
-                    decremented_subfolder = os.path.sep.join(subfolder_key.split(os.path.sep)[:-1] + [str(current_year)])
+                # Handle time-dependent bands
+                try:
+                    year = int(last_part)  # Last part should be the year
+                    band = subfolder_key.split(os.path.sep)[-2]  # Extract band name
                     
-                    try:
-                        id_num, x, y = self.find_coordinates_index(decremented_subfolder, longitude, latitude)
-                        tensor = self.datasets[decremented_subfolder].get_tensor_by_location(id_num, x, y)
-                        encoding = torch.tensor(1.0) if tensor is not None else torch.tensor(0.0)
-                        tensor = tensor if tensor is not None else torch.zeros(window_size, window_size)
-                    except (ValueError, KeyError):
-                        tensor = torch.zeros(window_size, window_size)
-                        encoding = torch.tensor(0.0)
-                    
-                    band_tensors[band].append(tensor)
-                    encodings[band].append(encoding)
+                    for decrement in range(self.time_before):
+                        current_year = year - decrement
+                        decremented_subfolder = os.path.sep.join(subfolder_key.split(os.path.sep)[:-1] + [str(current_year)])
+                        
+                        try:
+                            id_num, x, y = self.find_coordinates_index(decremented_subfolder, longitude, latitude)
+                            tensor = self.datasets[decremented_subfolder].get_tensor_by_location(id_num, x, y)
+                            encoding = torch.tensor(1.0) if tensor is not None else torch.tensor(0.0)
+                            tensor = tensor if tensor is not None else torch.zeros(window_size, window_size)
+                        except (ValueError, KeyError):
+                            tensor = torch.zeros(window_size, window_size)
+                            encoding = torch.tensor(0.0)
+                        
+                        band_tensors[band].append(tensor)
+                        encodings[band].append(encoding)
+                except ValueError:
+                    logger.error(f"Unexpected subfolder format: {subfolder_key}, skipping")
+                    continue  # Skip this subfolder if it doesn't conform
 
         # Stack tensors and encodings for each band
         stacked_tensors = []
@@ -238,13 +273,18 @@ class MultiRasterDatasetMultiYears(Dataset):
                 stacked_tensor = torch.stack(band_tensors[band])  # Shape: (time_steps, window_size, window_size)
                 stacked_tensors.append(stacked_tensor)
                 stacked_encodings.append(torch.stack(encodings[band]))  # Shape: (time_steps)
+            else:
+                # Fallback for missing data
+                stacked_tensors.append(torch.zeros(self.time_before, window_size, window_size))
+                stacked_encodings.append(torch.zeros(self.time_before))
 
+        # Final tensor and encoding tensor
         final_tensor = torch.stack(stacked_tensors)  # Shape: (bands, time_steps, window_size, window_size)
         encoding_tensor = torch.stack(stacked_encodings)  # Shape: (bands, time_steps)
         final_tensor = final_tensor.permute(0, 2, 3, 1)  # Shape: (bands, window_size, window_size, time_steps)
 
         return longitude, latitude, final_tensor, encoding_tensor, oc
-
+        
     def filter_by_season_or_year(self, season, year, Season_or_year):
         if Season_or_year:
             filtered_array = [
@@ -266,7 +306,7 @@ class MultiRasterDatasetMultiYears(Dataset):
 
     def get_tensor_by_location(self, subfolder, id_num, x, y):
         return self.datasets[subfolder].get_tensor_by_location(id_num, x, y)
-
+    
 
 class NormalizedMultiRasterDatasetMultiYears(MultiRasterDatasetMultiYears):
     """Wrapper around MultiRasterDatasetMultiYears that adds feature normalization"""
