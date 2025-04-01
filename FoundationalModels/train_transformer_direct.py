@@ -28,6 +28,7 @@ from rich.console import Console
 from itertools import product
 from accelerate import Accelerator
 from model_transformer import TransformerRegressor
+from balance_dataset import create_balanced_dataset
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Transformer Regression on Embeddings with Multi-GPU Support')
@@ -45,7 +46,7 @@ def parse_args():
     parser.add_argument('--epochs', default=num_epochs, type=int, help='Number of training epochs')
     parser.add_argument('--lr', default=1e-4, type=float, help='Learning rate for Transformer')
     parser.add_argument('--accum_steps', default=8, type=int, help='Gradient accumulation steps')
-    parser.add_argument('--use_validation', default=True, type=bool, help='Full Training Or Not')
+    parser.add_argument('--use_validation', default=False, type=bool, help='Full Training Or Not')
     return parser.parse_args()
 
 def load_model(model, args, device='cuda'):
@@ -72,52 +73,6 @@ def load_model(model, args, device='cuda'):
     print(f'Number of parameters: {n_parameters/1e6:.2f}M')
     return model
 
-def create_balanced_dataset(df, use_validation=True, n_bins=128, min_ratio=3/4):
-    bins = pd.qcut(df['OC'], q=n_bins, labels=False, duplicates='drop')
-    df['bin'] = bins
-    bin_counts = df['bin'].value_counts()
-    max_samples = bin_counts.max()
-    min_samples = max(int(max_samples * min_ratio), 5)
-    
-    training_dfs = []
-    
-    if use_validation:
-        validation_indices = []
-        for bin_idx in range(len(bin_counts)):
-            bin_data = df[df['bin'] == bin_idx]
-            if len(bin_data) >= 4:
-                val_samples = bin_data.sample(n=min(8, len(bin_data)))
-                validation_indices.extend(val_samples.index)
-                train_samples = bin_data.drop(val_samples.index)
-                if len(train_samples) > 0:
-                    if len(train_samples) < min_samples:
-                        resampled = train_samples.sample(n=min_samples, replace=True)
-                        training_dfs.append(resampled)
-                    else:
-                        training_dfs.append(train_samples)
-        
-        if not training_dfs or not validation_indices:
-            raise ValueError("No training or validation data available after binning")
-        
-        training_df = pd.concat(training_dfs).drop('bin', axis=1)
-        validation_df = df.loc[validation_indices].drop('bin', axis=1)
-        return training_df, validation_df
-    
-    else:
-        for bin_idx in range(len(bin_counts)):
-            bin_data = df[df['bin'] == bin_idx]
-            if len(bin_data) > 0:
-                if len(bin_data) < min_samples:
-                    resampled = bin_data.sample(n=min_samples, replace=True)
-                    training_dfs.append(resampled)
-                else:
-                    training_dfs.append(bin_data)
-        
-        if not training_dfs:
-            raise ValueError("No training data available after binning")
-        
-        training_df = pd.concat(training_dfs).drop('bin', axis=1)
-        return training_df, None
 
 def transform_data(stacked_tensor, metadata):
     B, total_steps, H, W = stacked_tensor.shape
@@ -204,6 +159,7 @@ def train_transformer(train_loader, val_loader, vit_model, args, accelerator):
         all_targets.append(oc)
     all_targets = torch.cat(all_targets)
     target_mean, target_std = all_targets.mean().item(), all_targets.std().item()
+    print("  target_mean:      ",target_mean,"  target_std:   ",target_std)
 
     best_r_squared = 0.0
 
@@ -299,7 +255,7 @@ def train_transformer(train_loader, val_loader, vit_model, args, accelerator):
                     longitude, latitude, stacked_tensor, metadata, oc = batch
                     elevation_instrument, remaining_tensor, metadata_strings = transform_data(stacked_tensor, metadata)
                     embeddings, targets = process_batch_to_embeddings(
-                        longitude, latitude, elevation_instrument, remainingcholine_tensor, metadata_strings, oc, vit_model, accelerator.device
+                       longitude, latitude, elevation_instrument, remaining_tensor, metadata_strings, oc, vit_model, accelerator.device
                     )
                     embeddings = (embeddings - embeddings.mean(dim=1, keepdim=True)) / (embeddings.std(dim=1, keepdim=True) + 1e-8)
                     targets = (targets - target_mean) / (target_std + 1e-8)

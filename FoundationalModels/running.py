@@ -22,32 +22,7 @@ from tqdm import tqdm
 from accelerate import Accelerator
 from IEEE_TPAMI_SpectralGPT.models_mae_spectral import MaskedAutoencoderViT
 from IEEE_TPAMI_SpectralGPT import models_vit_tensor
-
-def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
-    bins = pd.qcut(df['OC'], q=n_bins, labels=False, duplicates='drop')
-    df['bin'] = bins
-    bin_counts = df['bin'].value_counts()
-    max_samples = bin_counts.max()
-    min_samples = max(int(max_samples * min_ratio), 5)
-    validation_indices = []
-    training_dfs = []
-    for bin_idx in range(len(bin_counts)):
-        bin_data = df[df['bin'] == bin_idx]
-        if len(bin_data) >= 4:
-            val_samples = bin_data.sample(n=min(8, len(bin_data)))
-            validation_indices.extend(val_samples.index)
-            train_samples = bin_data.drop(val_samples.index)
-            if len(train_samples) > 0:
-                if len(train_samples) < min_samples:
-                    resampled = train_samples.sample(n=min_samples, replace=True)
-                    training_dfs.append(resampled)
-                else:
-                    training_dfs.append(train_samples)
-    if not training_dfs or not validation_indices:
-        raise ValueError("No training or validation data available after binning")
-    training_df = pd.concat(training_dfs).drop('bin', axis=1)
-    validation_df = df.loc[validation_indices].drop('bin', axis=1)
-    return training_df, validation_df
+from balance_dataset import create_balanced_dataset
 
 
 
@@ -126,7 +101,7 @@ def process_batch_to_embeddings(longitude, latitude, elevation_instrument, remai
 
 def load_models(
     vit_checkpoint_path="/home/vfourel/SOCProject/SOCmapping/FoundationalModels/models/SpectralGPT/SpectralGPT+.pth",
-    transformer_path="/home/vfourel/SOCProject/SOCmapping/FoundationalModels/spectralGPT_TransformerRegressor_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023.pth"
+    transformer_path="/home/vfourel/SOCProject/SOCmapping/FoundationalModels/spectralGPT_TransformerRegressor_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_0_6025.pth
 ):
     accelerator = Accelerator()
     device = accelerator.device
@@ -222,7 +197,7 @@ def flatten_paths(path_list):
 def compute_oc_statistics():
     """Compute OC statistics from the training dataset"""
     df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
-    train_df, _ = create_balanced_dataset(df)
+    train_df, _ = create_balanced_dataset(df,False) # we use no validation set 
     train_coords, train_data = separate_and_add_data()
     train_coords = list(dict.fromkeys(flatten_paths(train_coords)))
     train_data = list(dict.fromkeys(flatten_paths(train_data)))
@@ -244,8 +219,8 @@ def compute_oc_statistics():
 def main():
     print('4th quarter')
     # oc_mean, oc_std = compute_oc_statistics()
-    oc_mean = 23.3523966756125
-    oc_std= 22.460167800508092
+    oc_mean = 22.204912500000002
+    oc_std= 19.407142758253574
     print(f"OC statistics from training data: mean={oc_mean}, std={oc_std}")
     # OC statistics from training data: mean=23.3523966756125, range=22.460167800508092
 
