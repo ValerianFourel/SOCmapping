@@ -120,7 +120,7 @@ if __name__ == "__main__":
     logger.info(f"Data indices (0-based from {TIME_BEGINNING}): {inference_time_indices}")
 
     accelerator = Accelerator(mixed_precision='fp16' if torch.cuda.is_available() else 'no')
-    output_path = Path(args.output_file)
+    output_path = Path(args.output_file).with_suffix('.parquet')  # Ensure .parquet extension
     output_path.parent.mkdir(parents=True, exist_ok=True)
     model_base_dir = Path(args.model_dir) / 'VAEsFinal'
 
@@ -147,7 +147,7 @@ if __name__ == "__main__":
     inference_dataset = NormalizedMultiRasterDataset1MilMultiYears(
         samples_coordinates_array_subfolders=samples_coordinates_array_path_1mil,
         data_array_subfolders=data_array_path_1mil,
-        dataframe=coordinates_df_1mil,
+        dataframe=coordinates_df_1mil[:1500],
         inference_time_indices=inference_time_indices,
         accelerator=accelerator,
         batch_size=args.batch_size,
@@ -215,7 +215,6 @@ if __name__ == "__main__":
         batch_iterator = tqdm(inference_loader, desc="Inference Progress", total=len(inference_loader))
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-
         for batch_idx, batch in enumerate(batch_iterator):
             try:
                 lon, lat, features_batch, _ = batch  # Shape: (batch, bands, H, W, num_inference_years)
@@ -257,7 +256,7 @@ if __name__ == "__main__":
                                 features_t_slice = (features_t_slice - mean) / std
 
                             features_t_vae_input = features_t_slice.unsqueeze(1)
-                            with torch.autocast(device_type="cuda", enabled=accelerator.mixed_precision != 'no'):
+                            with torch.autocast(device_type=device, enabled=accelerator.mixed_precision != 'no'):
                                 mu, log_var, _ = vae.encode(features_t_vae_input)
                                 z = vae.reparameterize(mu, log_var)
                             band_batch_results[:, i, :] = z.cpu()
@@ -286,36 +285,46 @@ if __name__ == "__main__":
 
     logger.info("Inference loop finished. Consolidating results...")
 
-    # --- Consolidate Results ---
+    # --- Consolidate Results into a DataFrame ---
     final_coordinates = np.concatenate(all_coordinates_list, axis=0) if all_coordinates_list else np.array([])
-    final_latents_z = {}
     total_samples_processed = final_coordinates.shape[0]
 
     if total_samples_processed == 0:
         logger.warning("No samples processed successfully. Output will contain empty arrays.")
 
+    # Create a DataFrame with longitude and latitude
+    df_data = {
+        'longitude': final_coordinates[:, 0],
+        'latitude': final_coordinates[:, 1]
+    }
+
+    # Process latent vectors for each band and year
     for band in bands_list_order:
         is_elevation = (band == 'Elevation')
         latent_dim = VAE_LATENT_DIM_ELEVATION if is_elevation else VAE_LATENT_DIM_OTHERS
         if all_latents_z[band]:
-            final_latents_z[band] = torch.cat(all_latents_z[band], dim=0).numpy()
-            logger.info(f"Consolidated '{band}' latents shape: {final_latents_z[band].shape}")
-            if final_latents_z[band].shape[0] != total_samples_processed:
-                logger.error(f"Mismatch in sample count for {band}: {final_latents_z[band].shape[0]} vs {total_samples_processed}")
+            latents_array = torch.cat(all_latents_z[band], dim=0).numpy()  # Shape: (total_samples, num_inference_years, latent_dim)
+            logger.info(f"Consolidated '{band}' latents shape: {latents_array.shape}")
+            if latents_array.shape[0] != total_samples_processed:
+                logger.error(f"Mismatch in sample count for {band}: {latents_array.shape[0]} vs {total_samples_processed}")
         else:
             logger.warning(f"No latent vectors for {band}. Saving empty array.")
-            final_latents_z[band] = np.empty((total_samples_processed, num_inference_years, latent_dim))
+            latents_array = np.empty((total_samples_processed, num_inference_years, latent_dim))
 
-    # --- Create Output Data Structure ---
-    output_data = {
-        'coordinates': final_coordinates,
-        'latents_z': final_latents_z,
-        'inference_years': actual_inference_years,
-        'bands_order': bands_list_order
-    }
+        # Add latent vectors to DataFrame with year-specific column names
+        for year_idx in range(num_inference_years):
+            year_suffix = year_idx + 1  # Start at 1, up to time_before
+            column_name = f"variable_latentspace_{band}_{year_suffix}"
+            # Convert latent vector for this year to a list for each sample
+            df_data[column_name] = [list(latents_array[i, year_idx, :]) for i in range(total_samples_processed)]
 
-    # --- Save Output ---
+    # Create DataFrame
+    output_df = pd.DataFrame(df_data)
+    logger.info(f"DataFrame created with shape: {output_df.shape}")
+    logger.info(f"Columns: {list(output_df.columns)}")
+
+    # --- Save Output as Parquet ---
     logger.info(f"Saving results to {output_path}...")
-    np.save(output_path, output_data, allow_pickle=True)
+    output_df.to_parquet(output_path, engine='pyarrow', index=False)
 
     logger.info("Inference finished successfully.")
