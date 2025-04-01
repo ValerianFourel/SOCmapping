@@ -14,8 +14,8 @@ import os
 # --- Import Dataset and Config ---
 try:
     from config import (
-        TIME_BEGINNING, TIME_END, MAX_OC,
-        file_path_coordinates_Bavaria_1mil, bands_list_order, window_size
+        TIME_BEGINNING, TIME_END, MAX_OC, time_before,
+        file_path_coordinates_Bavaria_1mil, bands_list_order, window_size,INFERENCE_TIME
     )
     from modelTransformerVAE import TransformerVAE
     from dataloader.dataframe_loader import separate_and_add_data_1mil_inference, separate_and_add_data_1mil
@@ -24,6 +24,7 @@ except ImportError as e:
     exit(1)
 
 from dataloader.dataloaderMultiYears1Mil import NormalizedMultiRasterDataset1MilMultiYears
+INFERENCE_TIME = int(INFERENCE_TIME)
 
 # --- Configuration ---
 TIME_BEGINNING = int(TIME_BEGINNING)  # e.g., 2007
@@ -54,8 +55,6 @@ def flatten_paths(path_list):
 def parse_args():
     parser = argparse.ArgumentParser(description='Run VAE Inference for SOC prediction')
     parser.add_argument('--model_dir', type=str, required=True, help='Base directory containing VAEsFinal subfolder with band-specific model .pth files')
-    parser.add_argument('--inference_year', type=int, required=True, help='The target year for inference (e.g., 2023)')
-    parser.add_argument('--time_before', type=int, default=5, help='Number of years *before* and including inference_year to process (e.g., 5)')
     parser.add_argument('--output_file', type=str, required=True, help='Path to save the output .npy file containing latent z')
     parser.add_argument('--batch_size', type=int, default=256, help='Batch size for inference')
     parser.add_argument('--coord_paths_file', type=str, default=None, help='Optional: Path to a file listing coordinate array subfolders')
@@ -104,7 +103,7 @@ if __name__ == "__main__":
     VAE_BATCH_SIZE = args.batch_size
 
     # --- Compute Inference Time Indices ---
-    requested_years = list(range(args.inference_year - args.time_before + 1, args.inference_year + 1))
+    requested_years = list(range(INFERENCE_TIME - time_before + 1, INFERENCE_TIME + 1))
     inference_time_indices = []
     actual_inference_years = []
     for year in requested_years:

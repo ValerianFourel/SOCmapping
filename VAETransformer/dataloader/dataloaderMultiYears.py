@@ -9,7 +9,11 @@ import re
 import glob
 import pandas as pd
 from config import bands_list_order , time_before, LOADING_TIME_BEGINNING , window_size
+# Logging Setup
+import logging
 
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 """
 2025-03-31 02:46:54,563 - INFO - Computed statistics for LST: mean=14376.498046875, std=137.9790802001953
@@ -213,7 +217,7 @@ class MultiRasterDatasetMultiYears(Dataset):
         """
         row = self.dataframe.iloc[index]
         longitude, latitude, oc = row["GPS_LONG"], row["GPS_LAT"], row["OC"]
-        
+        year_of_sample = row["year"]
         # Initialize dictionaries to hold tensors and encodings for each band
         band_tensors = {band: [] for band in bands_list_order}
         encodings = {band: [] for band in bands_list_order}
@@ -283,7 +287,7 @@ class MultiRasterDatasetMultiYears(Dataset):
         encoding_tensor = torch.stack(stacked_encodings)  # Shape: (bands, time_steps)
         final_tensor = final_tensor.permute(0, 2, 3, 1)  # Shape: (bands, window_size, window_size, time_steps)
 
-        return longitude, latitude, final_tensor, encoding_tensor, oc
+        return longitude, latitude, final_tensor, encoding_tensor, oc, year_of_sample
         
     def filter_by_season_or_year(self, season, year, Season_or_year):
         if Season_or_year:
