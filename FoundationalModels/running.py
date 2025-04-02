@@ -11,7 +11,7 @@ from config import (
     save_path_predictions_plots, SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly,
     DataYearly, file_path_coordinates_Bavaria_1mil, SamplesCoordinates_Seasonally,
     MatrixCoordinates_1mil_Seasonally, DataSeasonally, file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC,
-    MAX_OC, bands_dict
+    MAX_OC, bands_dict,target_mean_max_oc_150, target_std_max_oc_150
 )
 from dataloader.dataframe_loader import separate_and_add_data_1mil_inference, separate_and_add_data,filter_dataframe
 from dataloader.dataloaderMapping import MultiRasterDataset1MilMultiYears
@@ -101,7 +101,7 @@ def process_batch_to_embeddings(longitude, latitude, elevation_instrument, remai
 
 def load_models(
     vit_checkpoint_path="/home/vfourel/SOCProject/SOCmapping/FoundationalModels/models/SpectralGPT/SpectralGPT+.pth",
-    transformer_path="/home/vfourel/SOCProject/SOCmapping/FoundationalModels/spectralGPT_TransformerRegressor_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_0_6025.pth
+    transformer_path="/home/vfourel/SOCProject/SOCmapping/FoundationalModels/spectralGPT_TransformerRegressor_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_0_6025.pth"
 ):
     accelerator = Accelerator()
     device = accelerator.device
@@ -219,8 +219,8 @@ def compute_oc_statistics():
 def main():
     print('4th quarter')
     # oc_mean, oc_std = compute_oc_statistics()
-    oc_mean = 22.204912500000002
-    oc_std= 19.407142758253574
+    oc_mean = target_mean_max_oc_150
+    oc_std= target_std_max_oc_150
     print(f"OC statistics from training data: mean={oc_mean}, std={oc_std}")
     # OC statistics from training data: mean=23.3523966756125, range=22.460167800508092
 

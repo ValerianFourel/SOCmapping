@@ -15,7 +15,10 @@ MAX_OC = 150
 imageSize = 96
 num_epochs = 100
 LOADING_TIME_BEGINNING_INFERENCE = str(int(INFERENCE_TIME)-time_before)
-
+target_mean_max_oc_150 = 22.523618521341465   
+target_std_max_oc_150 = 20.63063014342527
+#target_mean_max_oc_160 = 22.204912500000002   
+#target_std_max_oc_160 = 19.407142758253574
 save_path_predictions_plots = '/home/vfourel/SOCProject/SOCmapping/predictions_plots/FoundationalModels_plots'
 file_path_coordinates_Bavaria_1mil = "/home/vfourel/SOCProject/SOCmapping/Data/Coordinates1Mil/coordinates_Bavaria_1mil.csv"
 PICTURE_VERSION = f"{str(num_epochs)}_{str(MAX_OC)}_{INFERENCE_TIME}_version"
