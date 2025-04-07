@@ -101,7 +101,7 @@ def process_batch_to_embeddings(longitude, latitude, elevation_instrument, remai
 
 def load_models(
     vit_checkpoint_path="/home/vfourel/SOCProject/SOCmapping/FoundationalModels/models/SpectralGPT/SpectralGPT+.pth",
-    transformer_path="/home/vfourel/SOCProject/SOCmapping/FoundationalModels/spectralGPT_TransformerRegressor_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_0_6025.pth"
+    transformer_path="/home/vfourel/SOCProject/SOCmapping/FoundationalModels/spectralGPT_TransformerRegressor_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_FullData.pth"
 ):
     accelerator = Accelerator()
     device = accelerator.device
@@ -217,7 +217,7 @@ def compute_oc_statistics():
     target_mean, target_std = all_targets.mean().item(), all_targets.std().item()
     return target_mean, target_std
 def main():
-    print('4th quarter')
+    print('1st quarter')
     # oc_mean, oc_std = compute_oc_statistics()
     oc_mean = target_mean_max_oc_150
     oc_std= target_std_max_oc_150
@@ -251,7 +251,7 @@ def main():
     inference_dataset = MultiRasterDataset1MilMultiYears(
         samples_coordinates_array_subfolders=samples_coordinates_array_path_1mil,
         data_array_subfolders=data_array_path_1mil,
-        dataframe=df_full[3*quarter_size:],
+        dataframe=df_full[:quarter_size],
         time_before=time_before
     )
 
@@ -266,8 +266,8 @@ def main():
     vit_model, transformer_model, device, accelerator = load_models()
     coordinates, predictions = run_inference(vit_model, transformer_model, inference_loader, accelerator, oc_mean, oc_std)
 
-    save_path_coords = "coordinates_1mil_4thQuarter.npy"
-    save_path_preds = "predictions_1mil_4thQuarter.npy"
+    save_path_coords = "coordinates_1mil_1stQuarter.npy"
+    save_path_preds = "predictions_1mil_1stQuarter.npy"
     np.save(save_path_coords, coordinates)
     np.save(save_path_preds, predictions)
 
