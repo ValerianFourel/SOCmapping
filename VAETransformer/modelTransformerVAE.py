@@ -1,9 +1,11 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from config import window_size
+
 
 class TransformerVAE(nn.Module):
-    def __init__(self, input_channels=1, input_height=33, input_width=33, 
+    def __init__(self, input_channels=1, input_height=window_size, input_width=window_size, 
                  num_heads=2, latent_dim=4, dropout_rate=0.2):
         super(TransformerVAE, self).__init__()
 
@@ -22,7 +24,7 @@ class TransformerVAE(nn.Module):
             d_model=self.d_model,
             nhead=num_heads,
             dropout=dropout_rate,
-            dim_feedforward=128
+            dim_feedforward=32
         )
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=7)
 
@@ -35,7 +37,7 @@ class TransformerVAE(nn.Module):
             d_model=self.d_model,
             nhead=num_heads,
             dropout=dropout_rate,
-            dim_feedforward=128
+            dim_feedforward=32
         )
         self.transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=7)
         

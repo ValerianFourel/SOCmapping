@@ -6,37 +6,20 @@ file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC = f"{base_path_data}/LUCAS_LFU_Lfl_00t
 
 
 time_before  = 5
-window_size = 47 # 55 worked with all just not LAI # 33 worked with LAI
-window_size_LAI = 33 # we use it max, with a bigget latent space 41 works but with 10 we will just use 33 as window size
-window_size_Elevation = 55 # we use it max
-window_size_SoilEvaporation = 49 # works with 49 need to check above, may work with 55
-window_size_MODIS_NPP = 55  # works with 41 need to check above
-window_size_LST = 47 # works with it but not 49!
-window_size_TotalEvapotranspiration = 55
-
-
+window_size = 41
 TIME_BEGINNING = '2007'
 LOADING_TIME_BEGINNING = str(int(TIME_BEGINNING)-time_before)
 TIME_END = '2023'
 INFERENCE_TIME = '2015'
 bands_list_order = ['Elevation','LAI','LST','MODIS_NPP','SoilEvaporation','TotalEvapotranspiration']
 MAX_OC = 150
-
+num_epochs = 100
 LOADING_TIME_BEGINNING_INFERENCE = str(int(INFERENCE_TIME)-time_before)
-
-NUM_EPOCH_VAE_TRAINING = 3
-NUM_EPOCH_MLP_TRAINING = 5
-
+NUM_LAYERS = 2
+NUM_HEADS = 8 
+save_path_predictions_plots = '/home/vfourel/SOCProject/SOCmapping/predictions_plots/simpleTransformer_plots'
 file_path_coordinates_Bavaria_1mil = "/home/vfourel/SOCProject/SOCmapping/Data/Coordinates1Mil/coordinates_Bavaria_1mil.csv"
-
-mean_LST = 14378.319661458333
-mean_MODIS_NPP = 3932.2029622395835
-mean_totalEvapotranspiration = 120.51464589436849
-std_LST = 136.12765502929688
-std_MODIS_NPP = 10021.859049479166
-std_totalEvapotranspiration = 18.146349589029948
-
-
+PICTURE_VERSION = f"{str(num_epochs)}_{str(MAX_OC)}_{INFERENCE_TIME}_version"
 
 
 def generate_seasonal_list():

@@ -9,66 +9,7 @@ import re
 import glob
 import pandas as pd
 from config import bands_list_order , time_before, LOADING_TIME_BEGINNING , window_size
-# Logging Setup
-import logging
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-"""
-2025-03-31 02:46:54,563 - INFO - Computed statistics for LST: mean=14376.498046875, std=137.9790802001953
-2025-03-31 02:47:58,699 - INFO - Computed statistics for LST: mean=14378.6953125, std=135.72703552246094
-2025-03-31 02:48:30,907 - INFO - Computed statistics for LST: mean=14374.1533203125, std=139.667724609375
-2025-03-31 02:48:52,366 - INFO - Computed statistics for LST: mean=14376.5341796875, std=136.1621551513672
-2025-03-31 03:02:29,450 - INFO - Computed statistics for MODIS_NPP: mean=3861.095947265625, std=10117.994140625
-2025-03-31 03:03:46,635 - INFO - Computed statistics for MODIS_NPP: mean=3892.9384765625, std=10089.361328125
-2025-03-31 03:03:55,533 - INFO - Computed statistics for MODIS_NPP: mean=3929.460205078125, std=10022.7783203125
-2025-03-31 03:05:05,499 - INFO - Computed statistics for MODIS_NPP: mean=3915.517822265625, std=10055.5634765625
-2025-03-31 03:18:02,549 - INFO - Computed statistics for TotalEvapotranspiration: mean=120.5914306640625, std=18.143165588378906
-
-"""
-
-
-import numpy as np
-import torch
-from torch.utils.data import Dataset, DataLoader
-import os
-from pathlib import Path
-import re
-import glob
-import pandas as pd
-from config import bands_list_order , bands_dict ,  time_before, LOADING_TIME_BEGINNING , window_size
-
-
-import torch
-
-
-import numpy as np
-
-def consolidate_tensors(data_dict, band_to_index):
-    # First, collect all tensors and their corresponding indices
-    tensors = []
-    indices = []
-
-    # Iterate through the dictionary in a sorted manner to maintain consistency
-    for band in sorted(data_dict.keys()):
-        for year in sorted(data_dict[band].keys()):
-            # Get the tensor
-            tensor = data_dict[band][year]
-
-            # Store the tensor
-            tensors.append(tensor)
-
-            # Store the corresponding indices
-            indices.append([band_to_index[band], year])
-
-    # Convert tensors list to a single 3D tensor (n x 98 x 98)
-    tensors_combined = np.stack(tensors, axis=0)
-
-    # Convert indices to a 2D tensor (n x 2)
-    indices_tensor = np.array(indices)
-
-    return tensors_combined, indices_tensor
 
 def get_metadata(self, id_num):
     """Get metadata from filename"""
@@ -93,38 +34,42 @@ def get_available_ids(self):
     """Return list of available IDs"""
     return list(self.id_to_file.keys())
 
+
 class RasterTensorDataset(Dataset):
     def __init__(self, base_path):
-        self.folder_path = base_path
-        self.bands_list_order = ['Elevation', 'LAI', 'LST', 'MODIS_NPP', 
-                                'SoilEvaporation', 'TotalEvapotranspiration']
-        self.type = self._extract_type_from_path()
-        if self.type is None:
-            raise ValueError(f"Path must contain one of these types: {self.bands_list_order}")
+        """
+        Initialize the dataset
 
+        Parameters:
+        base_path: str, base path to RasterTensorData directory
+        subfolder: str, name of the subfolder (e.g., 'Elevation')
+        """
+        
+        self.folder_path = base_path
+
+        # Create ID to filename mapping
         self.id_to_file = self._create_id_mapping()
+
+        # Load all numpy arrays into memory (optional, can be modified to load on demand)
         self.data_cache = {}
         for id_num, filepath in self.id_to_file.items():
             self.data_cache[id_num] = np.load(filepath)
 
-    def _extract_type_from_path(self):
-        for band_type in self.bands_list_order:
-            if band_type in self.folder_path:
-                return band_type
-        return None
-
     def _create_id_mapping(self):
+        """Create a dictionary mapping IDs to their corresponding file paths"""
         id_to_file = {}
         for file_path in glob.glob(os.path.join(self.folder_path, "*.npy")):
+            # Extract ID number from filename
             match = re.search(r'ID(\d+)N', file_path)
             if match:
                 id_num = int(match.group(1))
                 id_to_file[id_num] = file_path
+
         return id_to_file
 
     def get_tensor_by_location(self, id_num, x, y, window_size=window_size):
         """
-        Get a processed window around the specified x,y coordinates
+        Get a window_size x window_size square around the specified x,y coordinates
 
         Parameters:
         id_num: int, ID number from filename
@@ -133,7 +78,7 @@ class RasterTensorDataset(Dataset):
         window_size: int, size of the square window (default 17)
 
         Returns:
-        torch.Tensor: processed window_size x window_size tensor
+        torch.Tensor: window_size x window_size tensor
         """
         if id_num not in self.id_to_file:
             raise ValueError(f"ID {id_num} not found in dataset")
@@ -144,26 +89,19 @@ class RasterTensorDataset(Dataset):
         else:
             data = np.load(self.id_to_file[id_num])
 
-        # Adjust window size based on type
-        if self.type == 'LST':
-            adjusted_window_size = window_size // 4
-        elif self.type != 'Elevation':  # All other types except Elevation
-            adjusted_window_size = window_size // 2
-        else:  # Elevation
-            adjusted_window_size = window_size
-
-        # Calculate window boundaries with adjusted size
-        half_window = adjusted_window_size // 2
+        # Calculate window boundaries
+        half_window = window_size // 2
         x_start = int(max(0, x - half_window))
-        x_end = int(min(data.shape[0], x + half_window) )
+        x_end = int(min(data.shape[0], x + half_window + 1))
         y_start = int(max(0, y - half_window))
-        y_end = int(min(data.shape[1], y + half_window))
+        y_end = int(min(data.shape[1], y + half_window + 1))
 
         # Extract window
         window = data[x_start:x_end, y_start:y_end]
+
         # Pad if necessary
-        if window.shape != (adjusted_window_size, adjusted_window_size):
-            padded_window = np.zeros((adjusted_window_size, adjusted_window_size))
+        if window.shape != (window_size, window_size):
+            padded_window = np.zeros((window_size, window_size))
             x_offset = half_window - (x - x_start)
             y_offset = half_window - (y - y_start)
             padded_window[
@@ -171,23 +109,18 @@ class RasterTensorDataset(Dataset):
                 y_offset:y_offset+window.shape[1]
             ] = window
             window = padded_window
-
-        # Stretch the window back to original size based on type
-        if self.type == 'LST':
-            window = np.repeat(np.repeat(window, 4, axis=0), 4, axis=1)
-        elif self.type != 'Elevation':  # All other types except Elevation
-            window = np.repeat(np.repeat(window, 2, axis=0), 2, axis=1)
-        tensor , type_of_band =  torch.from_numpy(window).float() , self.type
-        return tensor , type_of_band
+        
+        #window = np.asarray(window)
+        return torch.from_numpy(window).float()
 
     def __len__(self):
         return len(self.id_to_file)
 
     def __getitem__(self, idx):
+        # This is a placeholder implementation
+        # Modify according to your specific needs
         id_num = list(self.id_to_file.keys())[idx]
         return self.data_cache[id_num]
-
-
 
 # Example usage:
 """
@@ -263,7 +196,6 @@ class MultiRasterDatasetMultiYears(Dataset):
         Returns:
         tuple: (id_num, x, y) if match is found, otherwise raises an error
         """
-
         coords = self.coordinates[subfolder]
         # Assuming the first two columns of `coordinates.npy` are longitude and latitude
         match = np.where((coords[:, 1] == longitude) & (coords[:, 0] == latitude))[0]
@@ -281,56 +213,64 @@ class MultiRasterDatasetMultiYears(Dataset):
         index: int, index of the row in the dataframe
 
         Returns:
-        tuple: (longitude, latitude, data_dict, oc), where data_dict contains organized tensors and metadata
+        tuple: (tensor, OC), where tensor is the data and OC is the target variable
         """
         row = self.dataframe.iloc[index]
         longitude, latitude, oc = row["GPS_LONG"], row["GPS_LAT"], row["OC"]
-
-        filtered_array = self.filter_by_season_or_year(row['season'], row['year'], self.seasonalityBased)
-        # Initialize dictionary to store data for each band
-        data_dict = {band: {} for band in bands_list_order}
-
-        # Handle Elevation separately since it's constant
-        elevation_processed = False
+        tensors = []
+        
+        filtered_array = self.filter_by_season_or_year(row['season'],row['year'],self.seasonalityBased)
+                # Initialize a dictionary to hold the tensors for each band
+        band_tensors = {band: [] for band in bands_list_order}
 
         for subfolder in filtered_array:
             subfolder = self.get_last_three_folders(subfolder)
 
-            if subfolder.split(os.path.sep)[-1] == 'Elevation' and not elevation_processed:
+            # Check if the forelast subfolder is 'Elevation'
+            if subfolder.split(os.path.sep)[-1] == 'Elevation':
+                # Get the tensor for 'Elevation'
                 id_num, x, y = self.find_coordinates_index(subfolder, longitude, latitude)
-                tensor, type_of_band = self.datasets[subfolder].get_tensor_by_location(id_num, x, y)
+                elevation_tensor = self.datasets[subfolder].get_tensor_by_location(id_num, x, y)
 
-                if tensor is not None:
-                    data_dict['Elevation'][0] = tensor
-                    #data_dict['Elevation']['years'].append(0)
-                    elevation_processed = True
-
+                if elevation_tensor is not None:
+                    # Repeat the 'Elevation' tensor self.time_before times
+                    for _ in range(self.time_before):
+                        band_tensors['Elevation'].append(elevation_tensor)
             else:
                 # Get the year from the last subfolder
                 year = int(subfolder.split(os.path.sep)[-1])
-                band = subfolder.split(os.path.sep)[-2]
-                
-                # Process each year in the time window
+
+                # Decrement the year by self.time_before
                 for decrement in range(self.time_before):
                     current_year = year - decrement
-                    decremented_subfolder = os.path.sep.join(
-                        subfolder.split(os.path.sep)[:-1] + [str(current_year)]
-                    )
+
+                    # Construct the subfolder with the decremented year
+                    decremented_subfolder = os.path.sep.join(subfolder.split(os.path.sep)[:-1] + [str(current_year)])
+
                     id_num, x, y = self.find_coordinates_index(decremented_subfolder, longitude, latitude)
-                    tensor, type_of_band = self.datasets[decremented_subfolder].get_tensor_by_location(
-                        id_num, x, y
-                    )
+                    tensor = self.datasets[decremented_subfolder].get_tensor_by_location(id_num, x, y)
 
                     if tensor is not None:
-                        data_dict[band][current_year] = tensor
-                        #data_dict[band]['years'].append(current_year)
-                        
-        band_to_index = {v: k for k, v in bands_dict.items()} 
-        tensors_combined, indices_tensor = consolidate_tensors(data_dict, band_to_index)
-        # stacked_tensor, metadata = encode_data_dict(data_dict)
-        return longitude, latitude, tensors_combined, indices_tensor, oc
+                        # Append the tensor to the corresponding band in the dictionary
+                        band = subfolder.split(os.path.sep)[-2]
+                        band_tensors[band].append(tensor)
 
+        # Stack the tensors for each band
+        stacked_tensors = []
+        for band in bands_list_order:
+            if band_tensors[band]:
+                # Stack the tensors for the current band
+                stacked_tensor = torch.stack(band_tensors[band])
+                stacked_tensors.append(stacked_tensor)
 
+        # Concatenate all stacked tensors along the band dimension
+        final_tensor = torch.stack(stacked_tensors)
+        final_tensor = final_tensor.permute(0, 2, 3, 1)
+
+        return longitude, latitude, final_tensor, oc
+       
+
+    
     def filter_by_season_or_year(self, season,year,Season_or_year):
 
         if Season_or_year:
@@ -359,3 +299,28 @@ class MultiRasterDatasetMultiYears(Dataset):
         """Get tensor from specific subfolder dataset"""
         return self.datasets[subfolder].get_tensor_by_location(id_num, x, y)
 
+class NormalizedMultiRasterDatasetMultiYears(MultiRasterDatasetMultiYears):
+     """Wrapper around MultiRasterDatasetMultiYears that adds feature normalization"""
+     def __init__(self, samples_coordinates_array_path, data_array_path, df):
+         super().__init__(samples_coordinates_array_path, data_array_path, df)
+         self.compute_statistics()
+         
+     def compute_statistics(self):
+         """Compute mean and std across all features for normalization"""
+         features_list = []
+         for i in range(len(self)):
+             _, _, features, _ = super().__getitem__(i)
+             features_list.append(features.numpy())
+             
+         features_array = np.stack(features_list)
+         self.feature_means = torch.tensor(np.mean(features_array, axis=(0, 2, 3)), dtype=torch.float32)
+         self.feature_stds = torch.tensor(np.std(features_array, axis=(0, 2, 3)), dtype=torch.float32)
+         self.feature_stds = torch.clamp(self.feature_stds, min=1e-8)
+         
+     def __getitem__(self, idx):
+         longitude, latitude, features, target = super().__getitem__(idx)
+         features = (features - self.feature_means[:, None, None]) / self.feature_stds[:, None, None]
+         return longitude, latitude, features, target
+     
+     def getStatistics(self):
+         return self.feature_means, self.feature_stds

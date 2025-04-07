@@ -1,396 +1,278 @@
 import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_squared_error
+from sklearn.linear_model import LassoLars
+import statsmodels.api as sm
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
-import pandas as pd
-from tqdm import tqdm
-from pathlib import Path
 import wandb
-from accelerate import Accelerator
 import argparse
-import os
-import statsmodels.api as sm
-from config import (
-    TIME_BEGINNING, TIME_END, file_path_coordinates_Bavaria_1mil, MAX_OC,
-    bands_list_order, window_size, time_before
-)
 import logging
-from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data_1mil
+from pathlib import Path
 
-from modelTransformerVAE import TransformerVAE
-
-# Assuming the new dataset classes are in a file called dataloader_new.py
-from dataloader.dataloaderMultiYears import RasterTensorDataset, MultiRasterDatasetMultiYears, NormalizedMultiRasterDatasetMultiYears
-
-# Set up logging
+# --- Logging Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Define MLP Regressor
-class MLPRegressor(nn.Module):
-    def __init__(self, input_dim, hidden_dim=128):
-        super(MLPRegressor, self).__init__()
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(hidden_dim, 1)  # Output is a single value (SOC)
-    
-    def forward(self, x):
-        x = self.fc1(x)
-        x = self.relu(x)
-        x = self.fc2(x)
-        return x
+# --- Custom R² Implementation ---
+def custom_r2_score(y_true, y_pred):
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    y_mean = np.mean(y_true)
+    ssr = np.sum((y_true - y_pred) ** 2)
+    sst = np.sum((y_true - y_mean) ** 2)
+    r2 = 1 - (ssr / sst) if sst != 0 else 0
+    return r2
 
-def create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=True):
-    """
-    Create a balanced dataset by binning OC values and resampling.
-    If use_validation is True, splits into training and validation sets.
-    If use_validation is False, returns only a balanced training set.
-    """
-    bins = pd.qcut(df['OC'], q=n_bins, labels=False, duplicates='drop')
-    df['bin'] = bins
-    bin_counts = df['bin'].value_counts()
-    max_samples = bin_counts.max()
-    min_samples = max(int(max_samples * min_ratio), 5)
-    
-    training_dfs = []
-    
-    if use_validation:
-        validation_indices = []
-        
-        for bin_idx in range(len(bin_counts)):
-            bin_data = df[df['bin'] == bin_idx]
-            if len(bin_data) >= 4:
-                val_samples = bin_data.sample(n=min(8, len(bin_data)))
-                validation_indices.extend(val_samples.index)
-                train_samples = bin_data.drop(val_samples.index)
-                if len(train_samples) > 0:
-                    if len(train_samples) < min_samples:
-                        resampled = train_samples.sample(n=min_samples, replace=True)
-                        training_dfs.append(resampled)
-                    else:
-                        training_dfs.append(train_samples)
-        
-        if not training_dfs or not validation_indices:
-            raise ValueError("No training or validation data available after binning")
-        
-        training_df = pd.concat(training_dfs).drop('bin', axis=1)
-        validation_df = df.loc[validation_indices].drop('bin', axis=1)
-        return training_df, validation_df
-    
-    else:
-        for bin_idx in range(len(bin_counts)):
-            bin_data = df[df['bin'] == bin_idx]
-            if len(bin_data) > 0:
-                if len(bin_data) < min_samples:
-                    resampled = bin_data.sample(n=min_samples, replace=True)
-                    training_dfs.append(resampled)
-                else:
-                    training_dfs.append(bin_data)
-        
-        if not training_dfs:
-            raise ValueError("No training data available after binning")
-        
-        training_df = pd.concat(training_dfs).drop('bin', axis=1)
-        return training_df
-
+# --- Argument Parser ---
 def parse_args():
-    parser = argparse.ArgumentParser(description='Inference with VAEs and train MLP/OLS for SOC prediction')
-    parser.add_argument('--weights_dir', type=str, default='/clusterfs/SOCProject/SOCmapping/VAETransformer/weights', 
-                        help='Directory containing VAE weights')
-    parser.add_argument('--num_epochs_mlp', type=int, default=50, help='Number of epochs to train MLP')
-    parser.add_argument('--batch_size', type=int, default=256, help='Batch size for inference and training')
-    parser.add_argument('--hidden_dim', type=int, default=128, help='Hidden layer size for MLP')
-    parser.add_argument('--use_validation', action='store_true', help='Use validation set during training')
+    parser = argparse.ArgumentParser(description='Train MLP and Random Forest on VAE latent embeddings with L1 double selection')
+    parser.add_argument('--data_path', type=str, default='/home/vfourel/SOCProject/SOCmapping/VAETransformer/EmbeddingsVAEs2007to2023OCsamples_smaller.parquet', help='Path to Parquet file')
+    parser.add_argument('--batch_size', type=int, default=32, help='Batch size for MLP training')
+    parser.add_argument('--hidden_dim', type=int, default=256, help='Hidden layer dimension for MLP')
+    parser.add_argument('--weights_dir', type=str, default='./weights', help='Directory to save MLP weights')
+    parser.add_argument('--bands', type=str, nargs='+', default=['Elevation', 'LAI', 'LST', 'MODIS_NPP', 'TotalEvapotranspiration'], help='List of bands to include')
     return parser.parse_args()
+# --- MLP Model Definition ---
+class MLPRegressor(nn.Module):
+    def __init__(self, input_dim, hidden_dim):
+        super(MLPRegressor, self).__init__()
+        self.fc1 = nn.Linear(input_dim, hidden_dim)  # Input to hidden layer
+        self.relu1 = nn.ReLU()                       # Activation
+        self.fc2 = nn.Linear(hidden_dim, 1)          # Hidden to output
 
-def load_vae_models(weights_dir, bands_list_order, device_map):
-    """Load pre-trained VAEs from weights directory."""
-    weights_path = Path(weights_dir)
-    vae_models = {}
+    def forward(self, x):
+        x = self.fc1(x)    # Pass through hidden layer
+        x = self.relu1(x)  # Apply ReLU
+        x = self.fc2(x)    # Pass to output layer
+        return x
+# --- Data Preprocessing ---
+def preprocess_data(df, selected_bands):
+    """
+    Preprocess the dataframe to extract features from the specified bands' latent embeddings.
     
-    for band in bands_list_order:
-        vae_path = weights_path / band / f"{band}.pth"
-        if vae_path.exists():
-            time_steps = 1 if band == 'Elevation' else (int(TIME_END) - int(TIME_BEGINNING) + 1)
-            latent_dim = 24 if band == 'Elevation' else 48
-            num_heads = 16 if band == 'Elevation' else 32
-            
-            vae = TransformerVAE(
-                input_channels=1,
-                input_height=window_size,
-                input_width=window_size,
-                input_time=time_steps,
-                num_heads=num_heads,
-                latent_dim=latent_dim,
-                dropout_rate=0.3
-            )
-            vae.load_state_dict(torch.load(vae_path, map_location=device_map[band]))
-            vae.eval()
-            vae_models[band] = vae
-            logger.info(f"Loaded VAE for band {band} from {vae_path}")
-        else:
-            logger.warning(f"VAE weights not found for band {band} at {vae_path}")
+    Args:
+        df (pd.DataFrame): Input dataframe with latent_z columns.
+        selected_bands (list): List of band names to include (e.g., ['Elevation', 'LAI', 'LST']).
     
-    return vae_models
+    Returns:
+        X (np.ndarray): Feature matrix.
+        y (np.ndarray): Target array (organic carbon values).
+        input_dim (int): Number of input features.
+        feature_names (list): Names of the features.
+    """
+    # Identify all latent_z columns
+    latent_cols = [col for col in df.columns if 'latent_z' in col]
 
-def compute_band_statistics(dataset, band_idx, batch_size=256):
-    """Compute mean and std for a band's dataset using 1% of features."""
-    total_samples = len(dataset)
-    sample_size = max(1, int(total_samples * 0.01))  # 1% of dataset, at least 1 sample
-    indices = np.random.choice(total_samples, size=sample_size, replace=False)
-    subset = torch.utils.data.Subset(dataset, indices)
-    loader = DataLoader(subset, batch_size=batch_size, shuffle=False, num_workers=4)
-    
-    all_features = []
-    for _, _, features, _ in loader:
-        band_features = features[:, band_idx:band_idx+1, :, :, :].reshape(-1)
-        band_features = torch.nan_to_num(band_features, nan=0.0)
-        all_features.append(band_features)
-    all_features = torch.cat(all_features, dim=0)
-    mean = torch.mean(all_features)
-    std = torch.std(all_features)
-    return mean.item(), std.item() if std.item() != 0 else 1.0  # Avoid division by zero
+    # Separate time-varying bands (exclude Elevation, which is static)
+    time_varying_selected = [band for band in selected_bands if band != 'Elevation']
 
-def get_latent_representations(vae_models, dataset, accelerator, batch_size, normalized_bands=['LST', 'MODIS_NPP', 'TotalEvapotranspiration']):
-    """Perform inference with VAEs to get latent space z with band-specific normalization."""
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4)
-    dataloader = accelerator.prepare(dataloader)
-    
-    # Compute normalization statistics for specified bands
-    band_statistics = {}
-    for band_idx, band in enumerate(bands_list_order):
-        if band in normalized_bands:
-            mean, std = compute_band_statistics(dataset, band_idx)
-            band_statistics[band] = (mean, std)
-            logger.info(f"Computed statistics for {band}: mean={mean}, std={std}")
-    
-    all_latents = []
-    all_targets = []
-    all_coordinates = []
-    
-    with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Extracting latent representations"):
-            longitude, latitude, features, oc = batch
-            batch_latents = []
-            
-            for band_idx, band in enumerate(bands_list_order):
-                if band in vae_models:
-                    vae = vae_models[band].to(accelerator.device)
-                    band_features = features[:, band_idx:band_idx+1, :, :, :]
-                    
-                    # Normalize if band is in normalized_bands
-                    if band in normalized_bands and band in band_statistics:
-                        mean, std = band_statistics[band]
-                        band_features = (band_features - mean) / std
-                    
-                    recon, mu, log_var = vae(band_features)
-                    z = vae.reparameterize(mu, log_var)
-                    batch_latents.append(z)
-            
-            if batch_latents:
-                latents = torch.cat(batch_latents, dim=1)
-                latents = accelerator.gather(latents).cpu().numpy()
-                oc = accelerator.gather(oc).cpu().numpy()
-                coords = torch.stack([longitude, latitude], dim=1)
-                coords = accelerator.gather(coords).cpu().numpy()
-                
-                all_latents.append(latents)
-                all_targets.append(oc)
-                all_coordinates.append(coords)
-    
-    if accelerator.is_main_process:
-        latents = np.concatenate(all_latents, axis=0)
-        targets = np.concatenate(all_targets, axis=0)
-        coordinates = np.concatenate(all_coordinates, axis=0)
-        logger.info(f"Latent representations (z) shape: {latents.shape}")
-        logger.info(f"Targets shape: {targets.shape}")
-        logger.info(f"Coordinates shape: {coordinates.shape}")
-        return latents, targets, coordinates
-    return None, None, None
-
-def train_mlp(mlp, train_latents, train_targets, val_latents, val_targets, num_epochs, batch_size, accelerator):
-    """Train the MLP regressor with optional validation."""
-    train_dataset = TensorDataset(
-        torch.tensor(train_latents, dtype=torch.float32),
-        torch.tensor(train_targets, dtype=torch.float32).unsqueeze(1)
-    )
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
-    train_loader = accelerator.prepare(train_loader)
-    
-    if val_latents is not None and val_targets is not None:
-        val_dataset = TensorDataset(
-            torch.tensor(val_latents, dtype=torch.float32),
-            torch.tensor(val_targets, dtype=torch.float32).unsqueeze(1)
-        )
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
-        val_loader = accelerator.prepare(val_loader)
+    # Determine the number of time steps from the first time-varying band
+    if time_varying_selected:
+        first_band = time_varying_selected[0]
+        time_steps = max([int(col.split('_')[-1]) for col in latent_cols if col.startswith(first_band + '_latent_z_')], default=0)
     else:
-        val_loader = None
+        time_steps = 0
+
+    # Generate feature names based on selected bands
+    feature_names = []
+    if 'Elevation' in selected_bands and 'elevation_latent_z' in df.columns:
+        elevation_dim = len(df.iloc[0]['elevation_latent_z'])
+        feature_names.extend([f'elevation_latent_z_{i}' for i in range(elevation_dim)])
+    for band in time_varying_selected:
+        for t in range(1, time_steps + 1):
+            col_name = f'{band}_latent_z_{t}'
+            if col_name in df.columns:
+                latent_dim = len(df.iloc[0][col_name])
+                feature_names.extend([f'{band}_latent_z_{t}_{i}' for i in range(latent_dim)])
+
+    # Extract features for each sample
+    X = []
+    for _, row in df.iterrows():
+        sample_features = []
+        if 'Elevation' in selected_bands and 'elevation_latent_z' in df.columns:
+            sample_features.extend(row['elevation_latent_z'])
+        for band in time_varying_selected:
+            for t in range(1, time_steps + 1):
+                col_name = f'{band}_latent_z_{t}'
+                if col_name in df.columns:
+                    sample_features.extend(row[col_name])
+        X.append(sample_features)
     
-    optimizer = optim.Adam(mlp.parameters(), lr=0.001)
-    criterion = nn.MSELoss()
-    mlp, optimizer = accelerator.prepare(mlp, optimizer)
+    X = np.array(X)
+    y = df['oc'].values  # Target variable (organic carbon)
     
-    best_val_loss = float('inf')
-    best_model_state = None
-    
+    return X, y, X.shape[1], feature_names
+
+# --- L1 Double Selection ---
+def l1_double_selection(X_train, y_train, X_test, feature_names, alpha=0.1):
+    lasso_y = LassoLars(alpha=alpha)
+    lasso_y.fit(X_train, y_train)
+    selected_y = lasso_y.coef_ != 0
+
+    selected_features = np.zeros(X_train.shape[1], dtype=bool)
+    for i in range(X_train.shape[1]):
+        if selected_y[i]:
+            selected_features[i] = True
+        else:
+            lasso_x = LassoLars(alpha=alpha)
+            X_i = X_train[:, i]
+            X_rest = np.delete(X_train, i, axis=1)
+            lasso_x.fit(X_rest, X_i)
+            if np.any(lasso_x.coef_ != 0):
+                selected_features[i] = True
+
+    selected_indices = np.where(selected_features)[0]
+    X_train_selected = X_train[:, selected_indices]
+    X_test_selected = X_test[:, selected_indices]
+    selected_names = [feature_names[i] for i in selected_indices]
+
+    return X_train_selected, X_test_selected, selected_names
+
+# --- Training Function for MLP ---
+def train_mlp(X_train, y_train, X_test, y_test, input_dim, args):
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = MLPRegressor(input_dim, args.hidden_dim).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    criterion = nn.L1Loss()
+
+    train_dataset = TensorDataset(torch.tensor(X_train, dtype=torch.float32), torch.tensor(y_train, dtype=torch.float32).unsqueeze(1))
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+    test_dataset = TensorDataset(torch.tensor(X_test, dtype=torch.float32), torch.tensor(y_test, dtype=torch.float32).unsqueeze(1))
+    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
+
+    num_epochs = 1000
+    best_r2 = float('-inf')
+    patience = 500
+    patience_counter = 0
+
     for epoch in range(num_epochs):
-        mlp.train()
-        train_loss = 0.0
-        for batch_latents, batch_targets in tqdm(train_loader, desc=f"MLP Train Epoch {epoch+1}", leave=False):
+        model.train()
+        train_loss = 0
+        for X_batch, y_batch in train_loader:
+            X_batch, y_batch = X_batch.to(device), y_batch.to(device)
             optimizer.zero_grad()
-            outputs = mlp(batch_latents)
-            loss = criterion(outputs, batch_targets)
-            accelerator.backward(loss)
+            outputs = model(X_batch)
+            loss = criterion(outputs, y_batch)
+            loss.backward()
             optimizer.step()
-            train_loss += loss.item()
-        
-        avg_train_loss = train_loss / len(train_loader)
-        
-        if val_loader:
-            mlp.eval()
-            val_loss = 0.0
-            with torch.no_grad():
-                for batch_latents, batch_targets in tqdm(val_loader, desc=f"MLP Val Epoch {epoch+1}", leave=False):
-                    outputs = mlp(batch_latents)
-                    loss = criterion(outputs, batch_targets)
-                    val_loss += loss.item()
-            avg_val_loss = val_loss / len(val_loader)
-            
-            if avg_val_loss < best_val_loss:
-                best_val_loss = avg_val_loss
-                best_model_state = accelerator.unwrap_model(mlp).state_dict()
-            
-            if accelerator.is_main_process:
-                logger.info(f"Epoch {epoch+1} - Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
-                wandb.log({"mlp_train_loss": avg_train_loss, "mlp_val_loss": avg_val_loss, "epoch": epoch+1})
+            train_loss += loss.item() * X_batch.size(0)
+        train_loss /= len(train_dataset)
+
+        model.eval()
+        test_preds = []
+        test_true = []
+        with torch.no_grad():
+            for X_batch, y_batch in test_loader:
+                X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+                outputs = model(X_batch)
+                test_preds.extend(outputs.cpu().numpy().flatten())
+                test_true.extend(y_batch.cpu().numpy().flatten())
+        test_r2 = custom_r2_score(test_true, test_preds)
+        test_mse = mean_squared_error(test_true, test_preds)
+
+        wandb.log({'epoch': epoch, 'train_loss': train_loss, 'test_mse': test_mse, 'test_r2': test_r2})
+
+        if test_r2 > best_r2:
+            best_r2 = test_r2
+            patience_counter = 0
+            torch.save(model.state_dict(), f'{args.weights_dir}/best_mlp_weights.pth')
         else:
-            if accelerator.is_main_process:
-                logger.info(f"Epoch {epoch+1} - Train Loss: {avg_train_loss:.4f}")
-                wandb.log({"mlp_train_loss": avg_train_loss, "epoch": epoch+1})
-    
-    return mlp, best_model_state, best_val_loss if val_loader else None
+            patience_counter += 1
+            if patience_counter >= patience:
+                logger.info(f"Early stopping at epoch {epoch} with best R²: {best_r2:.4f}")
+                break
 
-def train_ols(train_latents, train_targets, val_latents, val_targets):
-    """Train an OLS regression model."""
-    X_train = sm.add_constant(train_latents)  # Add intercept term
-    ols_model = sm.OLS(train_targets, X_train).fit()
-    
-    if val_latents is not None and val_targets is not None:
-        X_val = sm.add_constant(val_latents)
-        val_predictions = ols_model.predict(X_val)
-        val_mse = np.mean((val_targets - val_predictions) ** 2)
-        logger.info(f"OLS Validation MSE: {val_mse:.4f}")
-        wandb.log({"ols_val_mse": val_mse})
-    else:
-        val_mse = None
-    
-    train_predictions = ols_model.predict(X_train)
-    train_mse = np.mean((train_targets - train_predictions) ** 2)
-    logger.info(f"OLS Training MSE: {train_mse:.4f}")
-    wandb.log({"ols_train_mse": train_mse})
-    
-    return ols_model, train_mse, val_mse
+        if epoch % 100 == 0:
+            logger.info(f"Epoch {epoch} - Test R²: {test_r2:.4f}, Sample Predictions: {test_preds[:5]}, True: {test_true[:5]}")
 
-def main():
+    model.load_state_dict(torch.load(f'{args.weights_dir}/best_mlp_weights.pth'))
+    model.eval()
+    with torch.no_grad():
+        test_preds = model(torch.tensor(X_test, dtype=torch.float32).to(device)).cpu().numpy().flatten()
+    test_true = y_test
+    
+    return model, test_preds, test_true
+
+# --- Main Execution ---
+if __name__ == "__main__":
     args = parse_args()
-    accelerator = Accelerator(mixed_precision='fp16')
-    
-    # Initialize W&B
+
+    # Load data
+    df = pd.read_parquet(args.data_path)
+    logger.info(f"Loaded data with {len(df)} rows and {len(df.columns)} columns")
+
+    # Configuration (assuming these are defined in config)
+    from config import TIME_BEGINNING, TIME_END, window_size, time_before
+
+    # Initialize Weights & Biases
     wandb.init(project="socmapping-VAETransformer-MLPRegressor", config={
         "time_beginning": TIME_BEGINNING,
         "time_end": TIME_END,
         "window_size": window_size,
         "time_before": time_before,
-        "bands": bands_list_order,
-        "mlp_epochs": args.num_epochs_mlp,
+        "bands": args.bands,
+        "mlp_epochs": 1000,
         "batch_size": args.batch_size,
         "hidden_dim": args.hidden_dim,
         "weights_dir": args.weights_dir,
-        "use_validation": args.use_validation,
         "normalized_bands": ['LST', 'MODIS_NPP', 'TotalEvapotranspiration']
     })
-    
-    # Load and balance dataset
-    logger.info("Loading and balancing dataset...")
-    df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
-    samples_coords, data_paths = separate_and_add_data_1mil()
-    samples_coords = list(dict.fromkeys([str(p) for p in samples_coords]))
-    data_paths = list(dict.fromkeys([str(p) for p in data_paths]))
-    
-    if args.use_validation:
-        train_df, val_df = create_balanced_dataset(df, use_validation=True)
-        train_dataset = MultiRasterDatasetMultiYears(samples_coords, data_paths, train_df, time_before=time_before)
-        val_dataset = MultiRasterDatasetMultiYears(samples_coords, data_paths, val_df, time_before=time_before)
-        if accelerator.is_main_process:
-            logger.info(f"Train dataset size: {len(train_dataset)}, Validation dataset size: {len(val_dataset)}")
-    else:
-        train_df = create_balanced_dataset(df, use_validation=False)
-        train_dataset = MultiRasterDatasetMultiYears(samples_coords, data_paths, train_df, time_before=time_before)
-        val_dataset = None
-        if accelerator.is_main_process:
-            logger.info(f"Train dataset size: {len(train_dataset)}")
-    
-    # Device mapping for VAEs
-    device_map = {band: f'cuda:{i % torch.cuda.device_count()}' for i, band in enumerate(bands_list_order)}
-    
-    # Load VAEs
-    vae_models = load_vae_models(args.weights_dir, bands_list_order, device_map)
-    
-    # Get latent representations (z)
-    train_latents, train_targets, train_coordinates = get_latent_representations(
-        vae_models, train_dataset, accelerator, args.batch_size
-    )
-    if args.use_validation:
-        val_latents, val_targets, val_coordinates = get_latent_representations(
-            vae_models, val_dataset, accelerator, args.batch_size
-        )
-    else:
-        val_latents, val_targets, val_coordinates = None, None, None
-    
-    if train_latents is not None and train_targets is not None:
-        # Calculate total latent dimension
-        total_latent_dim = sum([vae_models[band].latent_dim for band in vae_models])
-        
-        # Train MLP
-        mlp = MLPRegressor(input_dim=total_latent_dim, hidden_dim=args.hidden_dim)
-        mlp, best_model_state, best_val_loss = train_mlp(
-            mlp, train_latents, train_targets, val_latents, val_targets, 
-            args.num_epochs_mlp, args.batch_size, accelerator
-        )
-        
-        # Train OLS
-        ols_model, ols_train_mse, ols_val_mse = train_ols(train_latents, train_targets, val_latents, val_targets)
-        
-        # Save results
-        if accelerator.is_main_process:
-            np.save("train_latent_representations.npy", train_latents)
-            np.save("train_targets.npy", train_targets)
-            np.save("train_coordinates.npy", train_coordinates)
-            if args.use_validation:
-                np.save("val_latent_representations.npy", val_latents)
-                np.save("val_targets.npy", val_targets)
-                np.save("val_coordinates.npy", val_coordinates)
-            
-            if best_model_state is not None:
-                final_model_path = f"mlp_regressor_best_val_loss_{best_val_loss:.4f}.pth" if args.use_validation else "mlp_regressor.pth"
-                accelerator.save(best_model_state, final_model_path)
-                wandb.save(final_model_path)
-                logger.info(f"Saved MLP model to {final_model_path}")
-            else:
-                torch.save(mlp.state_dict(), "mlp_regressor.pth")
-                wandb.save("mlp_regressor.pth")
-                logger.info("Saved MLP model to mlp_regressor.pth")
-            
-            # Save OLS summary
-            with open("ols_summary.txt", "w") as f:
-                f.write(str(ols_model.summary()))
-            wandb.save("ols_summary.txt")
-            logger.info("Saved OLS summary to ols_summary.txt")
-    
-    if accelerator.is_main_process:
-        wandb.finish()
 
-if __name__ == "__main__":
-    main()
+    # Preprocess data with selected bands
+    selected_bands = args.bands
+    X, y, input_dim, feature_names = preprocess_data(df, selected_bands)
+    logger.info(f"Feature matrix shape: {X.shape}, Target shape: {y.shape}")
+
+    # Split data: 10% test, 90% train
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.07, random_state=42)
+    logger.info(f"Train size: {len(X_train)}, Test size: {len(X_test)}")
+
+    # Train MLP on selected features
+    logger.info("Training MLP for up to 1000 epochs on selected features with L1 loss...")
+    mlp_model, mlp_test_preds, mlp_test_true = train_mlp(X_train, y_train, X_test, y_test, input_dim, args)
+    mlp_mse = mean_squared_error(mlp_test_true, mlp_test_preds)
+    mlp_r2 = custom_r2_score(mlp_test_true, mlp_test_preds)
+    logger.info(f"MLP (Test) - MSE: {mlp_mse:.4f}, R2: {mlp_r2:.4f}")
+    wandb.log({'mlp_mse': mlp_mse, 'mlp_r2': mlp_r2})
+
+    # Train Random Forest on selected features
+    logger.info("Training Random Forest on selected features...")
+    rf_model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+    rf_model.fit(X_train, y_train)
+    y_pred_rf = rf_model.predict(X_test)
+    rf_mse = mean_squared_error(y_test, y_pred_rf)
+    rf_r2 = custom_r2_score(y_test, y_pred_rf)
+    logger.info(f"Random Forest (Test) - MSE: {rf_mse:.4f}, R2: {rf_r2:.4f}")
+    wandb.log({'rf_mse': rf_mse, 'rf_r2': rf_r2})
+
+    # L1 Double Selection
+    logger.info("Performing L1 double selection...")
+    X_train_selected, X_test_selected, selected_names = l1_double_selection(X_train, y_train, X_test, feature_names)
+    logger.info(f"Selected {len(selected_names)} features: {selected_names}")
+
+    # OLS Regression with all variables
+    logger.info("Performing OLS regression with all variables...")
+    X_train_with_const = sm.add_constant(X_train)
+    ols_model_all = sm.OLS(y_train, X_train_with_const).fit()
+    logger.info("OLS (All Variables) Summary:")
+    print(ols_model_all.summary())
+
+    # Predict with OLS on test set
+    X_test_with_const = sm.add_constant(X_test)
+    y_pred_ols = ols_model_all.predict(X_test_with_const)
+    ols_mse = mean_squared_error(y_test, y_pred_ols)
+    ols_r2 = custom_r2_score(y_test, y_pred_ols)
+    logger.info(f"OLS (All Variables, Test) - MSE: {ols_mse:.4f}, R2: {ols_r2:.4f}")
+    wandb.log({'ols_mse': ols_mse, 'ols_r2': ols_r2})
+
+    # Finish W&B run
+    wandb.finish()
+
+    # Log file size
+    file_size_mb = Path(args.data_path).stat().st_size / (1024 * 1024)
+    logger.info(f"Parquet file size: {file_size_mb:.2f} MB")
