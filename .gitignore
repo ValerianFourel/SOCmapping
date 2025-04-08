@@ -10,6 +10,7 @@ FoundationalModels/experiments/*
 FoundationalModels/wandb/*
 **/*.npy
 **/*.parquet
+**/*.png
 Data/Coordinates1Mil/coordinates_Bavaria_1mil.csv
 Data/Coordinates1Mil/YearlyValue/MODIS_NPP/2002/coordinates.npy
 Data/Coordinates1Mil/YearlyValue/MODIS_NPP/2015/coordinates.npy
