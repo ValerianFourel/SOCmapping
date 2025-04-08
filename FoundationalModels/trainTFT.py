@@ -50,13 +50,13 @@ def parse_args():
                         help='Number of classification types for ViT')
     parser.add_argument('--finetune', default='/home/vfourel/SOCProject/SOCmapping/FoundationalModels/models/SpectralGPT/SpectralGPT+.pth',
                         help='Path to finetune checkpoint')
-    parser.add_argument('--batch_size', default=64, type=int, help='Batch size for dataloader')
+    parser.add_argument('--batch_size', default=256, type=int, help='Batch size for dataloader')
     parser.add_argument('--output_dir', default='/fast/vfourel/SOCProject', type=str,
                         help='Base folder for saving model checkpoints')
     parser.add_argument('--epochs', default=num_epochs, type=int, help='Number of training epochs')
     parser.add_argument('--lr', default=1e-4, type=float, help='Learning rate for Transformer')
-    parser.add_argument('--accum_steps', default=8, type=int, help='Gradient accumulation steps')
-    parser.add_argument('--use_validation', default=False, type=bool, help='Full Training Or Not')
+    parser.add_argument('--accum_steps', default=1, type=int, help='Gradient accumulation steps')
+    parser.add_argument('--use_validation', default=True, type=bool, help='Full Training Or Not')
     return parser.parse_args()
 
 def load_model(model, args, device='cuda'):
@@ -355,6 +355,7 @@ if __name__ == "__main__":
     if args.use_validation and val_df is not None:
         val_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df)
         val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
+        print( ' args.use_validation     ',args.use_validation)
     else:
         val_loader = None
 

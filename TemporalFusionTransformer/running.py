@@ -15,7 +15,7 @@ from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data,
 from dataloader.dataloaderMapping import NormalizedMultiRasterDataset1MilMultiYears, RasterTensorDataset1Mil, MultiRasterDataset1MilMultiYears
 from dataloader.dataloaderMultiYears import NormalizedMultiRasterDatasetMultiYears
 from mapping import create_prediction_visualizations, parallel_predict
-from modelSimpleTransformer import SimpleTransformer
+from SimpleTFT import SimpleTFT
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from accelerate import Accelerator
@@ -70,22 +70,27 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=True):
         training_df = pd.concat(training_dfs).drop('bin', axis=1)
         return training_df
 
-def load_SimpleTransformer_model(model_path="/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/transformer_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1_0000.pth", accelerator=None):
+def load_SimpleTFT_model(model_path="/home/vfourel/SOCProject/SOCmapping/TemporalFusionTransformer/tft_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_0.0000.pth", accelerator=None):
     device = accelerator.device if accelerator else torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = SimpleTransformer(
+    model = SimpleTFT(
         input_channels=len(bands_list_order),
-        input_height=window_size,
-        input_width=window_size,
-        input_time=time_before,
-        num_heads=NUM_HEADS,
-        num_layers=NUM_LAYERS,
-        dropout_rate=0.3
+        height=window_size,
+        width=window_size,
+        time_steps=time_before,
+        d_model=512  # Adjust this based on the saved model
     )
     try:
         state_dict = torch.load(model_path, map_location=device, weights_only=True)
         if any(k.startswith('module.') for k in state_dict.keys()):
             state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-        model.load_state_dict(state_dict)
+        
+        model_state_dict = model.state_dict()
+        filtered_state_dict = {k: v for k, v in state_dict.items() if k in model_state_dict and v.shape == model_state_dict[k].shape}
+        model_state_dict.update(filtered_state_dict)
+        model.load_state_dict(model_state_dict)
+        
+        if accelerator.is_local_main_process:
+            print(f"Loaded {len(filtered_state_dict)}/{len(state_dict)} parameters from {model_path}")
     except Exception as e:
         if accelerator.is_local_main_process:
             print(f"Error loading model weights: {e}")
@@ -94,7 +99,6 @@ def load_SimpleTransformer_model(model_path="/home/vfourel/SOCProject/SOCmapping
     if accelerator:
         model = accelerator.prepare(model)
     return model, device, accelerator
-
 
 def flatten_paths(path_list):
     flattened = []
@@ -156,13 +160,12 @@ def run_inference(model, dataloader, accelerator):
     return all_coordinates, all_predictions
 
 def main():
-    print(' 2nd Third  ')
-    feature_means, feature_stds = compute_training_statistics()
+    print(' FULL DATASET  ')
     accelerator = Accelerator()
 
     parser = argparse.ArgumentParser(description="Accelerated inference script with multi-GPU support")
     parser.add_argument("--model-path", type=str, 
-                        default="/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/transformer_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1_0000.pth", 
+                        default="/home/vfourel/SOCProject/SOCmapping/TemporalFusionTransformer/tft_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_0.0000.pth", 
                         help="Path to the trained model")
     args = parser.parse_args()
 
@@ -179,13 +182,9 @@ def main():
     samples_coords_1mil = list(dict.fromkeys(flatten_paths(samples_coords_1mil)))
     data_1mil = list(dict.fromkeys(flatten_paths(data_1mil)))
     
-    third_size = len(df_full) // 3
-    inference_dataset = NormalizedMultiRasterDataset1MilMultiYears(
-        samples_coordinates_array_path=samples_coords_1mil,
-        data_array_path=data_1mil,
-        df=df_full[third_size:2*third_size],
-        feature_means=feature_means,
-        feature_stds=feature_stds,
+    # third_size = len(df_full) // 3
+    inference_dataset = MultiRasterDataset1MilMultiYears(
+        samples_coordinates_array_subfolders=samples_coords_1mil, data_array_subfolders=data_1mil, dataframe=df_full,
         time_before=time_before
     )
     # Main code
@@ -204,14 +203,14 @@ def main():
     )
     inference_loader = accelerator.prepare(inference_loader)
 
-    model, device, accelerator = load_SimpleTransformer_model(args.model_path, accelerator)
+    model, device, accelerator = load_SimpleTFT_model(args.model_path, accelerator)
     if accelerator.is_local_main_process:
-        print(f"Loaded SimpleTransformer model on {device}")
+        print(f"Loaded SimpleTFT model on {device}")
 
     coordinates, predictions = run_inference(model, inference_loader, accelerator)
 
-    np.save("coordinates_1mil_2ndThird.npy", coordinates)
-    np.save("predictions_1mil_2ndThird.npy", predictions)
+    np.save("coordinates_1mil.npy", coordinates)
+    np.save("predictions_1mil.npy", predictions)
     # Only the main process handles printing and visualization
     if accelerator.is_local_main_process:
         print(f"Inference completed. Coordinates shape: {coordinates.shape}, Predictions shape: {predictions.shape}")
