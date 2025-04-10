@@ -18,6 +18,16 @@ from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,
                    file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC)
 from torch.utils.data import Dataset, DataLoader
 from modelCNN import SmallCNN  # Assuming this is your SimpleTimeCNN implementation
+import argparse
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Train SimpleTimeCNN with customizable loss and target transformation')
+    parser.add_argument('--loss_type', type=str, default='L2', choices=['L1', 'L2'],
+                        help='Loss function: L1 (MAE) or L2 (MSE)')
+    parser.add_argument('--target_transform', type=str, default='none', choices=['none', 'normalize', 'log'],
+                        help='Target transformation: none, normalize (zero-centered, std-scaled), or log')
+    parser.add_argument('--num_epochs', type=int, default=num_epochs, help='Number of epochs to train')
+    return parser.parse_args()
 
 def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
     """
@@ -35,7 +45,7 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
     for bin_idx in range(len(bin_counts)):
         bin_data = df[df['bin'] == bin_idx]
         if len(bin_data) >= 4:
-            val_samples = bin_data.sample(n=min(8, len(bin_data)))
+            val_samples = bin_data.sample(n=min(13, len(bin_data)))
             validation_indices.extend(val_samples.index)
             train_samples = bin_data.drop(val_samples.index)
             if len(train_samples) > 0:
@@ -53,14 +63,48 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
     
     return training_df, validation_df
 
-def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelerator=None):
-    criterion = nn.L1Loss()
+def get_target_transform(target_transform_type, train_targets):
+    """Define target transformation based on type and compute stats if needed."""
+    if target_transform_type == 'normalize':
+        mean = train_targets.mean()
+        std = train_targets.std()
+        if std == 0:
+            std = 1.0  # Avoid division by zero
+        def transform(x):
+            return (x - mean) / std
+        def inverse_transform(x):
+            return x * std + mean
+        return transform, inverse_transform, {"mean": mean.item(), "std": std.item()}
+    elif target_transform_type == 'log':
+        def transform(x):
+            return torch.log1p(x)  # log(1 + x) to handle zero/negative gracefully
+        def inverse_transform(x):
+            return torch.expm1(x)  # exp(x) - 1
+        return transform, inverse_transform, {}
+    else:  # 'none'
+        def transform(x):
+            return x
+        def inverse_transform(x):
+            return x
+        return transform, inverse_transform, {}
+
+def train_model(model, train_loader, val_loader, num_epochs, accelerator, loss_type='L1', target_transform_type='none'):
+    # Select loss function
+    criterion = nn.L1Loss() if loss_type == 'L1' else nn.MSELoss()
+    
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     
     # Prepare with Accelerate
     train_loader, val_loader, model, optimizer = accelerator.prepare(
         train_loader, val_loader, model, optimizer
     )
+
+    # Compute transformation stats from training data
+    all_train_targets = []
+    for _, _, _, targets in train_loader:
+        all_train_targets.append(targets)
+    all_train_targets = torch.cat(all_train_targets).float()
+    transform, inverse_transform, transform_params = get_target_transform(target_transform_type, all_train_targets)
 
     best_val_loss = float('inf')
     
@@ -71,10 +115,11 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
         for batch_idx, (longitudes, latitudes, features, targets) in enumerate(tqdm(train_loader)):
             features = features.to(accelerator.device)
             targets = targets.to(accelerator.device).float()
+            transformed_targets = transform(targets)
 
             optimizer.zero_grad()
             outputs = model(features)
-            loss = criterion(outputs, targets)
+            loss = criterion(outputs, transformed_targets)
             accelerator.backward(loss)
             optimizer.step()
             
@@ -98,18 +143,20 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
             for longitudes, latitudes, features, targets in val_loader:
                 features = features.to(accelerator.device)
                 targets = targets.to(accelerator.device).float()
+                transformed_targets = transform(targets)
                 outputs = model(features)
-                loss = criterion(outputs, targets)
+                loss = criterion(outputs, transformed_targets)
                 val_loss += loss.item()
-                val_outputs.extend(outputs.cpu().numpy())
+                # Store inverse-transformed outputs and original targets for metrics
+                val_outputs.extend(inverse_transform(outputs).cpu().numpy())
                 val_targets_list.extend(targets.cpu().numpy())
         
         val_loss = val_loss / len(val_loader)
         
-        # Calculate metrics
+        # Calculate metrics on original scale
         val_outputs = np.array(val_outputs)
         val_targets_list = np.array(val_targets_list)
-        correlation = np.corrcoef(val_outputs, val_targets_list)[0, 1]
+        correlation = np.corrcoef(val_outputs, val_targets_list)[0, 1] if len(val_outputs) > 1 else 0.0
         r_squared = correlation ** 2
         mse = np.mean((val_outputs - val_targets_list) ** 2)
         rmse = np.sqrt(mse)
@@ -127,7 +174,7 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
                 'mae': mae
             })
 
-            if val_loss < best_val_loss and epoch % 5 ==0:
+            if val_loss < best_val_loss and epoch % 5 == 0:
                 best_val_loss = val_loss
                 wandb.run.summary['best_val_loss'] = best_val_loss
                 accelerator.save_state(f'simpletimecnn_checkpoint_epoch_{epoch+1}.pth')
@@ -140,6 +187,9 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
     return model, val_outputs, val_targets_list
 
 if __name__ == "__main__":
+    # Parse command-line arguments
+    args = parse_args()
+    
     # Initialize Accelerate
     accelerator = Accelerator()
     
@@ -150,10 +200,12 @@ if __name__ == "__main__":
             "max_oc": MAX_OC,
             "time_beginning": TIME_BEGINNING,
             "time_end": TIME_END,
-            "epochs": 100,
+            "epochs": args.num_epochs,
             "batch_size": 256,
             "learning_rate": 0.001,
-            "input_channels": 6
+            "input_channels": 6,
+            "loss_type": args.loss_type,
+            "target_transform": args.target_transform
         }
     )
 
@@ -196,15 +248,23 @@ if __name__ == "__main__":
         wandb.run.summary["model_parameters"] = model.count_parameters()
         print(f"Model parameters: {model.count_parameters()}")
 
-    # Train model
-    model, val_outputs, val_targets = train_model(model, train_loader, val_loader, 
-                                                 num_epochs=num_epochs, accelerator=accelerator)
+    # Train model with selected options
+    model, val_outputs, val_targets = train_model(
+        model, train_loader, val_loader, 
+        num_epochs=args.num_epochs, 
+        accelerator=accelerator,
+        loss_type=args.loss_type,
+        target_transform_type=args.target_transform
+    )
 
     # Save final model
     if accelerator.is_main_process:
-        final_model_path = f'simpletimecnn_model_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}.pth'
+        final_model_path = (f'simpletimecnn_model_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
+                            f'TIME_END_{TIME_END}_LOSS_{args.loss_type}_TRANSFORM_{args.target_transform}.pth')
         accelerator.save(model.state_dict(), final_model_path)
         wandb.save(final_model_path)
         print("Model trained and saved successfully!")
 
     wandb.finish()
+
+    # bst moel with none/l2

@@ -37,18 +37,21 @@ def composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
 
     return alpha * l1_loss + (1 - alpha) * chi2_scaled
 
-# Argument parser
+# Argument parser with new options for loss type and log transformation
 def parse_args():
     parser = argparse.ArgumentParser(description='Train SimpleTFT model with customizable parameters')
     parser.add_argument('--lr', type=float, default=0.002, help='Learning rate')
     parser.add_argument('--num_heads', type=int, default=NUM_HEADS, help='Number of attention heads')
     parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of transformer layers')
     parser.add_argument('--loss_alpha', type=float, default=0.8, help='Weight for L1 loss in composite loss')
-    parser.add_argument('--use_validation', action='store_true', default=False, help='Whether to use validation set')
+    parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')
     parser.add_argument('--hidden_size', type=int, default=128, help='Hidden size for TFT model')
+    parser.add_argument('--loss_type', type=str, default='mse', choices=['composite', 'mse', 'l1'], 
+                        help='Type of loss function to use: composite, mse, or l1')
+    parser.add_argument('--apply_log', action='store_true', help='Apply log transformation to targets')
     return parser.parse_args()
 
-# Function to create balanced dataset
+# Function to create balanced dataset (unchanged)
 def create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=True):
     bins = pd.qcut(df['OC'], q=n_bins, labels=False, duplicates='drop')
     df['bin'] = bins
@@ -62,7 +65,7 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=True):
         for bin_idx in range(len(bin_counts)):
             bin_data = df[df['bin'] == bin_idx]
             if len(bin_data) >= 4:
-                val_samples = bin_data.sample(n=min(8, len(bin_data)))
+                val_samples = bin_data.sample(n=min(13, len(bin_data)))
                 validation_indices.extend(val_samples.index)
                 train_samples = bin_data.drop(val_samples.index)
                 if len(train_samples) > 0:
@@ -75,6 +78,8 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=True):
             raise ValueError("No training or validation data available after binning")
         training_df = pd.concat(training_dfs).drop('bin', axis=1)
         validation_df = df.loc[validation_indices].drop('bin', axis=1)
+        print('Size of the training set:   ' ,len(training_df))
+        print('Size of the validation set:   ' ,len(validation_df))
         return training_df, validation_df
     else:
         for bin_idx in range(len(bin_counts)):
@@ -90,11 +95,27 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=True):
         training_df = pd.concat(training_dfs).drop('bin', axis=1)
         return training_df
 
-# Training function
+# Updated training function with loss type and log transformation options
 def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelerator=None, lr=0.001,
-                loss_alpha=0.6, min_r2=0.5, use_validation=True):
-    #criterion = nn.L1Loss()
-    criterion = lambda outputs, targets: composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=loss_alpha)
+                loss_alpha=0.6, min_r2=0.5, use_validation=True, loss_type='composite', apply_log=False):
+    # Define target transformation based on apply_log argument
+    if apply_log:
+        def transform_targets(targets):
+            return torch.log(targets + 1e-8)  # Small epsilon to handle zero/negative values
+    else:
+        def transform_targets(targets):
+            return targets
+
+    # Define loss criterion based on loss_type argument
+    if loss_type == 'composite':
+        criterion = lambda outputs, targets: composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=loss_alpha)
+    elif loss_type == 'mse':
+        criterion = nn.MSELoss()
+    elif loss_type == 'l1':
+        criterion = nn.L1Loss()
+    else:
+        raise ValueError(f"Unknown loss type: {loss_type}")
+
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
     # Prepare with Accelerator (handles DDP automatically)
@@ -112,7 +133,8 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
         for batch_idx, (longitudes, latitudes, features, targets) in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1}")):
             optimizer.zero_grad()
             outputs = model(features)  # Ensure outputs are a tensor
-            loss = criterion(outputs, targets.float())
+            transformed_targets = transform_targets(targets.float())
+            loss = criterion(outputs, transformed_targets)
             accelerator.backward(loss)
             optimizer.step()
 
@@ -137,26 +159,40 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
             with torch.no_grad():
                 for longitudes, latitudes, features, targets in val_loader:
                     outputs = model(features)
-                    loss = criterion(outputs, targets.float())
+                    transformed_targets = transform_targets(targets.float())
+                    loss = criterion(outputs, transformed_targets)
                     val_loss += loss.item()
                     # Gather outputs and targets across all processes
                     val_outputs.append(accelerator.gather(outputs).cpu().numpy())
-                    val_targets_list.append(accelerator.gather(targets).cpu().numpy())
+                    val_targets_list.append(accelerator.gather(transformed_targets).cpu().numpy())
 
-            val_loss = val_loss / len(val_loader)
-            val_outputs = np.concatenate(val_outputs)
-            val_targets_list = np.concatenate(val_targets_list)
-            correlation = np.corrcoef(val_outputs.flatten(), val_targets_list.flatten())[0, 1]
-            r_squared = correlation ** 2 if not np.isnan(correlation) else 0.0
-            mse = np.mean((val_outputs - val_targets_list) ** 2)
-            rmse = np.sqrt(mse)
-            mae = np.mean(np.abs(val_outputs - val_targets_list))
+            if len(val_outputs) == 0 or len(val_targets_list) == 0:
+                accelerator.print(f"Warning: Validation data is empty at epoch {epoch+1}")
+                val_loss = float('nan')
+                r_squared = 0.0
+                rmse = float('nan')
+                mae = float('nan')
+            else:
+                val_loss = val_loss / len(val_loader)
+                val_outputs = np.concatenate(val_outputs)
+                val_targets_list = np.concatenate(val_targets_list)
+
+                # Handle NaN in correlation
+                if np.all(val_outputs == val_outputs[0]) or np.all(val_targets_list == val_targets_list[0]):
+                    correlation = 0.0  # Constant output or target results in zero correlation
+                else:
+                    corr_matrix = np.corrcoef(val_outputs.flatten(), val_targets_list.flatten())
+                    correlation = corr_matrix[0, 1] if not np.isnan(corr_matrix[0, 1]) else 0.0
+
+                r_squared = correlation ** 2
+                mse = np.mean((val_outputs - val_targets_list) ** 2) if not np.any(np.isnan(val_outputs)) else float('nan')
+                rmse = np.sqrt(mse) if not np.isnan(mse) else float('nan')
+                mae = np.mean(np.abs(val_outputs - val_targets_list)) if not np.any(np.isnan(val_outputs)) else float('nan')
         else:
             val_loss = 0.0
             val_outputs = np.array([])
             val_targets_list = np.array([])
             r_squared = 0.0
-            mse = 0.0
             rmse = 0.0
             mae = 0.0
 
@@ -167,7 +203,7 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
                 'val_loss': val_loss,
                 'correlation': correlation if use_validation else 0.0,
                 'r_squared': r_squared,
-                'mse': mse,
+                'mse': mse if use_validation else 0.0,
                 'rmse': rmse,
                 'mae': mae
             })
@@ -185,7 +221,7 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
         accelerator.print(f'Training Loss: {train_loss:.4f}')
         accelerator.print(f'Validation Loss: {val_loss:.4f}')
         if use_validation:
-            accelerator.print(f'R²: {r_squared:.4f}\n')
+            accelerator.print(f'R²: {r_squared:.4f}, RMSE: {rmse:.4f}, MAE: {mae:.4f}\n')
 
     return model, val_outputs, val_targets_list, best_model_state, best_r2
 
@@ -193,7 +229,7 @@ if __name__ == "__main__":
     args = parse_args()
     accelerator = Accelerator()  # Automatically handles DDP
 
-    # Initialize wandb
+    # Initialize wandb with updated config including loss_type and apply_log
     wandb.init(
         project="socmapping-SimpleTFT",
         config={
@@ -212,11 +248,13 @@ if __name__ == "__main__":
             "loss_alpha": args.loss_alpha,
             "use_validation": args.use_validation,
             "hidden_size": args.hidden_size,
-            "model_type": "SimpleTFT"
+            "model_type": "SimpleTFT",
+            "loss_type": args.loss_type,
+            "apply_log": args.apply_log
         }
     )
 
-    # Load and prepare data
+    # Load and prepare data (unchanged)
     df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
     samples_coordinates_array_path, data_array_path = separate_and_add_data()
 
@@ -234,6 +272,8 @@ if __name__ == "__main__":
 
     if args.use_validation:
         train_df, val_df = create_balanced_dataset(df, use_validation=True)
+        if len(val_df) == 0:
+            raise ValueError("Validation DataFrame is empty after balancing")
         train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
         val_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df)
         if accelerator.is_main_process:
@@ -253,14 +293,14 @@ if __name__ == "__main__":
         wandb.run.summary["train_size"] = len(train_df)
         wandb.run.summary["val_size"] = len(val_df) if args.use_validation else 0
 
-    # Check first batch size
+    # Check first batch size (unchanged)
     for batch in train_loader:
         _, _, first_batch, _ = batch
         break
     if accelerator.is_main_process:
         print("Size of the first batch:", first_batch.shape)
 
-    # Initialize model
+    # Initialize model (unchanged)
     model = SimpleTFT(
         input_channels=len(bands_list_order),
         height=window_size,
@@ -269,15 +309,13 @@ if __name__ == "__main__":
         d_model=512
     )
 
-    # Enable find_unused_parameters in DDP (handled by Accelerator)
-    # If SimpleTFT has conditional logic, ensure all outputs contribute to loss
     if accelerator.distributed_type == "MULTI_GPU":
-        model = accelerator.prepare(model)  # This wraps with DDP, find_unused_parameters=True by default in newer versions
+        model = accelerator.prepare(model)
 
     if accelerator.is_main_process:
         wandb.run.summary["model_parameters"] = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-    # Train the model
+    # Train the model with new arguments
     model, val_outputs, val_targets, best_model_state, best_r2 = train_model(
         model,
         train_loader,
@@ -287,10 +325,12 @@ if __name__ == "__main__":
         lr=args.lr,
         loss_alpha=args.loss_alpha,
         min_r2=0.5,
-        use_validation=args.use_validation
+        use_validation=args.use_validation,
+        loss_type=args.loss_type,
+        apply_log=args.apply_log
     )
 
-    # Save the best model
+    # Save the best model (unchanged)
     if accelerator.is_main_process and best_model_state is not None:
         final_model_path = f'tft_model_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}_R2_{best_r2:.4f}.pth'
         accelerator.save(best_model_state, final_model_path)

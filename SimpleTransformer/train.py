@@ -8,18 +8,18 @@ from tqdm import tqdm
 from pathlib import Path
 import wandb
 from accelerate import Accelerator
-from dataloader.dataloaderMultiYears import MultiRasterDatasetMultiYears , NormalizedMultiRasterDatasetMultiYears
+from dataloader.dataloaderMultiYears import MultiRasterDatasetMultiYears, NormalizedMultiRasterDatasetMultiYears
 from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data
 from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,
-                   seasons, years_padded, num_epochs, NUM_HEADS, NUM_LAYERS, 
-                   SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, 
+                   seasons, years_padded, num_epochs, NUM_HEADS, NUM_LAYERS,
+                   SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly,
                    DataYearly, SamplesCoordinates_Seasonally, bands_list_order,
                    MatrixCoordinates_1mil_Seasonally, DataSeasonally, window_size,
                    file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC, time_before)
 from modelSimpleTransformer import SimpleTransformer
 import argparse
 
-
+# Uncomment and use this composite loss function if desired
 def composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
     """Composite loss combining L1 and scaled chi-squared loss"""
     errors = targets - outputs
@@ -40,7 +40,9 @@ def parse_args():
     parser.add_argument('--lr', type=float, default=0.002, help='Learning rate')
     parser.add_argument('--num_heads', type=int, default=NUM_HEADS, help='Number of attention heads')
     parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of transformer layers')
-    parser.add_argument('--loss_alpha', type=float, default=0.5, help='Weight for L1 loss in composite loss')
+    parser.add_argument('--loss_type', type=str, default='mse', choices=['composite', 'l1', 'mse'], help='Type of loss function')
+    parser.add_argument('--loss_alpha', type=float, default=0.5, help='Weight for L1 loss in composite loss (if used)')
+    parser.add_argument('--target_transform', type=str, default='log', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
     parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')
     return parser.parse_args()
 
@@ -97,15 +99,37 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=True):
         training_df = pd.concat(training_dfs).drop('bin', axis=1)
         return training_df
 
-def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelerator=None, lr=0.001, 
-                loss_alpha=0.6, min_r2=0.5, use_validation=True):
-    criterion = lambda outputs, targets: composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=loss_alpha)
+def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelerator=None, lr=0.001,
+                loss_type='l1', loss_alpha=0.5, target_transform='none', min_r2=0.5, use_validation=True):
+    # Define loss function based on loss_type
+    if loss_type == 'composite':
+        criterion = lambda outputs, targets: composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=loss_alpha)
+    elif loss_type == 'l1':
+        criterion = nn.L1Loss()
+    elif loss_type == 'mse':
+        criterion = nn.MSELoss()
+    else:
+        raise ValueError(f"Unknown loss type: {loss_type}")
+    
     optimizer = optim.Adam(model.parameters(), lr=lr)
     
-    # Prepare with None for val_loader if not using validation
+    # Prepare with Accelerator
     train_loader, model, optimizer = accelerator.prepare(train_loader, model, optimizer)
     if use_validation and val_loader is not None:
         val_loader = accelerator.prepare(val_loader)
+    
+    # Handle target normalization if selected
+    if target_transform == 'normalize':
+        all_targets = []
+        for _, _, _, targets in train_loader:
+            all_targets.append(targets)
+        all_targets = torch.cat(all_targets)
+        target_mean = all_targets.mean().item()
+        target_std = all_targets.std().item()
+        if accelerator.is_main_process:
+            print(f"Target mean: {target_mean}, Target std: {target_std}")
+    else:
+        target_mean, target_std = 0.0, 1.0  # No normalization applied
     
     best_r2 = -float('inf')
     best_model_state = None
@@ -117,7 +141,14 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
         for batch_idx, (longitudes, latitudes, features, targets) in enumerate(tqdm(train_loader)):
             features = features.to(accelerator.device)
             targets = targets.to(accelerator.device).float()
-
+            
+            # Apply target transformation
+            if target_transform == 'log':
+                targets = torch.log(targets + 1e-10)  # Add small constant to avoid log(0)
+            elif target_transform == 'normalize':
+                targets = (targets - target_mean) / (target_std + 1e-10)
+            # 'none' requires no transformation
+            
             optimizer.zero_grad()
             outputs = model(features)
             loss = criterion(outputs, targets)
@@ -145,6 +176,13 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
                 for longitudes, latitudes, features, targets in val_loader:
                     features = features.to(accelerator.device)
                     targets = targets.to(accelerator.device).float()
+                    
+                    # Apply the same transformation to validation targets
+                    if target_transform == 'log':
+                        targets = torch.log(targets + 1e-10)
+                    elif target_transform == 'normalize':
+                        targets = (targets - target_mean) / (target_std + 1e-10)
+                    
                     outputs = model(features)
                     loss = criterion(outputs, targets)
                     val_loss += loss.item()
@@ -160,7 +198,6 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
             rmse = np.sqrt(mse)
             mae = np.mean(np.abs(val_outputs - val_targets_list))
         else:
-            # Default values when no validation
             val_loss = 1.0
             val_outputs = np.array([])
             val_targets_list = np.array([])
@@ -182,13 +219,12 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
                 'mae': mae
             })
 
-            # Save model if it has the best R² and meets minimum threshold (only with validation)
+            # Save model if it has the best R² and meets minimum threshold
             if use_validation and r_squared > best_r2 and r_squared >= min_r2:
                 best_r2 = r_squared
                 best_model_state = model.state_dict()
                 wandb.run.summary['best_r2'] = best_r2
             elif not use_validation and epoch == num_epochs - 1:
-                # Save last model when no validation
                 best_r2 = 1.0
                 best_model_state = model.state_dict()
                 wandb.run.summary['best_r2'] = best_r2
@@ -220,7 +256,9 @@ if __name__ == "__main__":
             "num_heads": args.num_heads,
             "num_layers": args.num_layers,
             "dropout_rate": 0.3,
-            "loss_alpha": args.loss_alpha,
+            "loss_type": args.loss_type,
+            "loss_alpha": args.loss_alpha if args.loss_type == 'composite' else None,
+            "target_transform": args.target_transform,
             "use_validation": args.use_validation
         }
     )
@@ -244,7 +282,6 @@ if __name__ == "__main__":
         train_df, val_df = create_balanced_dataset(df, use_validation=True)
         train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
         val_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df)
-        # Print lengths
         if accelerator.is_main_process:
             print(f"Length of train_dataset: {len(train_dataset)}")
             print(f"Length of val_dataset: {len(val_dataset)}")
@@ -253,7 +290,6 @@ if __name__ == "__main__":
     else:
         train_df = create_balanced_dataset(df, use_validation=False)
         train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
-        # Print length
         if accelerator.is_main_process:
             print(f"Length of train_dataset: {len(train_dataset)}")
         train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
@@ -285,13 +321,15 @@ if __name__ == "__main__":
 
     # Train model and get best state
     model, val_outputs, val_targets, best_model_state, best_r2 = train_model(
-        model, 
-        train_loader, 
-        val_loader, 
-        num_epochs=num_epochs, 
+        model,
+        train_loader,
+        val_loader,
+        num_epochs=num_epochs,
         accelerator=accelerator,
         lr=args.lr,
+        loss_type=args.loss_type,
         loss_alpha=args.loss_alpha,
+        target_transform=args.target_transform,
         min_r2=0.5,
         use_validation=args.use_validation
     )

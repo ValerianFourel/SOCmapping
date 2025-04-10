@@ -6,7 +6,7 @@ file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC = f"{base_path_data}/LUCAS_LFU_Lfl_00t
 
 
 time_before  = 5
-window_size = 33
+window_size = 41
 TIME_BEGINNING = '2007'
 LOADING_TIME_BEGINNING = str(int(TIME_BEGINNING)-time_before)
 TIME_END = '2023'
@@ -15,7 +15,7 @@ LOADING_TIME_BEGINNING_INFERENCE = str(int(INFERENCE_TIME)-time_before)
 
 bands_list_order = ['Elevation','LAI','LST','MODIS_NPP','SoilEvaporation','TotalEvapotranspiration']
 MAX_OC = 150
-num_epochs = 100
+num_epochs = 200
 save_path_predictions_plots = '/home/vfourel/SOCProject/SOCmapping/predictions_plots/cnnlstm_plots'
 file_path_coordinates_Bavaria_1mil = "/home/vfourel/SOCProject/SOCmapping/Data/Coordinates1Mil/coordinates_Bavaria_1mil.csv"
 

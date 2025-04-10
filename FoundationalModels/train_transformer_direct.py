@@ -46,7 +46,11 @@ def parse_args():
     parser.add_argument('--epochs', default=num_epochs, type=int, help='Number of training epochs')
     parser.add_argument('--lr', default=1e-4, type=float, help='Learning rate for Transformer')
     parser.add_argument('--accum_steps', default=8, type=int, help='Gradient accumulation steps')
-    parser.add_argument('--use_validation', default=False, type=bool, help='Full Training Or Not')
+    parser.add_argument('--use_validation', default=True, type=bool, help='Full Training Or Not')
+    # New arguments for target transformation and loss selection
+    parser.add_argument('--apply_log', action='store_true', default=False, help='Apply log transformation to targets')
+    parser.add_argument('--normalize_targets', action='store_true', default=True, help='Normalize targets after transformation')
+    parser.add_argument('--loss', default='mse', type=str, choices=['l1', 'mse'], help='Loss function: l1 or mse')
     return parser.parse_args()
 
 def load_model(model, args, device='cuda'):
@@ -147,19 +151,39 @@ def train_transformer(train_loader, val_loader, vit_model, args, accelerator):
     )
 
     optimizer = optim.Adam(transformer_model.parameters(), lr=args.lr)
-    criterion = nn.L1Loss()
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
     train_loader, transformer_model, optimizer = accelerator.prepare(train_loader, transformer_model, optimizer)
     if val_loader is not None:
         val_loader = accelerator.prepare(val_loader)
 
+    def apply_transform(targets, apply_log):
+        if apply_log:
+            return torch.log(targets + 1e-8)
+        else:
+            return targets
+
     all_targets = []
     for _, _, _, _, oc in train_loader:
-        all_targets.append(oc)
+        transformed_oc = apply_transform(oc, args.apply_log)
+        all_targets.append(transformed_oc)
     all_targets = torch.cat(all_targets)
-    target_mean, target_std = all_targets.mean().item(), all_targets.std().item()
-    print("  target_mean:      ",target_mean,"  target_std:   ",target_std)
+
+    if args.normalize_targets:
+        target_mean, target_std = all_targets.mean().item(), all_targets.std().item()
+    else:
+        target_mean, target_std = 0.0, 1.0
+    print("  target_mean:      ", target_mean, "  target_std:   ", target_std)
+    if accelerator.is_main_process:
+        wandb.run.summary["target_mean"] = target_mean
+        wandb.run.summary["target_std"] = target_std
+
+    if args.loss == 'l1':
+        criterion = nn.L1Loss()
+    elif args.loss == 'mse':
+        criterion = nn.MSELoss()
+    else:
+        raise ValueError(f"Unknown loss: {args.loss}")
 
     best_r_squared = 0.0
 
@@ -176,11 +200,12 @@ def train_transformer(train_loader, val_loader, vit_model, args, accelerator):
             )
 
             embeddings = (embeddings - embeddings.mean(dim=1, keepdim=True)) / (embeddings.std(dim=1, keepdim=True) + 1e-8)
-            targets = (targets - target_mean) / (target_std + 1e-8)
-            embeddings, targets = embeddings.to(torch.float32), targets.to(torch.float32)
+            transformed_targets = apply_transform(targets, args.apply_log)
+            normalized_targets = (transformed_targets - target_mean) / (target_std + 1e-8) if args.normalize_targets else transformed_targets
+            embeddings, normalized_targets = embeddings.to(torch.float32), normalized_targets.to(torch.float32)
 
             outputs = transformer_model(embeddings)
-            loss = criterion(outputs.squeeze(), targets)
+            loss = criterion(outputs.squeeze(), normalized_targets)
             accelerator.backward(loss / args.accum_steps)
             total_train_loss += loss.item() * args.accum_steps
 
@@ -212,13 +237,14 @@ def train_transformer(train_loader, val_loader, vit_model, args, accelerator):
                         longitude, latitude, elevation_instrument, remaining_tensor, metadata_strings, oc, vit_model, accelerator.device
                     )
                     embeddings = (embeddings - embeddings.mean(dim=1, keepdim=True)) / (embeddings.std(dim=1, keepdim=True) + 1e-8)
-                    targets = (targets - target_mean) / (target_std + 1e-8)
-                    embeddings, targets = embeddings.to(torch.float32), targets.to(torch.float32)
+                    transformed_targets = apply_transform(targets, args.apply_log)
+                    normalized_targets = (transformed_targets - target_mean) / (target_std + 1e-8) if args.normalize_targets else transformed_targets
+                    embeddings, normalized_targets = embeddings.to(torch.float32), normalized_targets.to(torch.float32)
                     outputs = transformer_model(embeddings)
-                    loss = criterion(outputs.squeeze(), targets)
+                    loss = criterion(outputs.squeeze(), normalized_targets)
                     total_val_loss += loss.item()
                     val_outputs.extend(outputs.squeeze().cpu().numpy())
-                    val_targets_list.extend(targets.cpu().numpy())
+                    val_targets_list.extend(normalized_targets.cpu().numpy())
 
             if accelerator.is_main_process:
                 avg_val_loss = total_val_loss / len(val_loader.dataset)
@@ -246,7 +272,6 @@ def train_transformer(train_loader, val_loader, vit_model, args, accelerator):
 
                 scheduler.step(avg_val_loss)
         else:
-            # For no validation case, calculate R-squared on training data
             transformer_model.eval()
             train_outputs = []
             train_targets_list = []
@@ -255,14 +280,15 @@ def train_transformer(train_loader, val_loader, vit_model, args, accelerator):
                     longitude, latitude, stacked_tensor, metadata, oc = batch
                     elevation_instrument, remaining_tensor, metadata_strings = transform_data(stacked_tensor, metadata)
                     embeddings, targets = process_batch_to_embeddings(
-                       longitude, latitude, elevation_instrument, remaining_tensor, metadata_strings, oc, vit_model, accelerator.device
+                        longitude, latitude, elevation_instrument, remaining_tensor, metadata_strings, oc, vit_model, accelerator.device
                     )
                     embeddings = (embeddings - embeddings.mean(dim=1, keepdim=True)) / (embeddings.std(dim=1, keepdim=True) + 1e-8)
-                    targets = (targets - target_mean) / (target_std + 1e-8)
-                    embeddings, targets = embeddings.to(torch.float32), targets.to(torch.float32)
+                    transformed_targets = apply_transform(targets, args.apply_log)
+                    normalized_targets = (transformed_targets - target_mean) / (target_std + 1e-8) if args.normalize_targets else transformed_targets
+                    embeddings, normalized_targets = embeddings.to(torch.float32), normalized_targets.to(torch.float32)
                     outputs = transformer_model(embeddings)
                     train_outputs.extend(outputs.squeeze().cpu().numpy())
-                    train_targets_list.extend(targets.cpu().numpy())
+                    train_targets_list.extend(normalized_targets.cpu().numpy())
 
             train_outputs = np.array(train_outputs)
             train_targets_list = np.array(train_targets_list)
@@ -284,12 +310,14 @@ def train_transformer(train_loader, val_loader, vit_model, args, accelerator):
 
     return transformer_model, best_r_squared
 
+
 if __name__ == "__main__":
     args = parse_args()
     accelerator = Accelerator()
     console = Console()
     console.print(f"Using device: {accelerator.device}")
 
+    # Initialize Weights & Biases with an extended config
     wandb.init(
         project="socmapping-spectralGPT-TransformerRegressor",
         config={
@@ -305,10 +333,14 @@ if __name__ == "__main__":
             "time_end": TIME_END,
             "time_before": time_before,
             "bands": len(bands_list_order),
-            "use_validation": args.use_validation
+            "use_validation": args.use_validation,
+            "apply_log": getattr(args, "apply_log", False),  # Added transformation flag
+            "normalize_targets": getattr(args, "normalize_targets", False),  # Added normalization flag
+            "loss": getattr(args, "loss", "mse")  # Added loss function
         }
     )
 
+    # Load and preprocess data
     df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
     samples_coordinates_array_path, data_array_path = separate_and_add_data()
 
@@ -334,10 +366,12 @@ if __name__ == "__main__":
     else:
         val_loader = None
 
+    # Log dataset sizes
     wandb.run.summary["train_size"] = len(train_df)
     if args.use_validation and val_df is not None:
         wandb.run.summary["val_size"] = len(val_df)
 
+    # Initialize and load the ViT model
     vit_model = models_vit_tensor.__dict__[args.model](
         drop_path_rate=args.drop_path,
         num_classes=args.nb_classes
@@ -347,15 +381,28 @@ if __name__ == "__main__":
     n_parameters = sum(p.numel() for p in vit_model.parameters() if p.requires_grad)
     wandb.run.summary["vit_parameters"] = n_parameters
 
+    # Train the transformer model
     transformer_model, final_r_squared = train_transformer(train_loader, val_loader, vit_model, args, accelerator)
 
-    # Format R-squared for filename
+    # Construct a more informative save path
     r_squared_str = f"{final_r_squared:.4f}".replace(".", "_")
-    validation_str = "FullData" if not args.use_validation else f"R2_{r_squared_str}"
+    transform_str = "log" if getattr(args, "apply_log", False) else "raw"
+    norm_str = "norm" if getattr(args, "normalize_targets", False) else "nonorm"
+    loss_str = getattr(args, "loss", "mse")
     
-    # Define the save path with R-squared and validation info
-    mlp_path = f'spectralGPT_TransformerRegressor_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}_{validation_str}.pth'
+    validation_str = f"{transform_str}_{norm_str}_{loss_str}"
+    if args.use_validation:
+        validation_str += f"_R2_{r_squared_str}"
+    else:
+        validation_str += "_FullData"
+    
+    mlp_path = (
+        f"spectralGPT_TransformerRegressor_MAX_OC_{MAX_OC}_"
+        f"TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}_"
+        f"{validation_str}.pth"
+    )
 
+    # Save the model and log final metrics
     if accelerator.is_main_process:
         accelerator.save(transformer_model.state_dict(), mlp_path)
         console.print(f"Model saved to {mlp_path}")

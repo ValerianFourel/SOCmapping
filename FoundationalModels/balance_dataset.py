@@ -43,7 +43,7 @@ def create_balanced_dataset(df, use_validation=False, n_bins=128, min_ratio=3/4)
         for bin_idx in range(len(bin_counts)):
             bin_data = df[df['bin'] == bin_idx]
             if len(bin_data) >= 4:
-                val_samples = bin_data.sample(n=min(8, len(bin_data)), random_state=seed)
+                val_samples = bin_data.sample(n=min(13, len(bin_data)), random_state=seed)
                 validation_indices.extend(val_samples.index)
                 train_samples = bin_data.drop(val_samples.index)
                 if len(train_samples) > 0:
