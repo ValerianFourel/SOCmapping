@@ -30,6 +30,44 @@ from accelerate import Accelerator
 from model_transformer import TransformerRegressor
 from balance_dataset import create_balanced_dataset
 
+
+# Define the composite loss function
+def composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
+    """Composite loss combining L1 and scaled chi-squared loss"""
+    errors = targets - outputs
+    l1_loss = torch.mean(torch.abs(errors))
+
+    squared_errors = errors ** 2
+    chi2_unscaled = (1/4) * squared_errors * torch.exp(-squared_errors / (2 * sigma))
+    chi2_unscaled_mean = torch.mean(chi2_unscaled)
+
+    chi2_unscaled_mean = torch.clamp(chi2_unscaled_mean, min=1e-8)
+    scale_factor = l1_loss / chi2_unscaled_mean
+    chi2_scaled = scale_factor * chi2_unscaled_mean
+
+    return alpha * l1_loss + (1 - alpha) * chi2_scaled
+
+
+def composite_l2_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
+    """Composite loss combining L2 and scaled chi-squared loss"""
+    errors = targets - outputs
+    
+    # L2 loss: mean squared error
+    l2_loss = torch.mean(errors ** 2)
+    
+    # Standard chi-squared loss: errors^2 / sigma^2
+    chi2_loss = torch.mean((errors ** 2) / (sigma ** 2))
+    
+    # Ensure chi2_loss is not too small to avoid division issues
+    chi2_loss = torch.clamp(chi2_loss, min=1e-8)
+    
+    # Scale chi2_loss to match the magnitude of l2_loss
+    scale_factor = l2_loss / chi2_loss
+    chi2_scaled = scale_factor * chi2_loss
+    
+    # Combine the losses with the weighting factor alpha
+    return alpha * l2_loss + (1 - alpha) * chi2_scaled
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Transformer Regression on Embeddings with Multi-GPU Support')
     parser.add_argument('--model', default='vit_base_patch8', type=str, metavar='MODEL',
@@ -46,11 +84,11 @@ def parse_args():
     parser.add_argument('--epochs', default=num_epochs, type=int, help='Number of training epochs')
     parser.add_argument('--lr', default=1e-4, type=float, help='Learning rate for Transformer')
     parser.add_argument('--accum_steps', default=8, type=int, help='Gradient accumulation steps')
-    parser.add_argument('--use_validation', default=True, type=bool, help='Full Training Or Not')
     # New arguments for target transformation and loss selection
-    parser.add_argument('--apply_log', action='store_true', default=False, help='Apply log transformation to targets')
-    parser.add_argument('--normalize_targets', action='store_true', default=True, help='Normalize targets after transformation')
-    parser.add_argument('--loss', default='mse', type=str, choices=['l1', 'mse'], help='Loss function: l1 or mse')
+    parser.add_argument('--loss_type', type=str, default='composite_l2', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
+    parser.add_argument('--loss_alpha', type=float, default=0.5, help='Weight for L1 loss in composite loss (if used)')
+    parser.add_argument('--target_transform', type=str, default='normalize', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
+    parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')
     return parser.parse_args()
 
 def load_model(model, args, device='cuda'):
@@ -134,7 +172,10 @@ def process_batch_to_embeddings(longitude, latitude, elevation_instrument, remai
     all_embeddings = torch.stack(all_embeddings, dim=0)
     return all_embeddings, targets
 
+
 def train_transformer(train_loader, val_loader, vit_model, args, accelerator):
+
+
     num_patches = (96 // 8) * (96 // 8)
     embedding_dim_per_patch = 768
     total_embedding_dim = embedding_dim_per_patch * num_patches * (1 + (len(bands_list_order) - 1) * time_before)
@@ -157,19 +198,13 @@ def train_transformer(train_loader, val_loader, vit_model, args, accelerator):
     if val_loader is not None:
         val_loader = accelerator.prepare(val_loader)
 
-    def apply_transform(targets, apply_log):
-        if apply_log:
-            return torch.log(targets + 1e-8)
-        else:
-            return targets
-
+    # Compute target statistics locally (could be made global if needed)
     all_targets = []
     for _, _, _, _, oc in train_loader:
-        transformed_oc = apply_transform(oc, args.apply_log)
-        all_targets.append(transformed_oc)
+        all_targets.append(oc)
     all_targets = torch.cat(all_targets)
 
-    if args.normalize_targets:
+    if args.target_transform == 'normalize':
         target_mean, target_std = all_targets.mean().item(), all_targets.std().item()
     else:
         target_mean, target_std = 0.0, 1.0
@@ -178,20 +213,27 @@ def train_transformer(train_loader, val_loader, vit_model, args, accelerator):
         wandb.run.summary["target_mean"] = target_mean
         wandb.run.summary["target_std"] = target_std
 
-    if args.loss == 'l1':
+    loss_type = args.loss_type
+    if loss_type == 'composite_l1':
+        criterion = lambda outputs, targets: composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=args.loss_alpha)
+    elif loss_type == 'composite_l2':
+        criterion = lambda outputs, targets: composite_l2_chi2_loss(outputs, targets, sigma=3.0, alpha=args.loss_alpha)
+    elif loss_type == 'l1':
         criterion = nn.L1Loss()
-    elif args.loss == 'mse':
+    elif loss_type == 'mse':
         criterion = nn.MSELoss()
     else:
-        raise ValueError(f"Unknown loss: {args.loss}")
+        raise ValueError(f"Unknown loss type: {loss_type}")
 
     best_r_squared = 0.0
 
     for epoch in range(args.epochs):
         transformer_model.train()
-        total_train_loss = 0
+        total_train_loss = 0.0
+        total_num_samples_local = 0
         optimizer.zero_grad()
 
+        # Training loop
         for batch_idx, batch in enumerate(train_loader):
             longitude, latitude, stacked_tensor, metadata, oc = batch
             elevation_instrument, remaining_tensor, metadata_strings = transform_data(stacked_tensor, metadata)
@@ -200,14 +242,20 @@ def train_transformer(train_loader, val_loader, vit_model, args, accelerator):
             )
 
             embeddings = (embeddings - embeddings.mean(dim=1, keepdim=True)) / (embeddings.std(dim=1, keepdim=True) + 1e-8)
-            transformed_targets = apply_transform(targets, args.apply_log)
-            normalized_targets = (transformed_targets - target_mean) / (target_std + 1e-8) if args.normalize_targets else transformed_targets
+            if args.target_transform == 'log':
+                targets = torch.log(targets + 1e-10)
+            elif args.target_transform == 'normalize':
+                targets = (targets - target_mean) / (target_std + 1e-10)
+
+            normalized_targets = targets
             embeddings, normalized_targets = embeddings.to(torch.float32), normalized_targets.to(torch.float32)
 
             outputs = transformer_model(embeddings)
             loss = criterion(outputs.squeeze(), normalized_targets)
+            batch_size = normalized_targets.size(0)
             accelerator.backward(loss / args.accum_steps)
-            total_train_loss += loss.item() * args.accum_steps
+            total_train_loss += loss.item() * batch_size  # Scale by batch size
+            total_num_samples_local += batch_size
 
             if (batch_idx + 1) % args.accum_steps == 0 or (batch_idx + 1) == len(train_loader):
                 optimizer.step()
@@ -220,13 +268,24 @@ def train_transformer(train_loader, val_loader, vit_model, args, accelerator):
                     'epoch': epoch + 1
                 })
 
-        avg_train_loss = total_train_loss / len(train_loader.dataset)
+        # Compute global average training loss
+        total_train_loss_tensor = torch.tensor(total_train_loss).to(accelerator.device)
+        total_num_samples_tensor = torch.tensor(total_num_samples_local).to(accelerator.device)
+        total_train_loss_all = accelerator.gather(total_train_loss_tensor)
+        total_num_samples_all = accelerator.gather(total_num_samples_tensor)
+        if accelerator.is_main_process:
+            global_total_train_loss = total_train_loss_all.sum().item()
+            global_num_samples = total_num_samples_all.sum().item()
+            avg_train_loss = global_total_train_loss / global_num_samples
+        else:
+            avg_train_loss = 0.0
+
         r_squared = 0.0
 
+        # Validation loop
         if val_loader is not None:
             transformer_model.eval()
-            total_val_loss = 0
-            val_outputs = []
+            val_outputs_list = []
             val_targets_list = []
 
             with torch.no_grad():
@@ -237,41 +296,82 @@ def train_transformer(train_loader, val_loader, vit_model, args, accelerator):
                         longitude, latitude, elevation_instrument, remaining_tensor, metadata_strings, oc, vit_model, accelerator.device
                     )
                     embeddings = (embeddings - embeddings.mean(dim=1, keepdim=True)) / (embeddings.std(dim=1, keepdim=True) + 1e-8)
-                    transformed_targets = apply_transform(targets, args.apply_log)
-                    normalized_targets = (transformed_targets - target_mean) / (target_std + 1e-8) if args.normalize_targets else transformed_targets
+                    if args.target_transform == 'log':
+                        targets = torch.log(targets + 1e-10)
+                    elif args.target_transform == 'normalize':
+                        targets = (targets - target_mean) / (target_std + 1e-10)
+
+                    normalized_targets = targets
                     embeddings, normalized_targets = embeddings.to(torch.float32), normalized_targets.to(torch.float32)
                     outputs = transformer_model(embeddings)
-                    loss = criterion(outputs.squeeze(), normalized_targets)
-                    total_val_loss += loss.item()
-                    val_outputs.extend(outputs.squeeze().cpu().numpy())
-                    val_targets_list.extend(normalized_targets.cpu().numpy())
+                    val_outputs_list.append(outputs.squeeze())
+                    val_targets_list.append(normalized_targets)
+
+            # Gather validation data across processes
+            val_outputs_tensor = torch.cat(val_outputs_list, dim=0)
+            val_targets_tensor = torch.cat(val_targets_list, dim=0)
+            val_outputs_all = accelerator.gather_for_metrics(val_outputs_tensor)
+            val_targets_all = accelerator.gather_for_metrics(val_targets_tensor)
 
             if accelerator.is_main_process:
-                avg_val_loss = total_val_loss / len(val_loader.dataset)
-                val_outputs = np.array(val_outputs)
-                val_targets_list = np.array(val_targets_list)
-                correlation = np.corrcoef(val_outputs, val_targets_list)[0, 1]
-                r_squared = correlation ** 2
-                mse = np.mean((val_outputs - val_targets_list) ** 2)
-                rmse = np.sqrt(mse)
+                # Compute validation loss on transformed scale
+                val_outputs_all_device = val_outputs_all.to(accelerator.device)
+                val_targets_all_device = val_targets_all.to(accelerator.device)
+                val_loss = criterion(val_outputs_all_device, val_targets_all_device).item()
 
+                # Convert to numpy for metric computation
+                val_outputs_np = val_outputs_all.cpu().numpy()
+                val_targets_np = val_targets_all.cpu().numpy()
+
+                # Inverse transform to original scale
+                if args.target_transform == 'log':
+                    original_val_outputs = np.exp(val_outputs_np)
+                    original_val_targets = np.exp(val_targets_np)
+                elif args.target_transform == 'normalize':
+                    original_val_outputs = val_outputs_np * target_std + target_mean
+                    original_val_targets = val_targets_np * target_std + target_mean
+                else:
+                    original_val_outputs = val_outputs_np
+                    original_val_targets = val_targets_np
+
+                # Compute metrics on original scale
+                if len(original_val_outputs) > 1:
+                    correlation = np.corrcoef(original_val_outputs, original_val_targets)[0, 1]
+                    if np.isnan(correlation):
+                        correlation = 0.0
+                    r_squared = correlation ** 2
+                else:
+                    correlation = 0.0
+                    r_squared = 0.0
+                mse = np.mean((original_val_outputs - original_val_targets) ** 2)
+                rmse = np.sqrt(mse)
+                mae = np.mean(np.abs(original_val_outputs - original_val_targets))
+                q75, q25 = np.percentile(original_val_targets, [75, 25])
+                iqr = q75 - q25
+                rpiq = iqr / rmse if rmse > 0 else float('inf')
+
+                # Log metrics to wandb
                 wandb.log({
                     'epoch': epoch + 1,
                     'avg_train_loss': avg_train_loss,
-                    'avg_val_loss': avg_val_loss,
+                    'val_loss': val_loss,
                     'correlation': correlation,
                     'r_squared': r_squared,
                     'mse': mse,
                     'rmse': rmse,
+                    'mae': mae,
+                    'rpiq': rpiq,
                     'learning_rate': optimizer.param_groups[0]['lr']
                 })
 
-                if avg_val_loss < wandb.run.summary.get('best_val_loss', float('inf')):
-                    wandb.run.summary['best_val_loss'] = avg_val_loss
+                # Update best_r_squared and step scheduler
+                if r_squared > best_r_squared:
                     best_r_squared = r_squared
-
-                scheduler.step(avg_val_loss)
+                if val_loss < wandb.run.summary.get('best_val_loss', float('inf')):
+                    wandb.run.summary['best_val_loss'] = val_loss
+                scheduler.step(val_loss)
         else:
+            # Training metrics when no validation loader (unchanged for this task)
             transformer_model.eval()
             train_outputs = []
             train_targets_list = []
@@ -283,8 +383,11 @@ def train_transformer(train_loader, val_loader, vit_model, args, accelerator):
                         longitude, latitude, elevation_instrument, remaining_tensor, metadata_strings, oc, vit_model, accelerator.device
                     )
                     embeddings = (embeddings - embeddings.mean(dim=1, keepdim=True)) / (embeddings.std(dim=1, keepdim=True) + 1e-8)
-                    transformed_targets = apply_transform(targets, args.apply_log)
-                    normalized_targets = (transformed_targets - target_mean) / (target_std + 1e-8) if args.normalize_targets else transformed_targets
+                    if args.target_transform == 'log':
+                        targets = torch.log(targets + 1e-10)
+                    elif args.target_transform == 'normalize':
+                        targets = (targets - target_mean) / (target_std + 1e-10)
+                    normalized_targets = targets
                     embeddings, normalized_targets = embeddings.to(torch.float32), normalized_targets.to(torch.float32)
                     outputs = transformer_model(embeddings)
                     train_outputs.extend(outputs.squeeze().cpu().numpy())
@@ -310,7 +413,6 @@ def train_transformer(train_loader, val_loader, vit_model, args, accelerator):
 
     return transformer_model, best_r_squared
 
-
 if __name__ == "__main__":
     args = parse_args()
     accelerator = Accelerator()
@@ -334,9 +436,9 @@ if __name__ == "__main__":
             "time_before": time_before,
             "bands": len(bands_list_order),
             "use_validation": args.use_validation,
-            "apply_log": getattr(args, "apply_log", False),  # Added transformation flag
-            "normalize_targets": getattr(args, "normalize_targets", False),  # Added normalization flag
-            "loss": getattr(args, "loss", "mse")  # Added loss function
+            "target_transform":args.target_transform,
+            "loss_type":args.loss_type
+
         }
     )
 
@@ -387,10 +489,9 @@ if __name__ == "__main__":
     # Construct a more informative save path
     r_squared_str = f"{final_r_squared:.4f}".replace(".", "_")
     transform_str = "log" if getattr(args, "apply_log", False) else "raw"
-    norm_str = "norm" if getattr(args, "normalize_targets", False) else "nonorm"
     loss_str = getattr(args, "loss", "mse")
     
-    validation_str = f"{transform_str}_{norm_str}_{loss_str}"
+    validation_str = f"{transform_str}_{loss_str}"
     if args.use_validation:
         validation_str += f"_R2_{r_squared_str}"
     else:
@@ -409,3 +510,7 @@ if __name__ == "__main__":
         wandb.run.summary["final_r_squared"] = final_r_squared
 
     wandb.finish()
+
+
+
+# normalize / l2

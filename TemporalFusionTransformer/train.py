@@ -46,10 +46,32 @@ def parse_args():
     parser.add_argument('--loss_alpha', type=float, default=0.8, help='Weight for L1 loss in composite loss')
     parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')
     parser.add_argument('--hidden_size', type=int, default=128, help='Hidden size for TFT model')
-    parser.add_argument('--loss_type', type=str, default='mse', choices=['composite', 'mse', 'l1'], 
+    parser.add_argument('--loss_type', type=str, default='composite_l2', choices=['composite_l1', 'l1', 'mse','composite_l2'], 
                         help='Type of loss function to use: composite, mse, or l1')
     parser.add_argument('--apply_log', action='store_true', help='Apply log transformation to targets')
+    parser.add_argument('--target_transform', type=str, default='none', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
     return parser.parse_args()
+
+def composite_l2_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
+    """Composite loss combining L2 and scaled chi-squared loss"""
+    errors = targets - outputs
+    
+    # L2 loss: mean squared error
+    l2_loss = torch.mean(errors ** 2)
+    
+    # Standard chi-squared loss: errors^2 / sigma^2
+    chi2_loss = torch.mean((errors ** 2) / (sigma ** 2))
+    
+    # Ensure chi2_loss is not too small to avoid division issues
+    chi2_loss = torch.clamp(chi2_loss, min=1e-8)
+    
+    # Scale chi2_loss to match the magnitude of l2_loss
+    scale_factor = l2_loss / chi2_loss
+    chi2_scaled = scale_factor * chi2_loss
+    
+    # Combine the losses with the weighting factor alpha
+    return alpha * l2_loss + (1 - alpha) * chi2_scaled
+
 
 # Function to create balanced dataset (unchanged)
 def create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=True):
@@ -95,24 +117,32 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=True):
         training_df = pd.concat(training_dfs).drop('bin', axis=1)
         return training_df
 
-# Updated training function with loss type and log transformation options
-def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelerator=None, lr=0.001,
-                loss_alpha=0.6, min_r2=0.5, use_validation=True, loss_type='composite', apply_log=False):
-    # Define target transformation based on apply_log argument
-    if apply_log:
-        def transform_targets(targets):
-            return torch.log(targets + 1e-8)  # Small epsilon to handle zero/negative values
-    else:
-        def transform_targets(targets):
-            return targets
 
-    # Define loss criterion based on loss_type argument
-    if loss_type == 'composite':
-        criterion = lambda outputs, targets: composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=loss_alpha)
-    elif loss_type == 'mse':
-        criterion = nn.MSELoss()
+# Updated training function with loss type, log transformation, and RPIQ metric
+def train_model(args, model, train_loader, val_loader, num_epochs=num_epochs, accelerator=None, lr=0.001,
+                min_r2=0.5, use_validation=True, loss_type='composite_l2', target_transform='none'):
+    # Handle target normalization if selected
+    if target_transform == 'normalize':
+        all_targets = []
+        for _, _, _, targets in train_loader:
+            all_targets.append(targets)
+        all_targets = torch.cat(all_targets)
+        target_mean = all_targets.mean().item()
+        target_std = all_targets.std().item()
+        if accelerator.is_main_process:
+            print(f"Target mean: {target_mean}, Target std: {target_std}")
+    else:
+        target_mean, target_std = 0.0, 1.0  # No normalization applied
+
+    # Define loss function based on loss_type
+    if loss_type == 'composite_l1':
+        criterion = lambda outputs, targets: composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=args.loss_alpha)
+    elif loss_type == 'composite_l2':
+        criterion = lambda outputs, targets: composite_l2_chi2_loss(outputs, targets, sigma=3.0, alpha=args.loss_alpha)
     elif loss_type == 'l1':
         criterion = nn.L1Loss()
+    elif loss_type == 'mse':
+        criterion = nn.MSELoss()
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
 
@@ -133,8 +163,15 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
         for batch_idx, (longitudes, latitudes, features, targets) in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1}")):
             optimizer.zero_grad()
             outputs = model(features)  # Ensure outputs are a tensor
-            transformed_targets = transform_targets(targets.float())
-            loss = criterion(outputs, transformed_targets)
+            # Apply transformation to targets
+            if target_transform == 'log':
+                targets = torch.log(targets + 1e-10)
+            elif target_transform == 'normalize':
+                targets = (targets - target_mean) / (target_std + 1e-10)
+
+            targets = targets.float()
+            outputs = outputs.float()
+            loss = criterion(outputs, targets)
             accelerator.backward(loss)
             optimizer.step()
 
@@ -153,41 +190,63 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
         if use_validation and val_loader is not None:
             model.eval()
             val_loss = 0.0
-            val_outputs = []
+            val_outputs_list = []
             val_targets_list = []
 
             with torch.no_grad():
                 for longitudes, latitudes, features, targets in val_loader:
                     outputs = model(features)
-                    transformed_targets = transform_targets(targets.float())
-                    loss = criterion(outputs, transformed_targets)
+                    # Apply transformation to targets
+                    if target_transform == 'log':
+                        targets = torch.log(targets + 1e-10)
+                    elif target_transform == 'normalize':
+                        targets = (targets - target_mean) / (target_std + 1e-10)
+                    loss = criterion(outputs, targets)
                     val_loss += loss.item()
                     # Gather outputs and targets across all processes
-                    val_outputs.append(accelerator.gather(outputs).cpu().numpy())
-                    val_targets_list.append(accelerator.gather(transformed_targets).cpu().numpy())
+                    val_outputs_list.append(accelerator.gather(outputs).cpu().numpy())
+                    val_targets_list.append(accelerator.gather(targets).cpu().numpy())
 
-            if len(val_outputs) == 0 or len(val_targets_list) == 0:
+            if len(val_outputs_list) == 0 or len(val_targets_list) == 0:
                 accelerator.print(f"Warning: Validation data is empty at epoch {epoch+1}")
                 val_loss = float('nan')
                 r_squared = 0.0
                 rmse = float('nan')
                 mae = float('nan')
+                rpiq = float('nan')
             else:
                 val_loss = val_loss / len(val_loader)
-                val_outputs = np.concatenate(val_outputs)
-                val_targets_list = np.concatenate(val_targets_list)
+                val_outputs = np.concatenate(val_outputs_list)
+                val_targets = np.concatenate(val_targets_list)
 
-                # Handle NaN in correlation
-                if np.all(val_outputs == val_outputs[0]) or np.all(val_targets_list == val_targets_list[0]):
-                    correlation = 0.0  # Constant output or target results in zero correlation
+                # Inverse transform to original scale
+                if target_transform == 'log':
+                    original_val_outputs = np.exp(val_outputs)
+                    original_val_targets = np.exp(val_targets)
+                elif target_transform == 'normalize':
+                    original_val_outputs = val_outputs * target_std + target_mean
+                    original_val_targets = val_targets * target_std + target_mean
                 else:
-                    corr_matrix = np.corrcoef(val_outputs.flatten(), val_targets_list.flatten())
-                    correlation = corr_matrix[0, 1] if not np.isnan(corr_matrix[0, 1]) else 0.0
+                    original_val_outputs = val_outputs
+                    original_val_targets = val_targets
 
-                r_squared = correlation ** 2
-                mse = np.mean((val_outputs - val_targets_list) ** 2) if not np.any(np.isnan(val_outputs)) else float('nan')
-                rmse = np.sqrt(mse) if not np.isnan(mse) else float('nan')
-                mae = np.mean(np.abs(val_outputs - val_targets_list)) if not np.any(np.isnan(val_outputs)) else float('nan')
+                # Compute metrics on original scale
+                if len(original_val_outputs) > 1 and np.std(original_val_outputs) > 1e-6 and np.std(original_val_targets) > 1e-6:
+                    corr_matrix = np.corrcoef(original_val_outputs.flatten(), original_val_targets.flatten())
+                    correlation = corr_matrix[0, 1] if not np.isnan(corr_matrix[0, 1]) else 0.0
+                    r_squared = correlation ** 2
+                    mse = np.mean((original_val_outputs - original_val_targets) ** 2)
+                    rmse = np.sqrt(mse)
+                    mae = np.mean(np.abs(original_val_outputs - original_val_targets))
+                    iqr = np.percentile(original_val_targets, 75) - np.percentile(original_val_targets, 25)
+                    rpiq = iqr / rmse if rmse > 0 else float('inf')
+                else:
+                    correlation = 0.0
+                    r_squared = 0.0
+                    mse = float('nan')
+                    rmse = float('nan')
+                    mae = float('nan')
+                    rpiq = float('nan')
         else:
             val_loss = 0.0
             val_outputs = np.array([])
@@ -195,6 +254,7 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
             r_squared = 0.0
             rmse = 0.0
             mae = 0.0
+            rpiq = 0.0
 
         if accelerator.is_main_process:
             wandb.log({
@@ -205,7 +265,8 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
                 'r_squared': r_squared,
                 'mse': mse if use_validation else 0.0,
                 'rmse': rmse,
-                'mae': mae
+                'mae': mae,
+                'rpiq': rpiq if use_validation else 0.0
             })
 
             if use_validation and r_squared > best_r2 and r_squared >= min_r2:
@@ -221,9 +282,10 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
         accelerator.print(f'Training Loss: {train_loss:.4f}')
         accelerator.print(f'Validation Loss: {val_loss:.4f}')
         if use_validation:
-            accelerator.print(f'R²: {r_squared:.4f}, RMSE: {rmse:.4f}, MAE: {mae:.4f}\n')
+            accelerator.print(f'R²: {r_squared:.4f}, RMSE: {rmse:.4f}, MAE: {mae:.4f}, RPIQ: {rpiq:.4f}\n')
 
     return model, val_outputs, val_targets_list, best_model_state, best_r2
+
 
 if __name__ == "__main__":
     args = parse_args()
@@ -250,7 +312,7 @@ if __name__ == "__main__":
             "hidden_size": args.hidden_size,
             "model_type": "SimpleTFT",
             "loss_type": args.loss_type,
-            "apply_log": args.apply_log
+            "target_transform": args.target_transform,
         }
     )
 
@@ -316,23 +378,22 @@ if __name__ == "__main__":
         wandb.run.summary["model_parameters"] = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
     # Train the model with new arguments
-    model, val_outputs, val_targets, best_model_state, best_r2 = train_model(
+    model, val_outputs, val_targets, best_model_state, best_r2 = train_model(args,
         model,
         train_loader,
         val_loader,
         num_epochs=num_epochs,
         accelerator=accelerator,
         lr=args.lr,
-        loss_alpha=args.loss_alpha,
         min_r2=0.5,
         use_validation=args.use_validation,
         loss_type=args.loss_type,
-        apply_log=args.apply_log
+        target_transform=args.target_transform
     )
 
     # Save the best model (unchanged)
     if accelerator.is_main_process and best_model_state is not None:
-        final_model_path = f'tft_model_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}_R2_{best_r2:.4f}.pth'
+        final_model_path = f'tft_model_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}_R2_{best_r2:.4f}_transform_{args.target_transform}_loss_type_{args.loss_type}.pth'
         accelerator.save(best_model_state, final_model_path)
         wandb.save(final_model_path)
         print(f"Model with best R² ({best_r2:.4f}) saved successfully at: {final_model_path}")

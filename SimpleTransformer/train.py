@@ -35,38 +35,54 @@ def composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
     
     return alpha * l1_loss + (1 - alpha) * chi2_scaled
 
+
+def composite_l2_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
+    """Composite loss combining L2 and scaled chi-squared loss"""
+    errors = targets - outputs
+    
+    # L2 loss: mean squared error
+    l2_loss = torch.mean(errors ** 2)
+    
+    # Standard chi-squared loss: errors^2 / sigma^2
+    chi2_loss = torch.mean((errors ** 2) / (sigma ** 2))
+    
+    # Ensure chi2_loss is not too small to avoid division issues
+    chi2_loss = torch.clamp(chi2_loss, min=1e-8)
+    
+    # Scale chi2_loss to match the magnitude of l2_loss
+    scale_factor = l2_loss / chi2_loss
+    chi2_scaled = scale_factor * chi2_loss
+    
+    # Combine the losses with the weighting factor alpha
+    return alpha * l2_loss + (1 - alpha) * chi2_scaled
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Train SimpleTransformer model with customizable parameters')
     parser.add_argument('--lr', type=float, default=0.002, help='Learning rate')
     parser.add_argument('--num_heads', type=int, default=NUM_HEADS, help='Number of attention heads')
     parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of transformer layers')
-    parser.add_argument('--loss_type', type=str, default='mse', choices=['composite', 'l1', 'mse'], help='Type of loss function')
+    parser.add_argument('--loss_type', type=str, default='mse', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
     parser.add_argument('--loss_alpha', type=float, default=0.5, help='Weight for L1 loss in composite loss (if used)')
     parser.add_argument('--target_transform', type=str, default='log', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
     parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')
     return parser.parse_args()
 
+# Function to create balanced dataset (unchanged)
 def create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=True):
-    """
-    Create a balanced dataset by binning OC values and resampling.
-    If use_validation is True, splits into training and validation sets.
-    If use_validation is False, returns only a balanced training set.
-    """
     bins = pd.qcut(df['OC'], q=n_bins, labels=False, duplicates='drop')
     df['bin'] = bins
     bin_counts = df['bin'].value_counts()
     max_samples = bin_counts.max()
     min_samples = max(int(max_samples * min_ratio), 5)
-    
+
     training_dfs = []
-    
     if use_validation:
         validation_indices = []
-        
         for bin_idx in range(len(bin_counts)):
             bin_data = df[df['bin'] == bin_idx]
             if len(bin_data) >= 4:
-                val_samples = bin_data.sample(n=min(8, len(bin_data)))
+                val_samples = bin_data.sample(n=min(13, len(bin_data)))
                 validation_indices.extend(val_samples.index)
                 train_samples = bin_data.drop(val_samples.index)
                 if len(train_samples) > 0:
@@ -75,14 +91,13 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=True):
                         training_dfs.append(resampled)
                     else:
                         training_dfs.append(train_samples)
-        
         if not training_dfs or not validation_indices:
             raise ValueError("No training or validation data available after binning")
-        
         training_df = pd.concat(training_dfs).drop('bin', axis=1)
         validation_df = df.loc[validation_indices].drop('bin', axis=1)
+        print('Size of the training set:   ' ,len(training_df))
+        print('Size of the validation set:   ' ,len(validation_df))
         return training_df, validation_df
-    
     else:
         for bin_idx in range(len(bin_counts)):
             bin_data = df[df['bin'] == bin_idx]
@@ -92,18 +107,18 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=True):
                     training_dfs.append(resampled)
                 else:
                     training_dfs.append(bin_data)
-        
         if not training_dfs:
             raise ValueError("No training data available after binning")
-        
         training_df = pd.concat(training_dfs).drop('bin', axis=1)
         return training_df
 
 def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelerator=None, lr=0.001,
                 loss_type='l1', loss_alpha=0.5, target_transform='none', min_r2=0.5, use_validation=True):
     # Define loss function based on loss_type
-    if loss_type == 'composite':
+    if loss_type == 'composite_l1':
         criterion = lambda outputs, targets: composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=loss_alpha)
+    elif loss_type == 'composite_l2':
+        criterion = lambda outputs, targets: composite_l2_chi2_loss(outputs, targets, sigma=3.0, alpha=loss_alpha)
     elif loss_type == 'l1':
         criterion = nn.L1Loss()
     elif loss_type == 'mse':
@@ -168,7 +183,6 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
         
         if use_validation and val_loader is not None:
             model.eval()
-            val_loss = 0.0
             val_outputs = []
             val_targets_list = []
             
@@ -184,19 +198,54 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
                         targets = (targets - target_mean) / (target_std + 1e-10)
                     
                     outputs = model(features)
-                    loss = criterion(outputs, targets)
-                    val_loss += loss.item()
                     val_outputs.extend(outputs.cpu().numpy())
                     val_targets_list.extend(targets.cpu().numpy())
             
-            val_loss = val_loss / len(val_loader)
-            val_outputs = np.array(val_outputs)
-            val_targets_list = np.array(val_targets_list)
-            correlation = np.corrcoef(val_outputs, val_targets_list)[0, 1]
-            r_squared = correlation ** 2
-            mse = np.mean((val_outputs - val_targets_list) ** 2)
-            rmse = np.sqrt(mse)
-            mae = np.mean(np.abs(val_outputs - val_targets_list))
+            # Gather validation outputs and targets across all processes
+            val_outputs_tensor = torch.tensor(val_outputs).to(accelerator.device)
+            val_targets_tensor = torch.tensor(val_targets_list).to(accelerator.device)
+            val_outputs_all = accelerator.gather(val_outputs_tensor).cpu().numpy()
+            val_targets_all = accelerator.gather(val_targets_tensor).cpu().numpy()
+            
+            if accelerator.is_main_process:
+                # Apply inverse transformation to get original scale
+                if target_transform == 'log':
+                    original_val_outputs = np.exp(val_outputs_all)
+                    original_val_targets = np.exp(val_targets_all)
+                elif target_transform == 'normalize':
+                    original_val_outputs = val_outputs_all * target_std + target_mean
+                    original_val_targets = val_targets_all * target_std + target_mean
+                else:
+                    original_val_outputs = val_outputs_all
+                    original_val_targets = val_targets_all
+                
+                # Compute metrics on original scale
+                if len(original_val_outputs) > 1:
+                    correlation = np.corrcoef(original_val_outputs, original_val_targets)[0, 1]
+                    r_squared = correlation ** 2
+                else:
+                    correlation = 0.0
+                    r_squared = 0.0
+                mse = np.mean((original_val_outputs - original_val_targets) ** 2)
+                rmse = np.sqrt(mse)
+                mae = np.mean(np.abs(original_val_outputs - original_val_targets))
+                
+                # Compute IQR and RPIQ
+                iqr = np.percentile(original_val_targets, 75) - np.percentile(original_val_targets, 25)
+                rpiq = iqr / rmse if rmse > 0 else float('inf')
+                
+                # Compute validation loss on transformed scale
+                val_outputs_tensor_all = torch.from_numpy(val_outputs_all).to(accelerator.device)
+                val_targets_tensor_all = torch.from_numpy(val_targets_all).to(accelerator.device)
+                val_loss = criterion(val_outputs_tensor_all, val_targets_tensor_all).item()
+            else:
+                val_loss = 1.0
+                correlation = 0.0
+                r_squared = 0.0
+                mse = 1.0
+                rmse = 1.0
+                mae = 1.0
+                rpiq = 0.0
         else:
             val_loss = 1.0
             val_outputs = np.array([])
@@ -206,6 +255,7 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
             mse = 1.0
             rmse = 1.0
             mae = 1.0
+            rpiq = 0.0
 
         if accelerator.is_main_process:
             wandb.log({
@@ -216,7 +266,8 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
                 'r_squared': r_squared,
                 'mse': mse,
                 'rmse': rmse,
-                'mae': mae
+                'mae': mae,
+                'rpiq': rpiq
             })
 
             # Save model if it has the best R² and meets minimum threshold
@@ -233,9 +284,13 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
         accelerator.print(f'Training Loss: {train_loss:.4f}')
         accelerator.print(f'Validation Loss: {val_loss:.4f}')
         if use_validation:
-            accelerator.print(f'R²: {r_squared:.4f}\n')
+            accelerator.print(f'R²: {r_squared:.4f}')
+            accelerator.print(f'RMSE: {rmse:.4f}')
+            accelerator.print(f'MAE: {mae:.4f}')
+            accelerator.print(f'RPIQ: {rpiq:.4f}\n')
 
     return model, val_outputs, val_targets_list, best_model_state, best_r2
+
 
 if __name__ == "__main__":
     args = parse_args()
@@ -335,7 +390,7 @@ if __name__ == "__main__":
     )
 
     if accelerator.is_main_process and best_model_state is not None:
-        final_model_path = f'transformer_model_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}_R2_{best_r2:.4f}.pth'
+        final_model_path = f'transformer_model_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}_R2_{best_r2:.4f}_transform_{args.target_transform}_loss_type_{args.loss_type}.pth'
         accelerator.save(best_model_state, final_model_path)
         wandb.save(final_model_path)
         print(f"Model with best R² ({best_r2:.4f}) saved successfully at: {final_model_path}")
@@ -343,3 +398,6 @@ if __name__ == "__main__":
         print("No model saved - R² threshold not met")
 
     wandb.finish()
+
+
+# BEST "composite_l2" / log

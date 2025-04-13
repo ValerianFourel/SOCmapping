@@ -20,102 +20,127 @@ from modelCNNMultiYear import Small3DCNN
 from accelerate import Accelerator
 import argparse
 
-def create_balanced_dataset(df, n_bins=128, min_ratio=3/4):
+# Define the composite loss function
+def composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
+    """Composite loss combining L1 and scaled chi-squared loss"""
+    errors = targets - outputs
+    l1_loss = torch.mean(torch.abs(errors))
+    squared_errors = errors ** 2
+    chi2_unscaled = (1/4) * squared_errors * torch.exp(-squared_errors / (2 * sigma))
+    chi2_unscaled_mean = torch.mean(chi2_unscaled)
+    chi2_unscaled_mean = torch.clamp(chi2_unscaled_mean, min=1e-8)
+    scale_factor = l1_loss / chi2_unscaled_mean
+    chi2_scaled = scale_factor * chi2_unscaled_mean
+    return alpha * l1_loss + (1 - alpha) * chi2_scaled
+
+def composite_l2_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
+    """Composite loss combining L2 and scaled chi-squared loss"""
+    errors = targets - outputs
+    l2_loss = torch.mean(errors ** 2)
+    chi2_loss = torch.mean((errors ** 2) / (sigma ** 2))
+    chi2_loss = torch.clamp(chi2_loss, min=1e-8)
+    scale_factor = l2_loss / chi2_loss
+    chi2_scaled = scale_factor * chi2_loss
+    return alpha * l2_loss + (1 - alpha) * chi2_scaled
+
+def create_balanced_dataset(df, use_validation=True, n_bins=128, min_ratio=3/4):
     bins = pd.qcut(df['OC'], q=n_bins, labels=False, duplicates='drop')
     df['bin'] = bins
     bin_counts = df['bin'].value_counts()
     max_samples = bin_counts.max()
     min_samples = max(int(max_samples * min_ratio), 5)
-
-    validation_indices = []
     training_dfs = []
-
-    for bin_idx in range(len(bin_counts)):
-        bin_data = df[df['bin'] == bin_idx]
-        if len(bin_data) >= 4:
-            val_samples = bin_data.sample(n=min(13, len(bin_data)))
-            validation_indices.extend(val_samples.index)
-            train_samples = bin_data.drop(val_samples.index)
-            if len(train_samples) > 0:
-                if len(train_samples) < min_samples:
-                    resampled = train_samples.sample(n=min_samples, replace=True)
+    if use_validation:
+        validation_indices = []
+        for bin_idx in range(len(bin_counts)):
+            bin_data = df[df['bin'] == bin_idx]
+            if len(bin_data) >= 4:
+                val_samples = bin_data.sample(n=min(13, len(bin_data)))
+                validation_indices.extend(val_samples.index)
+                train_samples = bin_data.drop(val_samples.index)
+                if len(train_samples) > 0:
+                    if len(train_samples) < min_samples:
+                        resampled = train_samples.sample(n=min_samples, replace=True)
+                        training_dfs.append(resampled)
+                    else:
+                        training_dfs.append(train_samples)
+        if not training_dfs or not validation_indices:
+            raise ValueError("No training or validation data available after binning")
+        training_df = pd.concat(training_dfs).drop('bin', axis=1)
+        validation_df = df.loc[validation_indices].drop('bin', axis=1)
+        print('Size of the training set:   ', len(training_df))
+        print('Size of the validation set:   ', len(validation_df))
+        return training_df, validation_df
+    else:
+        for bin_idx in range(len(bin_counts)):
+            bin_data = df[df['bin'] == bin_idx]
+            if len(bin_data) > 0:
+                if len(bin_data) < min_samples:
+                    resampled = bin_data.sample(n=min_samples, replace=True)
                     training_dfs.append(resampled)
                 else:
-                    training_dfs.append(train_samples)
+                    training_dfs.append(bin_data)
+        if not training_dfs:
+            raise ValueError("No training data available after binning")
+        training_df = pd.concat(training_dfs).drop('bin', axis=1)
+        return training_df, None  # Return None for validation_df when no validation
 
-    if not training_dfs:
-        raise ValueError("No training data available after binning and sampling")
-    if not validation_indices:
-        raise ValueError("No validation data available after binning and sampling")
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from tqdm import tqdm
+from accelerate import Accelerator
+import wandb
 
-    training_df = pd.concat(training_dfs)
-    validation_df = df.loc[validation_indices]
-    training_df = training_df.drop('bin', axis=1)
-    validation_df = validation_df.drop('bin', axis=1)
-
-    print(f"Number of bins with data: {len(bin_counts)}")
-    print(f"Min Number in a bins with data: {min_samples}")
-    print(f"Original data size: {len(df)}")
-    print(f"Training set size: {len(training_df)}")
-    print(f"Validation set size: {len(validation_df)}")
-
-    return training_df, validation_df
-
-def get_target_transform(target_transform_type, train_targets):
-    if target_transform_type == "normalize":
-        mean = train_targets.mean()
-        std = train_targets.std()
-        if std == 0:
-            std = 1.0
-        def transform(x):
-            return (x - mean) / std
-        def inverse_transform(x):
-            return x * std + mean
-        return transform, inverse_transform, {"mean": mean.item(), "std": std.item()}
-    elif target_transform_type == "log":
-        def transform(x):
-            return torch.log1p(x)  # log(1 + x) for stability
-        def inverse_transform(x):
-            return torch.expm1(x)
-        return transform, inverse_transform, {}
+def train_model(args, model, train_loader, val_loader, num_epochs=100, target_transform="none", loss_type="L2"):
+    if loss_type == 'composite_l1':
+        criterion = lambda outputs, targets: composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=args.loss_alpha)
+    elif loss_type == 'composite_l2':
+        criterion = lambda outputs, targets: composite_l2_chi2_loss(outputs, targets, sigma=3.0, alpha=args.loss_alpha)
+    elif loss_type == 'l1':
+        criterion = nn.L1Loss()
+    elif loss_type == 'mse':
+        criterion = nn.MSELoss()
     else:
-        def transform(x):
-            return x
-        def inverse_transform(x):
-            return x
-        return transform, inverse_transform, {}
-
-def train_model(model, train_loader, val_loader, num_epochs=100, target_transform_type="none", loss_type="L2"):
+        raise ValueError(f"Unknown loss type: {loss_type}")
+    
     accelerator = Accelerator()
     device = accelerator.device
 
     model = model.to(device)
-    criterion = nn.MSELoss() if loss_type == "L2" else nn.L1Loss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)  # Lowered LR
+    optimizer = optim.Adam(model.parameters(), lr=args.lr)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
-    model, optimizer, train_loader, val_loader = accelerator.prepare(
-        model, optimizer, train_loader, val_loader
+    model, optimizer, train_loader = accelerator.prepare(
+        model, optimizer, train_loader
     )
+    if val_loader is not None:
+        val_loader = accelerator.prepare(val_loader)
 
-    # Compute transformation stats
-    all_train_targets = []
-    for _, _, _, targets in train_loader:
-        all_train_targets.append(targets)
-    all_train_targets = torch.cat(all_train_targets).float()
-    transform, inverse_transform, transform_params = get_target_transform(target_transform_type, all_train_targets)
+    if target_transform == 'normalize':
+        all_targets = []
+        for _, _, _, targets in train_loader:
+            all_targets.append(targets)
+        all_targets = torch.cat(all_targets)
+        target_mean = all_targets.mean().item()
+        target_std = all_targets.std().item()
+        if accelerator.is_main_process:
+            print(f"Target mean: {target_mean}, Target std: {target_std}")
+    else:
+        target_mean, target_std = 0.0, 1.0
 
     if accelerator.is_main_process:
-        print(f"Target transform: {target_transform_type}, Params: {transform_params}")
-        print(f"Training targets - Min: {all_train_targets.min().item()}, Max: {all_train_targets.max().item()}")
+        print(f"Target transform: {target_transform}, Params: mean: {target_mean} std: {target_std}")
+        if target_transform == 'normalize':
+            print(f"Training targets - Min: {all_targets.min().item()}, Max: {all_targets.max().item()}")
 
     if accelerator.is_main_process:
-        wandb.config.update({"target_transform": target_transform_type, "loss_type": loss_type, "lr": 0.0001})
-        wandb.config.update(transform_params)
+        wandb.config.update({"target_transform": target_transform, "loss_type": loss_type, "lr": args.lr})
 
-    best_val_loss = float('inf')
-    best_model = None
-    patience = 10  # Early stopping patience
+    best_r_squared = -float('inf') if args.use_validation else 1.0
+    best_model_state = None
+    patience = 10
     patience_counter = 0
 
     for epoch in range(num_epochs):
@@ -129,8 +154,15 @@ def train_model(model, train_loader, val_loader, num_epochs=100, target_transfor
             if torch.isnan(outputs).any() or torch.isinf(outputs).any():
                 accelerator.print(f"Epoch {epoch+1}: NaN/Inf in outputs")
                 continue
-            transformed_targets = transform(targets.float())
-            loss = criterion(outputs, transformed_targets)
+
+            if target_transform == 'log':
+                targets = torch.log(targets + 1e-10)
+            elif target_transform == 'normalize':
+                targets = (targets - target_mean) / (target_std + 1e-10)
+            
+            outputs = outputs.float()  # Convert model outputs to float32
+            targets = targets.float()  # Convert targets to float32
+            loss = criterion(outputs, targets)
             if torch.isnan(loss) or torch.isinf(loss):
                 accelerator.print(f"Epoch {epoch+1}: NaN/Inf in loss")
                 continue
@@ -144,99 +176,139 @@ def train_model(model, train_loader, val_loader, num_epochs=100, target_transfor
 
         train_loss = running_loss / train_loader_size if train_loader_size > 0 else float('nan')
 
-        model.eval()
-        val_loss = 0.0
-        val_outputs = []
-        val_targets = []
-        val_loader_size = 0
+        if args.use_validation and val_loader is not None:
+            model.eval()
+            val_loss = 0.0
+            val_outputs = []
+            val_original_targets = []  # New list to store original targets
+            val_loader_size = 0
 
-        with torch.no_grad():
-            for longitudes, latitudes, features, targets in val_loader:
-                outputs = model(features)
-                if torch.isnan(outputs).any() or torch.isinf(outputs).any():
-                    accelerator.print(f"Epoch {epoch+1}: NaN/Inf in val outputs")
-                    continue
-                transformed_targets = transform(targets.float())
-                loss = criterion(outputs, transformed_targets)
-                val_loss += accelerator.gather_for_metrics(loss.detach()).mean().item()
-                val_loader_size += 1
+            with torch.no_grad():
+                for longitudes, latitudes, features, targets in val_loader:
+                    original_targets = targets.clone().float()  # Capture targets before transformation
+                    if target_transform == 'log':
+                        targets = torch.log(targets + 1e-10)
+                    elif target_transform == 'normalize':
+                        targets = (targets - target_mean) / (target_std + 1e-10)
+                    outputs = model(features)
+                    if torch.isnan(outputs).any() or torch.isinf(outputs).any():
+                        accelerator.print(f"Epoch {epoch+1}: NaN/Inf in val outputs")
+                        continue
 
-                gathered_outputs = accelerator.gather_for_metrics(outputs)
-                gathered_targets = accelerator.gather_for_metrics(targets.float())
-                val_outputs.extend(inverse_transform(gathered_outputs).cpu().numpy())
-                val_targets.extend(gathered_targets.cpu().numpy())
+                    loss = criterion(outputs, targets)
 
-        if len(val_outputs) == 0 or len(val_targets) == 0:
-            accelerator.print(f"Epoch {epoch+1}: Validation data empty")
-            val_loss = float('nan')
-            r_squared = 0.0
-            rmse = float('nan')
-            mae = float('nan')
-        else:
-            val_loss = val_loss / val_loader_size if val_loader_size > 0 else float('nan')
-            val_outputs = np.array(val_outputs)
-            val_targets = np.array(val_targets)
+                    val_loss += accelerator.gather_for_metrics(loss.detach()).mean().item()
+                    val_loader_size += 1
 
-            output_std = np.std(val_outputs)
-            target_std = np.std(val_targets)
-            accelerator.print(f"Epoch {epoch+1}: Output std: {output_std:.4f}, Target std: {target_std:.4f}")
+                    gathered_outputs = accelerator.gather_for_metrics(outputs)
+                    gathered_original_targets = accelerator.gather_for_metrics(original_targets)
+                    val_outputs.extend(gathered_outputs.cpu().numpy())
+                    val_original_targets.extend(gathered_original_targets.cpu().numpy())
 
-            if output_std < 1e-6 or target_std < 1e-6:
-                correlation = 0.0
-                accelerator.print(f"Epoch {epoch+1}: No variability in outputs or targets")
+            if len(val_outputs) == 0 or len(val_original_targets) == 0:
+                accelerator.print(f"Epoch {epoch+1}: Validation data empty")
+                val_loss = float('nan')
+                r_squared = 0.0
+                rmse = float('nan')
+                mae = float('nan')
+                rpiq = float('nan')  # Initialize RPIQ for empty case
             else:
-                corr_matrix = np.corrcoef(val_outputs.flatten(), val_targets.flatten())
-                correlation = corr_matrix[0, 1] if not np.isnan(corr_matrix[0, 1]) else 0.0
+                val_loss = val_loss / val_loader_size if val_loader_size > 0 else float('nan')
+                val_outputs = np.array(val_outputs)
+                val_original_targets = np.array(val_original_targets)
 
-            r_squared = correlation ** 2
-            mse = np.mean((val_outputs - val_targets) ** 2) if not np.any(np.isnan(val_outputs)) else float('nan')
-            rmse = np.sqrt(mse) if not np.isnan(mse) else float('nan')
-            mae = np.mean(np.abs(val_outputs - val_targets)) if not np.any(np.isnan(val_outputs)) else float('nan')
+                # Inverse transform model outputs to original scale
+                if target_transform == 'log':
+                    original_outputs = np.exp(val_outputs)
+                elif target_transform == 'normalize':
+                    original_outputs = val_outputs * target_std + target_mean
+                else:
+                    original_outputs = val_outputs
 
-        if accelerator.is_main_process:
-            wandb.log({
-                'epoch': epoch + 1,
-                'train_loss': train_loss,
-                'val_loss': val_loss,
-                'correlation': correlation,
-                'r_squared': r_squared,
-                'mse': mse,
-                'rmse': rmse,
-                'mae': mae,
-                'output_std': output_std if len(val_outputs) > 0 else 0.0,
-                'target_std': target_std if len(val_targets) > 0 else 0.0
-            })
+                # Compute metrics on original scale
+                output_std = np.std(original_outputs)
+                target_std = np.std(val_original_targets)
+                accelerator.print(f"Epoch {epoch+1}: Output std: {output_std:.4f}, Target std: {target_std:.4f}")
 
-        if accelerator.is_main_process and val_loss < best_val_loss and not np.isnan(val_loss):
-            best_val_loss = val_loss
-            best_model = model.state_dict().copy()
-            wandb.run.summary["best_val_loss"] = best_val_loss
-            patience_counter = 0
-        elif accelerator.is_main_process and not np.isnan(val_loss):
-            patience_counter += 1
-            if patience_counter >= patience:
-                print(f"Early stopping triggered after {epoch+1} epochs")
-                break
+                if output_std < 1e-6 or target_std < 1e-6:
+                    correlation = 0.0
+                    r_squared = 0.0
+                    mse = float('nan')
+                    rmse = float('nan')
+                    mae = float('nan')
+                    rpiq = float('nan')
+                    accelerator.print(f"Epoch {epoch+1}: No variability in outputs or targets")
+                else:
+                    corr_matrix = np.corrcoef(original_outputs.flatten(), val_original_targets.flatten())
+                    correlation = corr_matrix[0, 1] if not np.isnan(corr_matrix[0, 1]) else 0.0
+                    r_squared = correlation ** 2
+                    mse = np.mean((original_outputs - val_original_targets) ** 2) if not np.any(np.isnan(original_outputs)) else float('nan')
+                    rmse = np.sqrt(mse) if not np.isnan(mse) else float('nan')
+                    mae = np.mean(np.abs(original_outputs - val_original_targets)) if not np.any(np.isnan(original_outputs)) else float('nan')
+                    iqr = np.percentile(val_original_targets, 75) - np.percentile(val_original_targets, 25)
+                    rpiq = iqr / rmse if rmse > 0 else float('inf')  # Compute RPIQ
 
-        scheduler.step(val_loss)  # Adjust learning rate based on val_loss
+                # Update best model based on R² (computed on original scale)
+                if r_squared > best_r_squared:
+                    best_r_squared = r_squared
+                    best_model_state = {k: v.cpu() for k, v in model.state_dict().items()}
+                    if accelerator.is_main_process:
+                        wandb.run.summary["best_r_squared"] = best_r_squared
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+                    if patience_counter >= patience:
+                        accelerator.print(f"Early stopping triggered after {epoch+1} epochs")
+                        break
 
-        accelerator.print(f'Epoch {epoch+1}:')
-        accelerator.print(f'Training Loss: {train_loss:.4f}')
-        accelerator.print(f'Validation Loss: {val_loss:.4f}')
-        accelerator.print(f'R²: {r_squared:.4f}, RMSE: {rmse:.4f}, MAE: {mae:.4f}\n')
+                if accelerator.is_main_process:
+                    wandb.log({
+                        'epoch': epoch + 1,
+                        'train_loss': train_loss,
+                        'val_loss': val_loss,
+                        'correlation': correlation,
+                        'r_squared': r_squared,
+                        'mse': mse,
+                        'rmse': rmse,
+                        'mae': mae,
+                        'rpiq': rpiq,  # Log RPIQ
+                        'output_std': output_std,
+                        'target_std': target_std
+                    })
 
-    if best_model is not None:
-        model.load_state_dict(best_model)
-    return model, val_outputs, val_targets
+                accelerator.print(f'Epoch {epoch+1}:')
+                accelerator.print(f'Training Loss: {train_loss:.4f}')
+                accelerator.print(f'Validation Loss: {val_loss:.4f}')
+                accelerator.print(f'R²: {r_squared:.4f}, RMSE: {rmse:.4f}, MAE: {mae:.4f}, RPIQ: {rpiq:.4f}\n')
+        else:
+            # No validation, update model state and set R² to 1.0
+            best_r_squared = 1.0
+            best_model_state = {k: v.cpu() for k, v in model.state_dict().items()}
+            if accelerator.is_main_process:
+                wandb.run.summary["best_r_squared"] = best_r_squared
+                wandb.log({
+                    'epoch': epoch + 1,
+                    'train_loss': train_loss,
+                })
+
+            accelerator.print(f'Epoch {epoch+1}:')
+            accelerator.print(f'Training Loss: {train_loss:.4f}\n')
+
+        scheduler.step(val_loss if args.use_validation and val_loader is not None else train_loss)
+
+    return model, None if not args.use_validation else val_outputs, None if not args.use_validation else val_original_targets, best_model_state, best_r_squared
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Train 3DCNN model with customizable parameters')
+    parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
+    parser.add_argument('--loss_type', type=str, default='composite_l2', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
+    parser.add_argument('--loss_alpha', type=float, default=0.5, help='Weight for L1 loss in composite loss (if used)')
+    parser.add_argument('--target_transform', type=str, default='none', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
+    parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')
+    return parser.parse_args()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train a 3D CNN with target transformation and loss options")
-    parser.add_argument("--target_transform", type=str, default="log", choices=["none", "normalize", "log"],
-                        help="Target transformation: none, normalize (zero-centered, std-scaled), or log")
-    parser.add_argument("--loss", type=str, default="L2", choices=["L1", "L2"],
-                        help="Loss function: L1 (MAE) or L2 (MSE)")
-    args = parser.parse_args()
-
+    args = parse_args()
     accelerator = Accelerator()
 
     if accelerator.is_main_process:
@@ -251,9 +323,10 @@ if __name__ == "__main__":
                 "bands": len(bands_list_order),
                 "epochs": num_epochs,
                 "batch_size": 256,
-                "learning_rate": 0.001,
+                "learning_rate": args.lr,
                 "target_transform": args.target_transform,
-                "loss": args.loss
+                "loss_type": args.loss_type,
+                "use_validation": args.use_validation
             }
         )
 
@@ -272,21 +345,18 @@ if __name__ == "__main__":
     samples_coordinates_array_path = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path)))
     data_array_path = list(dict.fromkeys(flatten_paths(data_array_path)))
 
-    train_df, val_df = create_balanced_dataset(df)
-    if len(val_df) == 0:
-        raise ValueError("Validation DataFrame is empty after balancing")
+    if args.use_validation:
+        train_df, val_df = create_balanced_dataset(df, args.use_validation)
+    else:
+        train_df, val_df = create_balanced_dataset(df, args.use_validation)
     
-    if accelerator.is_main_process:
-        wandb.run.summary["train_size"] = len(train_df)
-        wandb.run.summary["val_size"] = len(val_df)
-
     train_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
-    val_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df)
+    val_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df) if val_df is not None else None
 
     train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=256, shuffle=False, num_workers=4, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=256, shuffle=False, num_workers=4, pin_memory=True) if val_dataset is not None else None
 
-    accelerator.print(f"Train dataset size: {len(train_dataset)}, Val dataset size: {len(val_dataset)}")
+    accelerator.print(f"Train dataset size: {len(train_dataset)}, Val dataset size: {len(val_dataset) if val_dataset is not None else 0}")
 
     for batch in train_loader:
         _, _, first_batch, _ = batch 
@@ -302,19 +372,25 @@ if __name__ == "__main__":
     
     if accelerator.is_main_process:
         wandb.run.summary["model_parameters"] = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        wandb.run.summary["train_size"] = len(train_df)
+        wandb.run.summary["val_size"] = len(val_df) if val_df is not None else 0
 
-    model, val_outputs, val_targets = train_model(
+    model, val_outputs, val_targets, best_model_state, best_r_squared = train_model(
+        args,
         model, train_loader, val_loader, num_epochs=num_epochs,
-        target_transform_type=args.target_transform, loss_type=args.loss
+        target_transform=args.target_transform, loss_type=args.loss_type
     )
 
-    if accelerator.is_main_process:
+    if accelerator.is_main_process and best_model_state is not None:
         model_path = (f'cnn_model_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
-                      f'TIME_END_{TIME_END}_TRANSFORM_{args.target_transform}_LOSS_{args.loss}_best.pth')
-        torch.save(model.state_dict(), model_path)
+                      f'TIME_END_{TIME_END}_TRANSFORM_{args.target_transform}_'
+                      f'LOSS_{args.loss_type}_BEST_R2_{best_r_squared:.4f}.pth')
+        torch.save(best_model_state, model_path)
         wandb.save(model_path)
+        accelerator.print(f"Best model saved with R²: {best_r_squared:.4f}")
+
+    if accelerator.is_main_process:
         wandb.finish()
 
     accelerator.print("Model trained and saved successfully!")
-
     # Best model with none/l2
