@@ -62,7 +62,7 @@ def parse_args():
     parser.add_argument('--lr', type=float, default=0.002, help='Learning rate')
     parser.add_argument('--num_heads', type=int, default=NUM_HEADS, help='Number of attention heads')
     parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of transformer layers')
-    parser.add_argument('--loss_type', type=str, default='mse', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
+    parser.add_argument('--loss_type', type=str, default='l1', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
     parser.add_argument('--loss_alpha', type=float, default=0.5, help='Weight for L1 loss in composite loss (if used)')
     parser.add_argument('--target_transform', type=str, default='log', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
     parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')

@@ -82,12 +82,12 @@ def parse_args():
     parser.add_argument('--output_dir', default='/fast/vfourel/SOCProject', type=str,
                         help='Base folder for saving model checkpoints')
     parser.add_argument('--epochs', default=num_epochs, type=int, help='Number of training epochs')
-    parser.add_argument('--lr', default=1e-4, type=float, help='Learning rate for Transformer')
+    parser.add_argument('--lr', default=5e-4, type=float, help='Learning rate for Transformer')
     parser.add_argument('--accum_steps', default=8, type=int, help='Gradient accumulation steps')
     # New arguments for target transformation and loss selection
-    parser.add_argument('--loss_type', type=str, default='composite_l2', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
+    parser.add_argument('--loss_type', type=str, default='l1', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
     parser.add_argument('--loss_alpha', type=float, default=0.5, help='Weight for L1 loss in composite loss (if used)')
-    parser.add_argument('--target_transform', type=str, default='normalize', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
+    parser.add_argument('--target_transform', type=str, default='log', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
     parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')
     return parser.parse_args()
 
@@ -488,15 +488,15 @@ if __name__ == "__main__":
 
     # Construct a more informative save path
     r_squared_str = f"{final_r_squared:.4f}".replace(".", "_")
-    transform_str = "log" if getattr(args, "apply_log", False) else "raw"
-    loss_str = getattr(args, "loss", "mse")
-    
+    loss_str = args.loss_type if hasattr(args, "loss_type") else "mse"
+    transform_str = args.target_transform if hasattr(args, "target_transform") else "none"
+
     validation_str = f"{transform_str}_{loss_str}"
     if args.use_validation:
         validation_str += f"_R2_{r_squared_str}"
     else:
         validation_str += "_FullData"
-    
+
     mlp_path = (
         f"spectralGPT_TransformerRegressor_MAX_OC_{MAX_OC}_"
         f"TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}_"

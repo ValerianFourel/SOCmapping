@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import glob
 import pandas as pd
-from config import bands_list_order
+from config import bands_list_order, window_size
 
 
 def get_metadata(self, id_num):
@@ -67,7 +67,7 @@ class RasterTensorDataset(Dataset):
 
         return id_to_file
 
-    def get_tensor_by_location(self, id_num, x, y, window_size=17):
+    def get_tensor_by_location(self, id_num, x, y, window_size=window_size):
         """
         Get a window_size x window_size square around the specified x,y coordinates
 
