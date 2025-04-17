@@ -6,20 +6,18 @@ file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC = f"{base_path_data}/LUCAS_LFU_Lfl_00t
 
 
 time_before  = 5
-window_size = 5 # 41
+window_size = 5 #  41
 TIME_BEGINNING = '2007'
 LOADING_TIME_BEGINNING = str(int(TIME_BEGINNING)-time_before)
 TIME_END = '2023'
 INFERENCE_TIME = '2015'
+LOADING_TIME_BEGINNING_INFERENCE = str(int(INFERENCE_TIME)-time_before)
+
 bands_list_order = ['Elevation','LAI','LST','MODIS_NPP','SoilEvaporation','TotalEvapotranspiration']
 MAX_OC = 150
 num_epochs = 200
-LOADING_TIME_BEGINNING_INFERENCE = str(int(INFERENCE_TIME)-time_before)
-NUM_LAYERS = 2
-NUM_HEADS = 8 
-save_path_predictions_plots = '/home/vfourel/SOCProject/SOCmapping/predictions_plots/simpleTransformer_plots'
+save_path_predictions_plots = '/home/vfourel/SOCProject/SOCmapping/predictions_plots/cnnlstm_plots'
 file_path_coordinates_Bavaria_1mil = "/home/vfourel/SOCProject/SOCmapping/Data/Coordinates1Mil/coordinates_Bavaria_1mil.csv"
-PICTURE_VERSION = f"{str(num_epochs)}_{str(MAX_OC)}_{INFERENCE_TIME}_version"
 
 
 def generate_seasonal_list():
@@ -107,4 +105,3 @@ TotalEvapotranspirationTensorSeasonally = f'{base_path_data}/RasterTensorData/Se
 DataSeasonally = [elevationTensorData, LAITensorDataSeasonally, LSTTensorDataSeasonally, MODIS_NPPTensorSeasonally, SoilEvaporationTensorSeasonally, TotalEvapotranspirationTensorSeasonally ]
 
 #######################################################################
-
