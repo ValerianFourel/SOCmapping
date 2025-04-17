@@ -1,6 +1,115 @@
 
-from config import  TIME_BEGINNING ,TIME_END , seasons, years_padded  , SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, DataYearly, SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, DataSeasonally ,file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC 
+from config import  TIME_BEGINNING ,TIME_END , seasons, years_padded, INFERENCE_TIME  , LOADING_TIME_BEGINNING_INFERENCE, SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, DataYearly, SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, DataSeasonally ,file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC 
 import pandas as pd
+
+
+
+
+def filter_dataframe(time_beginning, time_end, max_oc=150):
+    # Read and prepare data
+    df = pd.read_excel(file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC)
+    df = add_season_column(df)
+
+    # Convert columns to numeric
+    df['GPS_LONG'] = pd.to_numeric(df['GPS_LONG'], errors='coerce')
+    df['GPS_LAT'] = pd.to_numeric(df['GPS_LAT'], errors='coerce')
+    df['OC'] = pd.to_numeric(df['OC'], errors='coerce')
+
+    # Basic data quality mask
+    quality_mask = (
+        (df['OC'] <= max_oc) &
+        df['GPS_LONG'].notna() &
+        df['GPS_LAT'].notna() &
+        df['OC'].notna()
+    )
+
+    # Check if time_beginning contains a season
+    seasons = ['winter', 'spring', 'summer', 'autumn']
+    is_season = any(season in time_beginning.lower() for season in seasons)
+
+    if is_season:
+        # Create a list of all valid seasons between time_beginning and time_end
+        start_year, start_season = time_beginning.split('_')
+        end_year, end_season = time_end.split('_')
+        start_year = int(start_year)
+        end_year = int(end_year)
+
+        valid_seasons = []
+        current_year = start_year
+        season_order = ['winter', 'spring', 'summer', 'autumn']
+        start_idx = season_order.index(start_season)
+        end_idx = season_order.index(end_season)
+
+        while current_year <= end_year:
+            if current_year == start_year:
+                season_start = start_idx
+            else:
+                season_start = 0
+
+            if current_year == end_year:
+                season_end = end_idx
+            else:
+                season_end = len(season_order) - 1
+
+            for season in season_order[season_start:season_end + 1]:
+                valid_seasons.append(f"{current_year}_{season}")
+
+            current_year += 1
+
+        # Filter using the valid seasons list
+        filtered_df = df[
+            df['season'].isin(valid_seasons) &
+            quality_mask
+        ]
+    else:
+        # Filter by year range
+        start_year = int(time_beginning)
+        end_year = int(time_end)
+        filtered_df = df[
+            (df['year'].between(start_year, end_year, inclusive='both')) &
+            quality_mask
+        ]
+
+    print(f"Initial shape: {df.shape}")
+    print(f"Final filtered shape: {filtered_df.shape}")
+
+    if filtered_df.empty:
+        print("\nDebug information:")
+        print("NaN counts:", df[['GPS_LONG', 'GPS_LAT', 'OC', 'survey_date']].isna().sum())
+        print(f"OC range: {df['OC'].min()} to {df['OC'].max()}")
+
+    return filtered_df
+
+
+def separate_and_add_data_1mil_inference(LOADING_TIME_BEGINNING=LOADING_TIME_BEGINNING_INFERENCE, TIME_END=INFERENCE_TIME, seasons=seasons, years_padded=years_padded, 
+                         SamplesCoordinates_Yearly=MatrixCoordinates_1mil_Yearly, DataYearly=DataYearly,
+                         SamplesCoordinates_Seasonally=MatrixCoordinates_1mil_Seasonally, DataSeasonally=DataSeasonally):
+
+    # Define seasons list for matching
+    seasons_list = ['winter', 'spring', 'summer', 'autumn']
+
+    # Check if LOADING_TIME_BEGINNING is a season
+    is_season = any(season in LOADING_TIME_BEGINNING.lower() for season in seasons_list)
+
+    if is_season:
+        # Handle seasons case
+        start_idx = next(i for i, season in enumerate(seasons) 
+                        if LOADING_TIME_BEGINNING.lower() in season.lower())
+        end_idx = next(i for i, season in enumerate(seasons) 
+                      if TIME_END.lower() in season.lower())
+
+        # Get the seasonal range
+        selected_seasons = seasons[start_idx:end_idx + 1]
+
+
+        # Add seasonal data pairs
+        return create_path_arrays(SamplesCoordinates_Seasonally, DataSeasonally, selected_seasons)
+    else:
+        start_idx = years_padded.index(LOADING_TIME_BEGINNING)
+        end_idx = years_padded.index(TIME_END)
+        selected_years = years_padded[start_idx:end_idx + 1]
+        return create_path_arrays_yearly(SamplesCoordinates_Yearly, DataYearly, selected_years)
+
 
 def get_time_range(TIME_BEGINNING= TIME_BEGINNING, TIME_END=TIME_END, seasons=seasons, years_padded=years_padded):
     # Define seasons list for matching

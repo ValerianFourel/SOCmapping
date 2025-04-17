@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import glob
 import pandas as pd
-from config_v2_time_multi import bands_list_order , time_before, LOADING_TIME_BEGINNING , window_size , LOADING_TIME_BEGINNING, TIME_BEGINNING ,TIME_END , INFERENCE_TIME, LOADING_TIME_BEGINNING_INFERENCE, seasons, years_padded  , SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, DataYearly, SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, DataSeasonally ,file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC 
+from config import bands_list_order , time_before, LOADING_TIME_BEGINNING , window_size , LOADING_TIME_BEGINNING, TIME_BEGINNING ,TIME_END , INFERENCE_TIME, LOADING_TIME_BEGINNING_INFERENCE, seasons, years_padded  , SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, DataYearly, SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, DataSeasonally ,file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC 
 
 import pandas as pd
 import numpy as np
