@@ -1,0 +1,67 @@
+(socmapping) vfourel@g058:/lustre/home/vfourel/SOCProject/SOCmapping/balancedDataset$ python nonRandomVal_v2.py --use-gpu
+Using device: cuda
+/lustre/home/vfourel/SOCProject/SOCmapping/balancedDataset/dataframe_loader.py:301: UserWarning: Could not infer format, so each element will be parsed individually, falling back to `dateutil`. To ensure parsing is consistent and as-expected, please specify a format.
+  dataframe['survey_date'] = pd.to_datetime(dataframe['survey_date'])
+Initial shape: (30451, 7)
+Final filtered shape: (16514, 7)
+Loaded 16514 rows
+/home/vfourel/miniforge3/envs/socmapping/lib/python3.8/site-packages/scipy/stats/_continuous_distns.py:709: RuntimeWarning: invalid value encountered in sqrt
+  sk = 2*(b-a)*np.sqrt(a + b + 1) / (a + b + 2) / np.sqrt(a*b)
+/home/vfourel/miniforge3/envs/socmapping/lib/python3.8/site-packages/scipy/optimize/_minpack_py.py:178: RuntimeWarning: The iteration is not making good progress, as measured by the 
+  improvement from the last ten iterations.
+  warnings.warn(msg, RuntimeWarning)
+Best fitting distribution: Lognormal
+Parameters: {'s': 0.6126596412771137, 'loc': 0.7753160477580204, 'scale': 17.286066856722556}
+KS statistic: 0.0874
+Flipping 1605 points (distance < 0.8 km)
+Validation set size 0.28% < 8.0%. Increasing ratio.
+Flipping 1918 points (distance < 0.8 km)
+Validation set size 0.38% < 8.0%. Increasing ratio.
+Flipping 2237 points (distance < 0.8 km)
+Validation set size 0.45% < 8.0%. Increasing ratio.
+Flipping 2569 points (distance < 0.8 km)
+Validation set size 0.44% < 8.0%. Increasing ratio.
+Flipping 2888 points (distance < 0.8 km)
+Validation set size 0.51% < 8.0%. Increasing ratio.
+Flipping 3189 points (distance < 0.8 km)
+Validation set size 0.68% < 8.0%. Increasing ratio.
+Flipping 3507 points (distance < 0.8 km)
+Validation set size 0.76% < 8.0%. Increasing ratio.
+Flipping 3815 points (distance < 0.8 km)
+Validation set size 0.90% < 8.0%. Increasing ratio.
+Flipping 4141 points (distance < 0.8 km)
+Validation set size 0.92% < 8.0%. Increasing ratio.
+Flipping 4429 points (distance < 0.8 km)
+Validation set size 1.17% < 8.0%. Increasing ratio.
+Flipping 4753 points (distance < 0.8 km)
+Validation set size 1.22% < 8.0%. Increasing ratio.
+Flipping 5067 points (distance < 0.8 km)
+Validation set size 1.31% < 8.0%. Increasing ratio.
+Flipping 5321 points (distance < 0.8 km)
+Validation set size 1.77% < 8.0%. Increasing ratio.
+Flipping 5623 points (distance < 0.8 km)
+Validation set size 1.95% < 8.0%. Increasing ratio.
+Flipping 5892 points (distance < 0.8 km)
+Validation set size 2.32% < 8.0%. Increasing ratio.
+Flipping 6236 points (distance < 0.8 km)
+Validation set size 2.23% < 8.0%. Increasing ratio.
+Flipping 6460 points (distance < 0.8 km)
+Validation set size 2.88% < 8.0%. Increasing ratio.
+Flipping 6674 points (distance < 0.8 km)
+Validation set size 3.58% < 8.0%. Increasing ratio.
+Flipping 6912 points (distance < 0.8 km)
+Validation set size 4.14% < 8.0%. Increasing ratio.
+Flipping 7148 points (distance < 0.8 km)
+Validation set size 4.71% < 8.0%. Increasing ratio.
+Flipping 7374 points (distance < 0.8 km)
+Validation set size 5.35% < 8.0%. Increasing ratio.
+Flipping 7634 points (distance < 0.8 km)
+Validation set size 5.77% < 8.0%. Increasing ratio.
+Flipping 7647 points (distance < 0.8 km)
+Validation set size 7.69% < 8.0%. Increasing ratio.
+Flipping 7865 points (distance < 0.8 km)
+Full dataset size: 16514
+Final validation set: 1382 (8.37%)
+Final training set: 15132
+Minimum distance (km): 0.81
+Validation OC distribution matched to Lognormal with parameters: {'s': 0.6126596412771137, 'loc': 0.7753160477580204, 'scale': 17.286066856722556}
