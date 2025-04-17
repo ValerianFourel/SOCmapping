@@ -19,92 +19,10 @@ from torch.utils.data import Dataset, DataLoader
 from modelCNNMultiYear import Small3DCNN
 from accelerate import Accelerator
 import argparse
-
+from balancedDataset import create_validation_train_sets
 import pandas as pd
 import numpy as np
 from pathlib import Path
-
-def load_data():
-    """
-    Load the training and validation DataFrames from Parquet files.
-    Returns:
-        validation_df: DataFrame containing validation data
-        training_df: DataFrame containing training data
-    """
-    # Define the absolute paths to the Parquet files
-    validation_path = '/lustre/home/vfourel/SOCProject/SOCmapping/balancedDataset/output_0.81km_Lognormal_8.37%/final_validation_df.parquet'
-    training_path = '/lustre/home/vfourel/SOCProject/SOCmapping/balancedDataset/output_0.81km_Lognormal_8.37%/final_training_df.parquet'
-
-    # Convert to Path objects for robustness
-    validation_file = Path(validation_path)
-    training_file = Path(training_path)
-
-    # Check if files exist
-    if not validation_file.exists():
-        raise FileNotFoundError(f"Validation file not found at {validation_file}")
-    if not training_file.exists():
-        raise FileNotFoundError(f"Training file not found at {training_file}")
-
-    # Load the DataFrames
-    validation_df = pd.read_parquet(validation_file)
-    training_df = pd.read_parquet(training_file)
-    training_df = resample_training_df(training_df)
-    return  training_df,validation_df
-
-def resample_training_df(training_df, num_bins=128, target_fraction=75/100):
-    """
-    Resample the training DataFrame's 'OC' values into 128 bins, ensuring each bin has
-    at least 3/4 of the entries of the bin with the highest count.
-    Args:
-        training_df: DataFrame containing training data
-        num_bins: Number of bins for OC values (default: 128)
-        target_fraction: Fraction of max bin count for resampling (default: 3/4)
-    Returns:
-        resampled_df: Resampled training DataFrame
-    """
-    # Create bins for OC values
-    oc_values = training_df['OC'].dropna()
-    bins = pd.qcut(oc_values, q=num_bins, duplicates='drop')
-    
-    # Count entries per bin
-    bin_counts = bins.value_counts().sort_index()
-    max_count = bin_counts.max()
-    target_count = int(max_count * target_fraction)
-    
-    print(f"Max bin count: {max_count}")
-    print(f"Target count per bin (at least): {target_count}")
-    
-    # Initialize list to collect resampled data
-    resampled_dfs = []
-    
-    # Process each bin
-    for bin_label in bin_counts.index:
-        # Get points in this bin
-        bin_mask = pd.cut(training_df['OC'], bins=bins.cat.categories) == bin_label
-        bin_df = training_df[bin_mask]
-        
-        # If bin has fewer than target_count, oversample with replacement
-        if len(bin_df) < target_count:
-            additional_samples = target_count - len(bin_df)
-            sampled_df = bin_df.sample(n=additional_samples, replace=True, random_state=42)
-            resampled_dfs.append(pd.concat([bin_df, sampled_df]))
-        else:
-            resampled_dfs.append(bin_df)
-    
-    # Combine all resampled bins
-    resampled_df = pd.concat(resampled_dfs, ignore_index=True)
-    
-    # Verify new bin counts
-    new_bins = pd.qcut(resampled_df['OC'], q=num_bins, duplicates='drop')
-    new_bin_counts = new_bins.value_counts().sort_index()
-    
-    print("\nBin counts before resampling:")
-    print(bin_counts)
-    print("\nBin counts after resampling:")
-    print(new_bin_counts)
-    
-    return resampled_df
-
 
 
 
@@ -173,13 +91,6 @@ def create_balanced_dataset(df, use_validation=True, n_bins=128, min_ratio=3/4):
         training_df = pd.concat(training_dfs).drop('bin', axis=1)
         return training_df, None  # Return None for validation_df when no validation
 
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from tqdm import tqdm
-from accelerate import Accelerator
-import wandb
 
 def train_model(args, model, train_loader, val_loader, num_epochs=100, target_transform="none", loss_type="L2"):
     if loss_type == 'composite_l1':
@@ -227,6 +138,9 @@ def train_model(args, model, train_loader, val_loader, num_epochs=100, target_tr
         wandb.config.update({"target_transform": target_transform, "loss_type": loss_type, "lr": args.lr})
 
     best_r_squared = -float('inf') if args.use_validation else 1.0
+    best_mae = float('inf')
+    best_rmse = float('inf')
+    best_rpiq = -float('inf')
     best_model_state = None
     patience = 10
     patience_counter = 0
@@ -248,8 +162,8 @@ def train_model(args, model, train_loader, val_loader, num_epochs=100, target_tr
             elif target_transform == 'normalize':
                 targets = (targets - target_mean) / (target_std + 1e-10)
             
-            outputs = outputs.float()  # Convert model outputs to float32
-            targets = targets.float()  # Convert targets to float32
+            outputs = outputs.float()
+            targets = targets.float()
             loss = criterion(outputs, targets)
             if torch.isnan(loss) or torch.isinf(loss):
                 accelerator.print(f"Epoch {epoch+1}: NaN/Inf in loss")
@@ -268,12 +182,12 @@ def train_model(args, model, train_loader, val_loader, num_epochs=100, target_tr
             model.eval()
             val_loss = 0.0
             val_outputs = []
-            val_original_targets = []  # New list to store original targets
+            val_original_targets = []
             val_loader_size = 0
 
             with torch.no_grad():
                 for longitudes, latitudes, features, targets in val_loader:
-                    original_targets = targets.clone().float()  # Capture targets before transformation
+                    original_targets = targets.clone().float()
                     if target_transform == 'log':
                         targets = torch.log(targets + 1e-10)
                     elif target_transform == 'normalize':
@@ -299,13 +213,12 @@ def train_model(args, model, train_loader, val_loader, num_epochs=100, target_tr
                 r_squared = 0.0
                 rmse = float('nan')
                 mae = float('nan')
-                rpiq = float('nan')  # Initialize RPIQ for empty case
+                rpiq = float('nan')
             else:
                 val_loss = val_loss / val_loader_size if val_loader_size > 0 else float('nan')
                 val_outputs = np.array(val_outputs)
                 val_original_targets = np.array(val_original_targets)
 
-                # Inverse transform model outputs to original scale
                 if target_transform == 'log':
                     original_outputs = np.exp(val_outputs)
                 elif target_transform == 'normalize':
@@ -313,7 +226,6 @@ def train_model(args, model, train_loader, val_loader, num_epochs=100, target_tr
                 else:
                     original_outputs = val_outputs
 
-                # Compute metrics on original scale
                 output_std = np.std(original_outputs)
                 target_std = np.std(val_original_targets)
                 accelerator.print(f"Epoch {epoch+1}: Output std: {output_std:.4f}, Target std: {target_std:.4f}")
@@ -334,14 +246,19 @@ def train_model(args, model, train_loader, val_loader, num_epochs=100, target_tr
                     rmse = np.sqrt(mse) if not np.isnan(mse) else float('nan')
                     mae = np.mean(np.abs(original_outputs - val_original_targets)) if not np.any(np.isnan(original_outputs)) else float('nan')
                     iqr = np.percentile(val_original_targets, 75) - np.percentile(val_original_targets, 25)
-                    rpiq = iqr / rmse if rmse > 0 else float('inf')  # Compute RPIQ
+                    rpiq = iqr / rmse if rmse > 0 else float('inf')
 
-                # Update best model based on R² (computed on original scale)
                 if r_squared > best_r_squared:
                     best_r_squared = r_squared
+                    best_mae = mae
+                    best_rmse = rmse
+                    best_rpiq = rpiq
                     best_model_state = {k: v.cpu() for k, v in model.state_dict().items()}
                     if accelerator.is_main_process:
                         wandb.run.summary["best_r_squared"] = best_r_squared
+                        wandb.run.summary["best_mae"] = best_mae
+                        wandb.run.summary["best_rmse"] = best_rmse
+                        wandb.run.summary["best_rpiq"] = best_rpiq
                     patience_counter = 0
                 else:
                     patience_counter += 1
@@ -359,7 +276,7 @@ def train_model(args, model, train_loader, val_loader, num_epochs=100, target_tr
                         'mse': mse,
                         'rmse': rmse,
                         'mae': mae,
-                        'rpiq': rpiq,  # Log RPIQ
+                        'rpiq': rpiq,
                         'output_std': output_std,
                         'target_std': target_std
                     })
@@ -369,8 +286,10 @@ def train_model(args, model, train_loader, val_loader, num_epochs=100, target_tr
                 accelerator.print(f'Validation Loss: {val_loss:.4f}')
                 accelerator.print(f'R²: {r_squared:.4f}, RMSE: {rmse:.4f}, MAE: {mae:.4f}, RPIQ: {rpiq:.4f}\n')
         else:
-            # No validation, update model state and set R² to 1.0
             best_r_squared = 1.0
+            best_mae = 0.0
+            best_rmse = 0.0
+            best_rpiq = float('inf')
             best_model_state = {k: v.cpu() for k, v in model.state_dict().items()}
             if accelerator.is_main_process:
                 wandb.run.summary["best_r_squared"] = best_r_squared
@@ -384,16 +303,22 @@ def train_model(args, model, train_loader, val_loader, num_epochs=100, target_tr
 
         scheduler.step(val_loss if args.use_validation and val_loader is not None else train_loss)
 
-    return model, None if not args.use_validation else val_outputs, None if not args.use_validation else val_original_targets, best_model_state, best_r_squared
+    return model, None if not args.use_validation else val_outputs, None if not args.use_validation else val_original_targets, best_model_state, best_r_squared, best_mae, best_rmse, best_rpiq
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train 3DCNN model with customizable parameters')
     parser.add_argument('--lr', type=float, default=0.0001, help='Learning rate')
     parser.add_argument('--loss_type', type=str, default='mse', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
     parser.add_argument('--loss_alpha', type=float, default=0.5, help='Weight for L1 loss in composite loss (if used)')
-    parser.add_argument('--target_transform', type=str, default='normalize', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
+    parser.add_argument('--target_transform', type=str, default='none', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
     parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')
-    parser.add_argument('--load_data',default = True,help='We can use pre-computed validation and training sets.')
+    parser.add_argument('--num-bins', type=int, default=128, help='Number of bins for OC resampling')
+    parser.add_argument('--output-dir', type=str, default='output', help='Output directory')
+    parser.add_argument('--target-val-ratio', type=float, default=0.08, help='Target validation ratio')
+    parser.add_argument('--use-gpu', action='store_true', default=True, help='Use GPU')
+    parser.add_argument('--distance-threshold', type=float, default=1.2, help='Minimum distance threshold for validation points')
+    parser.add_argument('--target-fraction', type=float, default=0.75, help='Fraction of max bin count for resampling')
+    parser.add_argument('--num-runs', type=int, default=5, help='Number of times to run the process')
     return parser.parse_args()
 
 if __name__ == "__main__":
@@ -415,7 +340,8 @@ if __name__ == "__main__":
                 "learning_rate": args.lr,
                 "target_transform": args.target_transform,
                 "loss_type": args.loss_type,
-                "use_validation": args.use_validation
+                "use_validation": args.use_validation,
+                "num_runs": args.num_runs
             }
         )
 
@@ -434,56 +360,101 @@ if __name__ == "__main__":
     samples_coordinates_array_path = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path)))
     data_array_path = list(dict.fromkeys(flatten_paths(data_array_path)))
 
-    if args.use_validation and not args.load_data:
-        train_df, val_df = create_balanced_dataset(df, args.use_validation)
-    elif args.load_data:
-        train_df, val_df = load_data()
-    elif not args.use_validation:
-        train_df, val_df = create_balanced_dataset(df, args.use_validation)
-    else:
-        train_df, val_df = create_balanced_dataset(df, args.use_validation)
-    
-    train_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
-    val_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df) if val_df is not None else None
+    # Initialize lists to store metrics for each run
+    all_r_squared = []
+    all_mae = []
+    all_rmse = []
+    all_rpiq = []
+    best_model_states = []
 
-    train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=256, shuffle=False, num_workers=4, pin_memory=True) if val_dataset is not None else None
+    for run in range(args.num_runs):
+        accelerator.print(f"Starting Run {run+1}/{args.num_runs}")
 
-    accelerator.print(f"Train dataset size: {len(train_dataset)}, Val dataset size: {len(val_dataset) if val_dataset is not None else 0}")
+        if args.use_validation:
+            val_df, train_df = create_validation_train_sets(
+                df=df,
+                output_dir=args.output_dir,
+                target_val_ratio=args.target_val_ratio,
+                use_gpu=args.use_gpu,
+                distance_threshold=args.distance_threshold
+            )
+        else:
+            train_df, val_df = create_balanced_dataset(df, args.use_validation)
 
-    for batch in train_loader:
-        _, _, first_batch, _ = batch 
-        break
-    accelerator.print("Size of the first batch:", first_batch.shape)
+        train_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
+        val_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df) if val_df is not None else None
 
-    model = Small3DCNN(
-        input_channels=len(bands_list_order),
-        input_height=window_size,
-        input_width=window_size,
-        input_time=time_before
-    )
-    
-    if accelerator.is_main_process:
-        wandb.run.summary["model_parameters"] = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        wandb.run.summary["train_size"] = len(train_df)
-        wandb.run.summary["val_size"] = len(val_df) if val_df is not None else 0
+        train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True, num_workers=4, pin_memory=True)
+        val_loader = DataLoader(val_dataset, batch_size=256, shuffle=False, num_workers=4, pin_memory=True) if val_dataset is not None else None
 
-    model, val_outputs, val_targets, best_model_state, best_r_squared = train_model(
-        args,
-        model, train_loader, val_loader, num_epochs=num_epochs,
-        target_transform=args.target_transform, loss_type=args.loss_type
-    )
+        accelerator.print(f"Run {run+1} - Train dataset size: {len(train_dataset)}, Val dataset size: {len(val_dataset) if val_dataset is not None else 0}")
 
-    if accelerator.is_main_process and best_model_state is not None:
-        model_path = (f'cnn_model_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
-                      f'TIME_END_{TIME_END}_TRANSFORM_{args.target_transform}_'
-                      f'LOSS_{args.loss_type}_BEST_R2_{best_r_squared:.4f}.pth')
-        torch.save(best_model_state, model_path)
-        wandb.save(model_path)
-        accelerator.print(f"Best model saved with R²: {best_r_squared:.4f}")
+        for batch in train_loader:
+            _, _, first_batch, _ = batch 
+            break
+        accelerator.print(f"Run {run+1} - Size of the first batch: {first_batch.shape}")
+
+        model = Small3DCNN(
+            input_channels=len(bands_list_order),
+            input_height=window_size,
+            input_width=window_size,
+            input_time=time_before
+        )
+        
+        if accelerator.is_main_process:
+            wandb.run.summary[f"run_{run+1}_model_parameters"] = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            wandb.run.summary[f"run_{run+1}_train_size"] = len(train_df)
+            wandb.run.summary[f"run_{run+1}_val_size"] = len(val_df) if val_df is not None else 0
+
+        model, val_outputs, val_targets, best_model_state, best_r_squared, best_mae, best_rmse, best_rpiq = train_model(
+            args,
+            model, train_loader, val_loader, num_epochs=num_epochs,
+            target_transform=args.target_transform, loss_type=args.loss_type
+        )
+
+        if args.use_validation:
+            all_r_squared.append(best_r_squared)
+            all_mae.append(best_mae)
+            all_rmse.append(best_rmse)
+            all_rpiq.append(best_rpiq)
+            best_model_states.append(best_model_state)
+
+        if accelerator.is_main_process and best_model_state is not None:
+            model_path = (f'cnn_model_run_{run+1}_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
+                          f'TIME_END_{TIME_END}_TRANSFORM_{args.target_transform}_'
+                          f'LOSS_{args.loss_type}_BEST_R2_{best_r_squared:.4f}.pth')
+            torch.save(best_model_state, model_path)
+            wandb.save(model_path)
+            accelerator.print(f"Run {run+1} - Best model saved with R²: {best_r_squared:.4f}, MAE: {best_mae:.4f}, RMSE: {best_rmse:.4f}, RPIQ: {best_rpiq:.4f}")
+
+    if args.use_validation and all_r_squared:
+        avg_r_squared = np.mean(all_r_squared)
+        avg_mae = np.mean(all_mae)
+        avg_rmse = np.mean(all_rmse)
+        avg_rpiq = np.mean(all_rpiq)
+
+        if accelerator.is_main_process:
+            wandb.run.summary["avg_r_squared"] = avg_r_squared
+            wandb.run.summary["avg_mae"] = avg_mae
+            wandb.run.summary["avg_rmse"] = avg_rmse
+            wandb.run.summary["avg_rpiq"] = avg_rpiq
+            accelerator.print(f"Average metrics over {args.num_runs} runs:")
+            accelerator.print(f"Average R²: {avg_r_squared:.4f}")
+            accelerator.print(f"Average MAE: {avg_mae:.4f}")
+            accelerator.print(f"Average RMSE: {avg_rmse:.4f}")
+            accelerator.print(f"Average RPIQ: {avg_rpiq:.4f}")
+
+            # Save the best model state from the run with the highest R²
+            best_run_idx = np.argmax(all_r_squared)
+            best_model_state = best_model_states[best_run_idx]
+            model_path = (f'cnn_model_best_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
+                          f'TIME_END_{TIME_END}_TRANSFORM_{args.target_transform}_'
+                          f'LOSS_{args.loss_type}_AVG_R2_{avg_r_squared:.4f}.pth')
+            torch.save(best_model_state, model_path)
+            wandb.save(model_path)
+            accelerator.print(f"Best model from run {best_run_idx+1} saved with average R²: {avg_r_squared:.4f}")
 
     if accelerator.is_main_process:
         wandb.finish()
 
-    accelerator.print("Model trained and saved successfully!")
-    # Best model with none/l2
+    accelerator.print("Model training completed successfully!")

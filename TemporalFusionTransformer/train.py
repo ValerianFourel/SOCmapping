@@ -20,89 +20,7 @@ from config import (
 )
 import argparse
 from SimpleTFT import SimpleTFT
-
-def load_data():
-    """
-    Load the training and validation DataFrames from Parquet files.
-    Returns:
-        validation_df: DataFrame containing validation data
-        training_df: DataFrame containing training data
-    """
-    # Define the absolute paths to the Parquet files
-    validation_path = '/home/vfourel/SOCProject/SOCmapping/balancedDataset/output/final_validation_df.parquet'
-    training_path = '/home/vfourel/SOCProject/SOCmapping/balancedDataset/output/final_training_df.parquet'
-
-    # Convert to Path objects for robustness
-    validation_file = Path(validation_path)
-    training_file = Path(training_path)
-
-    # Check if files exist
-    if not validation_file.exists():
-        raise FileNotFoundError(f"Validation file not found at {validation_file}")
-    if not training_file.exists():
-        raise FileNotFoundError(f"Training file not found at {training_file}")
-
-    # Load the DataFrames
-    validation_df = pd.read_parquet(validation_file)
-    training_df = pd.read_parquet(training_file)
-    training_df = resample_training_df(training_df)
-    return  training_df,validation_df
-
-def resample_training_df(training_df, num_bins=128, target_fraction=75/100):
-    """
-    Resample the training DataFrame's 'OC' values into 128 bins, ensuring each bin has
-    at least 3/4 of the entries of the bin with the highest count.
-    Args:
-        training_df: DataFrame containing training data
-        num_bins: Number of bins for OC values (default: 128)
-        target_fraction: Fraction of max bin count for resampling (default: 3/4)
-    Returns:
-        resampled_df: Resampled training DataFrame
-    """
-    # Create bins for OC values
-    oc_values = training_df['OC'].dropna()
-    bins = pd.qcut(oc_values, q=num_bins, duplicates='drop')
-    
-    # Count entries per bin
-    bin_counts = bins.value_counts().sort_index()
-    max_count = bin_counts.max()
-    target_count = int(max_count * target_fraction)
-    
-    print(f"Max bin count: {max_count}")
-    print(f"Target count per bin (at least): {target_count}")
-    
-    # Initialize list to collect resampled data
-    resampled_dfs = []
-    
-    # Process each bin
-    for bin_label in bin_counts.index:
-        # Get points in this bin
-        bin_mask = pd.cut(training_df['OC'], bins=bins.cat.categories) == bin_label
-        bin_df = training_df[bin_mask]
-        
-        # If bin has fewer than target_count, oversample with replacement
-        if len(bin_df) < target_count:
-            additional_samples = target_count - len(bin_df)
-            sampled_df = bin_df.sample(n=additional_samples, replace=True, random_state=42)
-            resampled_dfs.append(pd.concat([bin_df, sampled_df]))
-        else:
-            resampled_dfs.append(bin_df)
-    
-    # Combine all resampled bins
-    resampled_df = pd.concat(resampled_dfs, ignore_index=True)
-    
-    # Verify new bin counts
-    new_bins = pd.qcut(resampled_df['OC'], q=num_bins, duplicates='drop')
-    new_bin_counts = new_bins.value_counts().sort_index()
-    
-    print("\nBin counts before resampling:")
-    print(bin_counts)
-    print("\nBin counts after resampling:")
-    print(new_bin_counts)
-    
-    return resampled_df
-
-
+from balancedDataset import create_validation_train_sets
 
 # Define the composite loss function
 def composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
@@ -119,44 +37,6 @@ def composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
     chi2_scaled = scale_factor * chi2_unscaled_mean
 
     return alpha * l1_loss + (1 - alpha) * chi2_scaled
-
-# Argument parser with new options for loss type and log transformation
-def parse_args():
-    parser = argparse.ArgumentParser(description='Train SimpleTFT model with customizable parameters')
-    parser.add_argument('--lr', type=float, default=0.0002, help='Learning rate')
-    parser.add_argument('--num_heads', type=int, default=NUM_HEADS, help='Number of attention heads')
-    parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of transformer layers')
-    parser.add_argument('--loss_alpha', type=float, default=0.8, help='Weight for L1 loss in composite loss')
-    parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')
-    parser.add_argument('--hidden_size', type=int, default=128, help='Hidden size for TFT model')
-    parser.add_argument('--loss_type', type=str, default='composite_l2', choices=['composite_l1', 'l1', 'mse','composite_l2'], 
-                        help='Type of loss function to use: composite, mse, or l1')
-    parser.add_argument('--load_data',default = False,help='We can use pre-computed validation and training sets.')
-
-    parser.add_argument('--apply_log', action='store_true', help='Apply log transformation to targets')
-    parser.add_argument('--target_transform', type=str, default='none', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
-    return parser.parse_args()
-
-def composite_l2_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
-    """Composite loss combining L2 and scaled chi-squared loss"""
-    errors = targets - outputs
-    
-    # L2 loss: mean squared error
-    l2_loss = torch.mean(errors ** 2)
-    
-    # Standard chi-squared loss: errors^2 / sigma^2
-    chi2_loss = torch.mean((errors ** 2) / (sigma ** 2))
-    
-    # Ensure chi2_loss is not too small to avoid division issues
-    chi2_loss = torch.clamp(chi2_loss, min=1e-8)
-    
-    # Scale chi2_loss to match the magnitude of l2_loss
-    scale_factor = l2_loss / chi2_loss
-    chi2_scaled = scale_factor * chi2_loss
-    
-    # Combine the losses with the weighting factor alpha
-    return alpha * l2_loss + (1 - alpha) * chi2_scaled
-
 
 
 # Function to create balanced dataset (unchanged)
@@ -203,8 +83,60 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=True):
         training_df = pd.concat(training_dfs).drop('bin', axis=1)
         return training_df, None
 
+import argparse
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import numpy as np
+from tqdm import tqdm
+from accelerate import Accelerator
+import wandb
+from torch.utils.data import DataLoader
 
-# Updated training function with loss type, log transformation, and RPIQ metric
+# [parse_args and composite_l2_chi2_loss functions remain unchanged]
+# Argument parser with new options for loss type and log transformation
+def parse_args():
+    parser = argparse.ArgumentParser(description='Train SimpleTFT model with customizable parameters')
+    parser.add_argument('--lr', type=float, default=0.0002, help='Learning rate')
+    parser.add_argument('--num_heads', type=int, default=NUM_HEADS, help='Number of attention heads')
+    parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of transformer layers')
+    parser.add_argument('--loss_alpha', type=float, default=0.8, help='Weight for L1 loss in composite loss')
+    parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')
+    parser.add_argument('--hidden_size', type=int, default=128, help='Hidden size for TFT model')
+    parser.add_argument('--loss_type', type=str, default='composite_l2', choices=['composite_l1', 'l1', 'mse','composite_l2'], 
+                        help='Type of loss function to use: composite, mse, or l1')
+    parser.add_argument('--apply_log', action='store_true', help='Apply log transformation to targets')
+    parser.add_argument('--target_transform', type=str, default='none', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
+    parser.add_argument('--num-bins', type=int, default=128, help='Number of bins for OC resampling')
+    parser.add_argument('--output-dir', type=str, default='output', help='Output directory')
+    parser.add_argument('--target-val-ratio', type=float, default=0.08, help='Target validation ratio')
+    parser.add_argument('--use-gpu', action='store_true', default=True, help='Use GPU')
+    parser.add_argument('--distance-threshold', type=float, default=1.4, help='Minimum distance threshold for validation points')
+    parser.add_argument('--target-fraction', type=float, default=0.75, help='Fraction of max bin count for resampling')
+    parser.add_argument('--num-runs', type=int, default=5, help='Number of times to run the process')    
+    return parser.parse_args()
+
+def composite_l2_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
+    """Composite loss combining L2 and scaled chi-squared loss"""
+    errors = targets - outputs
+    
+    # L2 loss: mean squared error
+    l2_loss = torch.mean(errors ** 2)
+    
+    # Standard chi-squared loss: errors^2 / sigma^2
+    chi2_loss = torch.mean((errors ** 2) / (sigma ** 2))
+    
+    # Ensure chi2_loss is not too small to avoid division issues
+    chi2_loss = torch.clamp(chi2_loss, min=1e-8)
+    
+    # Scale chi2_loss to match the magnitude of l2_loss
+    scale_factor = l2_loss / chi2_loss
+    chi2_scaled = scale_factor * chi2_loss
+    
+    # Combine the losses with the weighting factor alpha
+    return alpha * l2_loss + (1 - alpha) * chi2_scaled
+
+# [train_model function remains unchanged]
 def train_model(args, model, train_loader, val_loader, num_epochs=num_epochs, accelerator=None, lr=0.001,
                 min_r2=0.5, use_validation=True, loss_type='composite_l2', target_transform='none'):
     # Handle target normalization if selected
@@ -241,6 +173,7 @@ def train_model(args, model, train_loader, val_loader, num_epochs=num_epochs, ac
 
     best_r2 = -float('inf')
     best_model_state = None
+    best_metrics = {'r_squared': 0.0, 'rmse': float('inf'), 'mae': float('inf'), 'rpiq': 0.0}
 
     for epoch in range(num_epochs):
         model.train()
@@ -358,10 +291,12 @@ def train_model(args, model, train_loader, val_loader, num_epochs=num_epochs, ac
             if use_validation and r_squared > best_r2 and r_squared >= min_r2:
                 best_r2 = r_squared
                 best_model_state = accelerator.unwrap_model(model).state_dict()
+                best_metrics = {'r_squared': r_squared, 'rmse': rmse, 'mae': mae, 'rpiq': rpiq}
                 wandb.run.summary['best_r2'] = best_r2
             elif not use_validation and epoch == num_epochs - 1:
                 best_r2 = 0.0
                 best_model_state = accelerator.unwrap_model(model).state_dict()
+                best_metrics = {'r_squared': r_squared, 'rmse': rmse, 'mae': mae, 'rpiq': rpiq}
                 wandb.run.summary['best_r2'] = best_r2
 
         accelerator.print(f'Epoch {epoch+1}:')
@@ -370,130 +305,156 @@ def train_model(args, model, train_loader, val_loader, num_epochs=num_epochs, ac
         if use_validation:
             accelerator.print(f'R²: {r_squared:.4f}, RMSE: {rmse:.4f}, MAE: {mae:.4f}, RPIQ: {rpiq:.4f}\n')
 
-    return model, val_outputs, val_targets_list, best_model_state, best_r2
-
+    return model, val_outputs, val_targets_list, best_model_state, best_r2, best_metrics
 
 if __name__ == "__main__":
     args = parse_args()
     accelerator = Accelerator()  # Automatically handles DDP
 
-    # Initialize wandb with updated config including loss_type and apply_log
-    wandb.init(
-        project="socmapping-SimpleTFT",
-        config={
-            "max_oc": MAX_OC,
-            "time_beginning": TIME_BEGINNING,
-            "time_end": TIME_END,
-            "window_size": window_size,
-            "time_before": time_before,
-            "bands": len(bands_list_order),
-            "epochs": num_epochs,
-            "batch_size": 256,
-            "learning_rate": args.lr,
-            "num_heads": args.num_heads,
-            "num_layers": args.num_layers,
-            "dropout_rate": 0.3,
-            "loss_alpha": args.loss_alpha,
-            "use_validation": args.use_validation,
-            "hidden_size": args.hidden_size,
-            "model_type": "SimpleTFT",
-            "loss_type": args.loss_type,
-            "target_transform": args.target_transform,
+    # Lists to store best metrics across runs
+    all_best_metrics = []
+
+    for run in range(args.num_runs):
+        # Initialize wandb for each run
+        wandb.init(
+            project="socmapping-SimpleTFT",
+            config={
+                "max_oc": MAX_OC,
+                "time_beginning": TIME_BEGINNING,
+                "time_end": TIME_END,
+                "window_size": window_size,
+                "time_before": time_before,
+                "bands": len(bands_list_order),
+                "epochs": num_epochs,
+                "batch_size": 256,
+                "learning_rate": args.lr,
+                "num_heads": args.num_heads,
+                "num_layers": args.num_layers,
+                "dropout_rate": 0.3,
+                "loss_alpha": args.loss_alpha,
+                "use_validation": args.use_validation,
+                "hidden_size": args.hidden_size,
+                "model_type": "SimpleTFT",
+                "loss_type": args.loss_type,
+                "target_transform": args.target_transform,
+                "run_number": run + 1
+            }
+        )
+
+        # Load and prepare data
+        df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
+        samples_coordinates_array_path, data_array_path = separate_and_add_data()
+
+        def flatten_paths(path_list):
+            flattened = []
+            for item in path_list:
+                if isinstance(item, list):
+                    flattened.extend(flatten_paths(item))
+                else:
+                    flattened.append(item)
+            return flattened
+
+        samples_coordinates_array_path = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path)))
+        data_array_path = list(dict.fromkeys(flatten_paths(data_array_path)))
+
+        if args.use_validation:
+            val_df, train_df = create_validation_train_sets(
+                df=None,
+                output_dir=args.output_dir,
+                target_val_ratio=args.target_val_ratio,
+                use_gpu=args.use_gpu,
+                distance_threshold=args.distance_threshold
+            )
+        else:
+            train_df, val_df = create_balanced_dataset(df, args.use_validation)
+
+        if args.use_validation:
+            if len(val_df) == 0:
+                raise ValueError("Validation DataFrame is empty after balancing")
+            train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
+            val_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df)
+            if accelerator.is_main_process:
+                print(f"Run {run+1}: Length of train_dataset: {len(train_dataset)}")
+                print(f"Run {run+1}: Length of val_dataset: {len(val_dataset)}")
+            train_loader = DataLoader(train_dataset, batch_size=512, shuffle=True, num_workers=4, pin_memory=True)
+            val_loader = DataLoader(val_dataset, batch_size=256, shuffle=False, num_workers=4, pin_memory=True)
+        else:
+            train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
+            if accelerator.is_main_process:
+                print(f"Run {run+1}: Length of train_dataset: {len(train_dataset)}")
+            train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True, num_workers=4, pin_memory=True)
+            val_loader = None
+
+        if accelerator.is_main_process:
+            wandb.run.summary["train_size"] = len(train_df)
+            wandb.run.summary["val_size"] = len(val_df) if args.use_validation else 0
+
+        # Check first batch size
+        for batch in train_loader:
+            _, _, first_batch, _ = batch
+            break
+        if accelerator.is_main_process:
+            print(f"Run {run+1}: Size of the first batch:", first_batch.shape)
+
+        # Initialize model
+        model = SimpleTFT(
+            input_channels=len(bands_list_order),
+            height=window_size,
+            width=window_size,
+            time_steps=time_before,
+            d_model=512
+        )
+
+        if accelerator.distributed_type == "MULTI_GPU":
+            model = accelerator.prepare(model)
+
+        if accelerator.is_main_process:
+            wandb.run.summary["model_parameters"] = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+        # Train the model with new arguments
+        model, val_outputs, val_targets, best_model_state, best_r2, best_metrics = train_model(
+            args,
+            model,
+            train_loader,
+            val_loader,
+            num_epochs=num_epochs,
+            accelerator=accelerator,
+            lr=args.lr,
+            min_r2=0.5,
+            use_validation=args.use_validation,
+            loss_type=args.loss_type,
+            target_transform=args.target_transform
+        )
+
+        # Store best metrics for this run
+        all_best_metrics.append(best_metrics)
+
+        # Save the best model
+        if accelerator.is_main_process and best_model_state is not None:
+            final_model_path = f'tft_model_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}_R2_{best_r2:.4f}_transform_{args.target_transform}_loss_type_{args.loss_type}_run_{run+1}.pth'
+            accelerator.save(best_model_state, final_model_path)
+            wandb.save(final_model_path)
+            print(f"Run {run+1}: Model with best R² ({best_r2:.4f}) saved successfully at: {final_model_path}")
+        elif accelerator.is_main_process:
+            print(f"Run {run+1}: No model saved - R² threshold not met or no validation used")
+
+        wandb.finish()
+
+    # Compute and log average of best metrics
+    if accelerator.is_main_process:
+        avg_metrics = {
+            'avg_r_squared': np.mean([m['r_squared'] for m in all_best_metrics]),
+            'avg_rmse': np.mean([m['rmse'] for m in all_best_metrics if not np.isnan(m['rmse'])]),
+            'avg_mae': np.mean([m['mae'] for m in all_best_metrics if not np.isnan(m['mae'])]),
+            'avg_rpiq': np.mean([m['rpiq'] for m in all_best_metrics if not np.isnan(m['rpiq'])])
         }
-    )
+        print("\nAverage Best Metrics Across Runs:")
+        print(f"Average R²: {avg_metrics['avg_r_squared']:.4f}")
+        print(f"Average RMSE: {avg_metrics['avg_rmse']:.4f}")
+        print(f"Average MAE: {avg_metrics['avg_mae']:.4f}")
+        print(f"Average RPIQ: {avg_metrics['avg_rpiq']:.4f}")
 
-    # Load and prepare data (unchanged)
-    df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
-    samples_coordinates_array_path, data_array_path = separate_and_add_data()
-
-    def flatten_paths(path_list):
-        flattened = []
-        for item in path_list:
-            if isinstance(item, list):
-                flattened.extend(flatten_paths(item))
-            else:
-                flattened.append(item)
-        return flattened
-
-    samples_coordinates_array_path = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path)))
-    data_array_path = list(dict.fromkeys(flatten_paths(data_array_path)))
-
-    if args.use_validation and not args.load_data:
-        print(1)
-        train_df, val_df = create_balanced_dataset(df, args.use_validation)
-    elif args.load_data:
-        train_df, val_df = load_data()
-    elif not args.use_validation:
-        train_df, val_df = create_balanced_dataset(df, args.use_validation)
-    else:
-        print(2)
-        train_df, val_df = create_balanced_dataset(df, args.use_validation)
-    
-
-    if args.use_validation:
-        if len(val_df) == 0:
-            raise ValueError("Validation DataFrame is empty after balancing")
-        train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
-        val_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df)
-        if accelerator.is_main_process:
-            print(f"Length of train_dataset: {len(train_dataset)}")
-            print(f"Length of val_dataset: {len(val_dataset)}")
-        train_loader = DataLoader(train_dataset, batch_size=512, shuffle=True, num_workers=4, pin_memory=True)
-        val_loader = DataLoader(val_dataset, batch_size=256, shuffle=False, num_workers=4, pin_memory=True)
-    else:
-        train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
-        if accelerator.is_main_process:
-            print(f"Length of train_dataset: {len(train_dataset)}")
-        train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True, num_workers=4, pin_memory=True)
-        val_loader = None
-
-    if accelerator.is_main_process:
-        wandb.run.summary["train_size"] = len(train_df)
-        wandb.run.summary["val_size"] = len(val_df) if args.use_validation else 0
-
-    # Check first batch size (unchanged)
-    for batch in train_loader:
-        _, _, first_batch, _ = batch
-        break
-    if accelerator.is_main_process:
-        print("Size of the first batch:", first_batch.shape)
-
-    # Initialize model (unchanged)
-    model = SimpleTFT(
-        input_channels=len(bands_list_order),
-        height=window_size,
-        width=window_size,
-        time_steps=time_before,
-        d_model=512
-    )
-
-    if accelerator.distributed_type == "MULTI_GPU":
-        model = accelerator.prepare(model)
-
-    if accelerator.is_main_process:
-        wandb.run.summary["model_parameters"] = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-    # Train the model with new arguments
-    model, val_outputs, val_targets, best_model_state, best_r2 = train_model(args,
-        model,
-        train_loader,
-        val_loader,
-        num_epochs=num_epochs,
-        accelerator=accelerator,
-        lr=args.lr,
-        min_r2=0.5,
-        use_validation=args.use_validation,
-        loss_type=args.loss_type,
-        target_transform=args.target_transform
-    )
-
-    # Save the best model (unchanged)
-    if accelerator.is_main_process and best_model_state is not None:
-        final_model_path = f'tft_model_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}_R2_{best_r2:.4f}_transform_{args.target_transform}_loss_type_{args.loss_type}.pth'
-        accelerator.save(best_model_state, final_model_path)
-        wandb.save(final_model_path)
-        print(f"Model with best R² ({best_r2:.4f}) saved successfully at: {final_model_path}")
-    elif accelerator.is_main_process:
-        print("No model saved - R² threshold not met or no validation used")
-
-    wandb.finish()
+        # Log average metrics to a final wandb run
+        wandb.init(project="socmapping-SimpleTFT", name="average_metrics")
+        wandb.log(avg_metrics)
+        wandb.finish()

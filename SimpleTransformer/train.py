@@ -18,89 +18,7 @@ from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,
                    file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC, time_before)
 from modelSimpleTransformer import SimpleTransformer
 import argparse
-
-
-def load_data():
-    """
-    Load the training and validation DataFrames from Parquet files.
-    Returns:
-        validation_df: DataFrame containing validation data
-        training_df: DataFrame containing training data
-    """
-    # Define the absolute paths to the Parquet files
-    validation_path = '/lustre/home/vfourel/SOCProject/SOCmapping/balancedDataset/output/final_validation_df.parquet'
-    training_path = '/lustre/home/vfourel/SOCProject/SOCmapping/balancedDataset/output/final_training_df.parquet'
-
-    # Convert to Path objects for robustness
-    validation_file = Path(validation_path)
-    training_file = Path(training_path)
-
-    # Check if files exist
-    if not validation_file.exists():
-        raise FileNotFoundError(f"Validation file not found at {validation_file}")
-    if not training_file.exists():
-        raise FileNotFoundError(f"Training file not found at {training_file}")
-
-    # Load the DataFrames
-    validation_df = pd.read_parquet(validation_file)
-    training_df = pd.read_parquet(training_file)
-    training_df = resample_training_df(training_df)
-    return  training_df,validation_df
-
-def resample_training_df(training_df, num_bins=128, target_fraction=3/4):
-    """
-    Resample the training DataFrame's 'OC' values into 128 bins, ensuring each bin has
-    at least 3/4 of the entries of the bin with the highest count.
-    Args:
-        training_df: DataFrame containing training data
-        num_bins: Number of bins for OC values (default: 128)
-        target_fraction: Fraction of max bin count for resampling (default: 3/4)
-    Returns:
-        resampled_df: Resampled training DataFrame
-    """
-    # Create bins for OC values
-    oc_values = training_df['OC'].dropna()
-    bins = pd.qcut(oc_values, q=num_bins, duplicates='drop')
-    
-    # Count entries per bin
-    bin_counts = bins.value_counts().sort_index()
-    max_count = bin_counts.max()
-    target_count = int(max_count * target_fraction)
-    
-    print(f"Max bin count: {max_count}")
-    print(f"Target count per bin (at least): {target_count}")
-    
-    # Initialize list to collect resampled data
-    resampled_dfs = []
-    
-    # Process each bin
-    for bin_label in bin_counts.index:
-        # Get points in this bin
-        bin_mask = pd.cut(training_df['OC'], bins=bins.cat.categories) == bin_label
-        bin_df = training_df[bin_mask]
-        
-        # If bin has fewer than target_count, oversample with replacement
-        if len(bin_df) < target_count:
-            additional_samples = target_count - len(bin_df)
-            sampled_df = bin_df.sample(n=additional_samples, replace=True, random_state=42)
-            resampled_dfs.append(pd.concat([bin_df, sampled_df]))
-        else:
-            resampled_dfs.append(bin_df)
-    
-    # Combine all resampled bins
-    resampled_df = pd.concat(resampled_dfs, ignore_index=True)
-    
-    # Verify new bin counts
-    new_bins = pd.qcut(resampled_df['OC'], q=num_bins, duplicates='drop')
-    new_bin_counts = new_bins.value_counts().sort_index()
-    
-    print("\nBin counts before resampling:")
-    print(bin_counts)
-    print("\nBin counts after resampling:")
-    print(new_bin_counts)
-    
-    return resampled_df
-
+from balancedDataset import create_validation_train_sets
 
 # Uncomment and use this composite loss function if desired
 def composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
@@ -139,18 +57,6 @@ def composite_l2_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
     # Combine the losses with the weighting factor alpha
     return alpha * l2_loss + (1 - alpha) * chi2_scaled
 
-
-def parse_args():
-    parser = argparse.ArgumentParser(description='Train SimpleTransformer model with customizable parameters')
-    parser.add_argument('--lr', type=float, default=0.0002, help='Learning rate')
-    parser.add_argument('--num_heads', type=int, default=NUM_HEADS, help='Number of attention heads')
-    parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of transformer layers')
-    parser.add_argument('--loss_type', type=str, default='l1', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
-    parser.add_argument('--loss_alpha', type=float, default=0.5, help='Weight for L1 loss in composite loss (if used)')
-    parser.add_argument('--load_data',default = True,help='We can use pre-computed validation and training sets.')
-    parser.add_argument('--target_transform', type=str, default='log', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
-    parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')
-    return parser.parse_args()
 
 # Function to create balanced dataset (unchanged)
 def create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=True):
@@ -195,6 +101,25 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=True):
             raise ValueError("No training data available after binning")
         training_df = pd.concat(training_dfs).drop('bin', axis=1)
         return training_df, None
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Train SimpleTransformer model with customizable parameters')
+    parser.add_argument('--lr', type=float, default=0.0002, help='Learning rate')
+    parser.add_argument('--num_heads', type=int, default=NUM_HEADS, help='Number of attention heads')
+    parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of transformer layers')
+    parser.add_argument('--loss_type', type=str, default='l1', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
+    parser.add_argument('--loss_alpha', type=float, default=0.5, help='Weight for L1 loss in composite loss (if used)')
+    parser.add_argument('--target_transform', type=str, default='log', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
+    parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')
+    parser.add_argument('--output-dir', type=str, default='output', help='Output directory')
+    parser.add_argument('--target-val-ratio', type=float, default=0.08, help='Target validation ratio')
+    parser.add_argument('--use-gpu', action='store_true', default=True, help='Use GPU')
+    parser.add_argument('--distance-threshold', type=float, default=1.2, help='Minimum distance threshold for validation points')
+    parser.add_argument('--target-fraction', type=float, default=0.75, help='Fraction of max bin count for resampling')
+    parser.add_argument('--num-runs', type=int, default=5, help='Number of times to run the process')
+    return parser.parse_args()
+
 
 def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelerator=None, lr=0.001,
                 loss_type='l1', loss_alpha=0.5, target_transform='none', min_r2=0.5, use_validation=True):
@@ -417,12 +342,14 @@ if __name__ == "__main__":
     samples_coordinates_array_path = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path)))
     data_array_path = list(dict.fromkeys(flatten_paths(data_array_path)))
 
-    if args.use_validation and not args.load_data:
-        train_df, val_df = create_balanced_dataset(df, args.use_validation)
-    elif args.load_data:
-        train_df, val_df = load_data()
-    elif not args.use_validation:
-        train_df, val_df = create_balanced_dataset(df, args.use_validation)
+    if args.use_validation:
+        val_df, train_df = create_validation_train_sets(
+                df=df,
+                output_dir=args.output_dir,
+                target_val_ratio=args.target_val_ratio,
+                use_gpu=args.use_gpu,
+                distance_threshold=args.distance_threshold
+            )
     else:
         train_df, val_df = create_balanced_dataset(df, args.use_validation)
     
