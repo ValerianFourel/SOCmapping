@@ -128,7 +128,7 @@ def parse_args():
     parser.add_argument('--loss_alpha', type=float, default=0.8, help='Weight for L1 loss in composite loss')
     parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')
     parser.add_argument('--hidden_size', type=int, default=128, help='Hidden size for TFT model')
-    parser.add_argument('--loss_type', type=str, default='composite_l2', choices=['composite_l1', 'l1', 'mse','composite_l2'], 
+    parser.add_argument('--loss_type', type=str, default='mse', choices=['composite_l1', 'l1', 'mse','composite_l2'], 
                         help='Type of loss function to use: composite, mse, or l1')
     parser.add_argument('--apply_log', action='store_true', help='Apply log transformation to targets')
     parser.add_argument('--target_transform', type=str, default='log', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
@@ -488,7 +488,7 @@ if __name__ == "__main__":
             if accelerator.is_main_process:
                 print(f"Run {run+1}: Length of train_dataset: {len(train_dataset)}")
                 print(f"Run {run+1}: Length of val_dataset: {len(val_dataset)}")
-            train_loader = DataLoader(train_dataset, batch_size=512, shuffle=True, num_workers=4, pin_memory=True)
+            train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True, num_workers=4, pin_memory=True)
             val_loader = DataLoader(val_dataset, batch_size=256, shuffle=False, num_workers=4, pin_memory=True)
         else:
             train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)

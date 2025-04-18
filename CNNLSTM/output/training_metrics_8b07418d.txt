@@ -1,0 +1,91 @@
+Training Metrics and Configuration
+==================================================
+
+Command Line Arguments:
+------------------------------
+lr: 0.0001
+loss_type: composite_l2
+loss_alpha: 0.5
+target_transform: none
+use_validation: True
+num_bins: 128
+output_dir: output
+target_val_ratio: 0.08
+use_gpu: True
+distance_threshold: 1.4
+target_fraction: 0.75
+num_runs: 5
+
+Wandb Runs Information:
+------------------------------
+Run 1:
+  Project: socmapping-CNNLSTM
+  Run Name: run_1
+  Run ID: 0a600ixo
+
+Run 2:
+  Project: socmapping-CNNLSTM
+  Run Name: run_2
+  Run ID: l9ftj9j8
+
+Run 3:
+  Project: socmapping-CNNLSTM
+  Run Name: run_3
+  Run ID: m9rjrm7m
+
+Run 4:
+  Project: socmapping-CNNLSTM
+  Run Name: run_4
+  Run ID: xr9jqhqo
+
+Run 5:
+  Project: socmapping-CNNLSTM
+  Run Name: run_5
+  Run ID: rkhh4g5z
+
+Average Metrics Across Runs:
+------------------------------
+train_loss_avg: 290.8423
+val_loss: 110.0993
+correlation: 0.4014
+r_squared: 0.1679
+mse: 109.3767
+rmse: 10.3382
+mae: 7.2721
+rpiq: 0.5011
+
+Average Min Distance Statistics:
+------------------------------
+avg_mean: 72.6321
+std_mean: 4.0324
+avg_median: 5.1680
+std_median: 0.3568
+avg_min: 1.2366
+std_min: 0.1843
+avg_max: 749.3995
+std_max: 71.0931
+avg_std: 117.2359
+std_std: 2.6907
+
+Best Metrics Across Runs:
+------------------------------
+r_squared:
+  Mean: 0.2109
+  Std: 0.0350
+  Values: ['0.2190', '0.2544', '0.1957', '0.2332', '0.1522']
+
+rmse:
+  Mean: 9.9979
+  Std: 0.8864
+  Values: ['11.0938', '10.4268', '10.4021', '9.5432', '8.5238']
+
+mae:
+  Mean: 6.8162
+  Std: 0.9299
+  Values: ['7.7155', '7.1055', '7.6331', '6.4270', '5.2001']
+
+rpiq:
+  Mean: 0.5161
+  Std: 0.0468
+  Values: ['0.4777', '0.5179', '0.4518', '0.5554', '0.5778']
+

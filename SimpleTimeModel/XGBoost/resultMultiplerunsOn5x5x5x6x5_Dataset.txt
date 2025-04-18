@@ -1,0 +1,17 @@
+Summary of all runs:
+XGBoost_Train R²: 0.8922 ± 0.0012
+XGBoost_Train MAE: 2.0835 ± 0.0112
+XGBoost_Train RMSE: 6.6537 ± 0.0300
+XGBoost_Train RPIQ: 1.7280 ± 0.0147
+XGBoost_Val R²: 0.2774 ± 0.0412
+XGBoost_Val MAE: 7.9392 ± 0.2897
+XGBoost_Val RMSE: 13.5768 ± 0.4270
+XGBoost_Val RPIQ: 0.4057 ± 0.0213
+RandomForest_Train R²: 0.7878 ± 0.0021
+RandomForest_Train MAE: 5.4989 ± 0.0240
+RandomForest_Train RMSE: 9.6019 ± 0.0401
+RandomForest_Train RPIQ: 1.1975 ± 0.0096
+RandomForest_Val R²: 0.2715 ± 0.0514
+RandomForest_Val MAE: 7.1997 ± 0.2135
+RandomForest_Val RMSE: 11.4534 ± 0.3556
+RandomForest_Val RPIQ: 0.4810 ± 0.0277

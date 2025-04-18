@@ -299,3 +299,28 @@ class MultiRasterDatasetMultiYears(Dataset):
         """Get tensor from specific subfolder dataset"""
         return self.datasets[subfolder].get_tensor_by_location(id_num, x, y)
 
+class NormalizedMultiRasterDatasetMultiYears(MultiRasterDatasetMultiYears):
+     """Wrapper around MultiRasterDatasetMultiYears that adds feature normalization"""
+     def __init__(self, samples_coordinates_array_path, data_array_path, df):
+         super().__init__(samples_coordinates_array_path, data_array_path, df)
+         self.compute_statistics()
+         
+     def compute_statistics(self):
+         """Compute mean and std across all features for normalization"""
+         features_list = []
+         for i in range(len(self)):
+             _, _, features, _ = super().__getitem__(i)
+             features_list.append(features.numpy())
+             
+         features_array = np.stack(features_list)
+         self.feature_means = torch.tensor(np.mean(features_array, axis=(0, 2, 3)), dtype=torch.float32)
+         self.feature_stds = torch.tensor(np.std(features_array, axis=(0, 2, 3)), dtype=torch.float32)
+         self.feature_stds = torch.clamp(self.feature_stds, min=1e-8)
+         
+     def __getitem__(self, idx):
+         longitude, latitude, features, target = super().__getitem__(idx)
+         features = (features - self.feature_means[:, None, None]) / self.feature_stds[:, None, None]
+         return longitude, latitude, features, target
+     
+     def getStatistics(self):
+         return self.feature_means, self.feature_stds

@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
-from dataloader.dataloaderMultiYears import MultiRasterDatasetMultiYears 
+from dataloader.dataloaderMultiYears import MultiRasterDatasetMultiYears , NormalizedMultiRasterDatasetMultiYears
 from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data
 import pandas as pd
 from tqdm import tqdm
@@ -315,9 +315,9 @@ def train_model(args, model, train_loader, val_loader, num_epochs=100, target_tr
 def parse_args():
     parser = argparse.ArgumentParser(description='Train 3DCNN model with customizable parameters')
     parser.add_argument('--lr', type=float, default=0.0001, help='Learning rate')
-    parser.add_argument('--loss_type', type=str, default='l1', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
+    parser.add_argument('--loss_type', type=str, default='mse', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
     parser.add_argument('--loss_alpha', type=float, default=0.5, help='Weight for L1 loss in composite loss (if used)')
-    parser.add_argument('--target_transform', type=str, default='log', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
+    parser.add_argument('--target_transform', type=str, default='none', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
     parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')
     parser.add_argument('--num-bins', type=int, default=128, help='Number of bins for OC resampling')
     parser.add_argument('--output-dir', type=str, default='output', help='Output directory')
@@ -494,8 +494,8 @@ if __name__ == "__main__":
             train_df, val_df = create_balanced_dataset(df, args.use_validation)
 
         # Create datasets
-        train_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
-        val_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df) if val_df is not None else None
+        train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
+        val_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df) if val_df is not None else None
 
         train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True, num_workers=4, pin_memory=True)
         val_loader = DataLoader(val_dataset, batch_size=256, shuffle=False, num_workers=4, pin_memory=True) if val_dataset is not None else None

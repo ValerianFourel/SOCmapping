@@ -191,7 +191,7 @@ def train_model(args, model, train_loader, val_loader, num_epochs=num_epochs, ac
                 targets = torch.log(targets + 1e-10)
             elif target_transform == 'normalize':
                 targets = (targets - target_mean) / (target_std + 1e-10)
-            print(outputs,targets)
+            # print(outputs,targets)
             targets = targets.float()
             outputs = outputs.float()
             loss = criterion(outputs, targets)

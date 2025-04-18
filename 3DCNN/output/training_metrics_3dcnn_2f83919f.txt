@@ -21,73 +21,73 @@ Wandb Runs Information:
 Run 1:
   Project: socmapping-3dcnn
   Run Name: run_1
-  Run ID: hfb0pmrj
+  Run ID: j5js3s1o
 
 Run 2:
   Project: socmapping-3dcnn
   Run Name: run_2
-  Run ID: sgucp3m3
+  Run ID: m3n6teld
 
 Run 3:
   Project: socmapping-3dcnn
   Run Name: run_3
-  Run ID: lxixl161
+  Run ID: 7dq3grpw
 
 Run 4:
   Project: socmapping-3dcnn
   Run Name: run_4
-  Run ID: vqmq9rwa
+  Run ID: 1sqycyi2
 
 Run 5:
   Project: socmapping-3dcnn
   Run Name: run_5
-  Run ID: fns95twg
+  Run ID: gfisp52j
 
 Average Metrics Across Runs:
 ------------------------------
-train_loss: 45.3759
-val_loss: 9.1177
-correlation: 0.0088
-r_squared: 0.0010
-output_std: inf
-target_std: 7.7875
-mse: inf
-rmse: inf
-mae: 145455523777214595072.0000
-rpiq: 0.1749
+train_loss: 0.8158
+val_loss: 0.5996
+correlation: 0.2578
+r_squared: 0.0744
+mse: 116005481.4646
+rmse: 1039.5817
+mae: 42.7963
+rpiq: 0.4509
+output_std: 1034.2538
+target_std: 7.7447
 
 Average Min Distance Statistics:
 ------------------------------
-avg_mean: 69.7808
-std_mean: 4.9540
-avg_median: 4.5001
-std_median: 0.4174
-avg_min: 0.9235
-std_min: 0.3713
-avg_max: 885.5996
-std_max: 134.8417
-avg_std: 121.6011
-std_std: 8.4583
+avg_mean: 67.1032
+std_mean: 4.1278
+avg_median: 4.5363
+std_median: 0.3622
+avg_min: 0.8178
+std_min: 0.4846
+avg_max: 739.2716
+std_max: 97.4283
+avg_std: 112.9022
+std_std: 3.9528
 
 Best Metrics Across Runs:
 ------------------------------
 r_squared:
-  Mean: 0.0037
-  Std: 0.0020
-  Values: ['0.0044', '0.0067', '0.0042', '0.0007', '0.0026']
+  Mean: 0.0665
+  Std: 0.0409
+  Values: ['0.0924', '0.0090', '0.0256', '0.0957', '0.1099']
 
 mae:
-  Mean: 40221501143646208.0000
-  Std: 80443002287292416.0000
-  Values: ['41511.4961', '14.5120', '385182.7500', '23.0791', '201107497128296448.0000']
+  Mean: 9.9784
+  Std: 4.4766
+  Values: ['6.9788', '15.2520', '15.6321', '6.0411', '5.9879']
 
 rmse:
-  Mean: inf
-  Std: nan
-  Values: ['1421536.0000', '16.2860', '8009573.0000', '84.3497', 'inf']
+  Mean: 12.5851
+  Std: 4.0567
+  Values: ['9.9380', '17.1332', '17.9168', '9.0286', '8.9088']
 
 rpiq:
-  Mean: 0.0777
-  Std: 0.1263
-  Values: ['0.0000', '0.3254', '0.0000', '0.0628', '0.0000']
+  Mean: 0.4490
+  Std: 0.1202
+  Values: ['0.5232', '0.3152', '0.2916', '0.5427', '0.5725']
 

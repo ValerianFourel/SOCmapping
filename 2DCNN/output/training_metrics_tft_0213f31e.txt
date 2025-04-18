@@ -1,0 +1,93 @@
+Training Metrics and Configuration
+==================================================
+
+Command Line Arguments:
+------------------------------
+lr: 0.0002
+loss_alpha: 0.8
+use_validation: True
+hidden_size: 128
+loss_type: composite_l2
+apply_log: False
+target_transform: log
+num_bins: 128
+output_dir: output
+target_val_ratio: 0.08
+use_gpu: True
+distance_threshold: 1.4
+target_fraction: 0.75
+num_runs: 5
+
+Wandb Runs Information:
+------------------------------
+Run 1:
+  Project: socmapping-2dcnn
+  Run Name: run_1
+  Run ID: uvzf97kp
+
+Run 2:
+  Project: socmapping-2dcnn
+  Run Name: run_2
+  Run ID: n3tk37dx
+
+Run 3:
+  Project: socmapping-2dcnn
+  Run Name: run_3
+  Run ID: lcx6w8us
+
+Run 4:
+  Project: socmapping-2dcnn
+  Run Name: run_4
+  Run ID: our91iux
+
+Run 5:
+  Project: socmapping-2dcnn
+  Run Name: run_5
+  Run ID: p67fyvku
+
+Average Metrics Across Runs:
+------------------------------
+train_loss_avg: 6618.5651
+val_loss: 379.2805
+correlation: 0.0214
+r_squared: 0.0029
+mse: 5498873815674304630997103467284920373412413474702168045270408234008576.0000
+rmse: 2487824815959753798867840952958976.0000
+mae: 70106584183529182845434127712256.0000
+rpiq: 0.2946
+
+Average Min Distance Statistics:
+------------------------------
+avg_mean: 67.7614
+std_mean: 5.0432
+avg_median: 4.8584
+std_median: 0.6322
+avg_min: 1.3495
+std_min: 0.1305
+avg_max: 745.9022
+std_max: 96.4037
+avg_std: 111.3162
+std_std: 4.4367
+
+Best Metrics Across Runs:
+------------------------------
+r_squared:
+  Mean: 0.0000
+  Std: 0.0000
+  Values: ['0.0000', '0.0000', '0.0000', '0.0000', '0.0000']
+
+rmse:
+  Mean: inf
+  Std: nan
+  Values: ['inf', 'inf', 'inf', 'inf', 'inf']
+
+mae:
+  Mean: inf
+  Std: nan
+  Values: ['inf', 'inf', 'inf', 'inf', 'inf']
+
+rpiq:
+  Mean: 0.0000
+  Std: 0.0000
+  Values: ['0.0000', '0.0000', '0.0000', '0.0000', '0.0000']
+
