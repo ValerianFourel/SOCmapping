@@ -534,3 +534,219 @@
 2025-04-18 16:20:59,479 - INFO - Sampler state for dataloader 2 saved in model_checkpoint_epoch_36_r2_0.1844.pth/sampler_2.bin
 2025-04-18 16:20:59,479 - INFO - Sampler state for dataloader 3 saved in model_checkpoint_epoch_36_r2_0.1844.pth/sampler_3.bin
 2025-04-18 16:20:59,483 - INFO - Random states saved in model_checkpoint_epoch_36_r2_0.1844.pth/random_states_0.pkl
+2025-04-18 16:23:52,275 - INFO - Saving current state to model_checkpoint_epoch_41_r2_0.2032.pth
+2025-04-18 16:23:52,276 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 16:23:52,286 - INFO - Model weights saved in model_checkpoint_epoch_41_r2_0.2032.pth/model.safetensors
+2025-04-18 16:23:52,286 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 16:23:52,295 - INFO - Model weights saved in model_checkpoint_epoch_41_r2_0.2032.pth/model_1.safetensors
+2025-04-18 16:23:52,315 - INFO - Optimizer state saved in model_checkpoint_epoch_41_r2_0.2032.pth/optimizer.bin
+2025-04-18 16:23:52,338 - INFO - Optimizer state saved in model_checkpoint_epoch_41_r2_0.2032.pth/optimizer_1.bin
+2025-04-18 16:23:52,338 - INFO - Sampler state for dataloader 0 saved in model_checkpoint_epoch_41_r2_0.2032.pth/sampler.bin
+2025-04-18 16:23:52,338 - INFO - Sampler state for dataloader 1 saved in model_checkpoint_epoch_41_r2_0.2032.pth/sampler_1.bin
+2025-04-18 16:23:52,339 - INFO - Sampler state for dataloader 2 saved in model_checkpoint_epoch_41_r2_0.2032.pth/sampler_2.bin
+2025-04-18 16:23:52,339 - INFO - Sampler state for dataloader 3 saved in model_checkpoint_epoch_41_r2_0.2032.pth/sampler_3.bin
+2025-04-18 16:23:52,342 - INFO - Random states saved in model_checkpoint_epoch_41_r2_0.2032.pth/random_states_0.pkl
+2025-04-18 16:26:44,889 - INFO - Saving current state to model_checkpoint_epoch_46_r2_0.2048.pth
+2025-04-18 16:26:44,890 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 16:26:44,900 - INFO - Model weights saved in model_checkpoint_epoch_46_r2_0.2048.pth/model.safetensors
+2025-04-18 16:26:44,900 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 16:26:44,910 - INFO - Model weights saved in model_checkpoint_epoch_46_r2_0.2048.pth/model_1.safetensors
+2025-04-18 16:26:44,931 - INFO - Optimizer state saved in model_checkpoint_epoch_46_r2_0.2048.pth/optimizer.bin
+2025-04-18 16:26:44,955 - INFO - Optimizer state saved in model_checkpoint_epoch_46_r2_0.2048.pth/optimizer_1.bin
+2025-04-18 16:26:44,955 - INFO - Sampler state for dataloader 0 saved in model_checkpoint_epoch_46_r2_0.2048.pth/sampler.bin
+2025-04-18 16:26:44,956 - INFO - Sampler state for dataloader 1 saved in model_checkpoint_epoch_46_r2_0.2048.pth/sampler_1.bin
+2025-04-18 16:26:44,956 - INFO - Sampler state for dataloader 2 saved in model_checkpoint_epoch_46_r2_0.2048.pth/sampler_2.bin
+2025-04-18 16:26:44,956 - INFO - Sampler state for dataloader 3 saved in model_checkpoint_epoch_46_r2_0.2048.pth/sampler_3.bin
+2025-04-18 16:26:44,959 - INFO - Random states saved in model_checkpoint_epoch_46_r2_0.2048.pth/random_states_0.pkl
+2025-04-18 16:29:36,736 - INFO - Saving current state to model_checkpoint_epoch_51_r2_0.2134.pth
+2025-04-18 16:29:36,737 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 16:29:36,747 - INFO - Model weights saved in model_checkpoint_epoch_51_r2_0.2134.pth/model.safetensors
+2025-04-18 16:29:36,748 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 16:29:36,757 - INFO - Model weights saved in model_checkpoint_epoch_51_r2_0.2134.pth/model_1.safetensors
+2025-04-18 16:29:36,778 - INFO - Optimizer state saved in model_checkpoint_epoch_51_r2_0.2134.pth/optimizer.bin
+2025-04-18 16:29:36,799 - INFO - Optimizer state saved in model_checkpoint_epoch_51_r2_0.2134.pth/optimizer_1.bin
+2025-04-18 16:29:36,799 - INFO - Sampler state for dataloader 0 saved in model_checkpoint_epoch_51_r2_0.2134.pth/sampler.bin
+2025-04-18 16:29:36,799 - INFO - Sampler state for dataloader 1 saved in model_checkpoint_epoch_51_r2_0.2134.pth/sampler_1.bin
+2025-04-18 16:29:36,799 - INFO - Sampler state for dataloader 2 saved in model_checkpoint_epoch_51_r2_0.2134.pth/sampler_2.bin
+2025-04-18 16:29:36,800 - INFO - Sampler state for dataloader 3 saved in model_checkpoint_epoch_51_r2_0.2134.pth/sampler_3.bin
+2025-04-18 16:29:36,803 - INFO - Random states saved in model_checkpoint_epoch_51_r2_0.2134.pth/random_states_0.pkl
+2025-04-18 16:32:29,963 - INFO - Saving current state to model_checkpoint_epoch_56_r2_0.2207.pth
+2025-04-18 16:32:29,964 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 16:32:29,974 - INFO - Model weights saved in model_checkpoint_epoch_56_r2_0.2207.pth/model.safetensors
+2025-04-18 16:32:29,974 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 16:32:29,983 - INFO - Model weights saved in model_checkpoint_epoch_56_r2_0.2207.pth/model_1.safetensors
+2025-04-18 16:32:30,005 - INFO - Optimizer state saved in model_checkpoint_epoch_56_r2_0.2207.pth/optimizer.bin
+2025-04-18 16:32:30,028 - INFO - Optimizer state saved in model_checkpoint_epoch_56_r2_0.2207.pth/optimizer_1.bin
+2025-04-18 16:32:30,028 - INFO - Sampler state for dataloader 0 saved in model_checkpoint_epoch_56_r2_0.2207.pth/sampler.bin
+2025-04-18 16:32:30,028 - INFO - Sampler state for dataloader 1 saved in model_checkpoint_epoch_56_r2_0.2207.pth/sampler_1.bin
+2025-04-18 16:32:30,028 - INFO - Sampler state for dataloader 2 saved in model_checkpoint_epoch_56_r2_0.2207.pth/sampler_2.bin
+2025-04-18 16:32:30,028 - INFO - Sampler state for dataloader 3 saved in model_checkpoint_epoch_56_r2_0.2207.pth/sampler_3.bin
+2025-04-18 16:32:30,032 - INFO - Random states saved in model_checkpoint_epoch_56_r2_0.2207.pth/random_states_0.pkl
+2025-04-18 16:35:22,408 - INFO - Saving current state to model_checkpoint_epoch_61_r2_0.2207.pth
+2025-04-18 16:35:22,409 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 16:35:22,419 - INFO - Model weights saved in model_checkpoint_epoch_61_r2_0.2207.pth/model.safetensors
+2025-04-18 16:35:22,419 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 16:35:22,428 - INFO - Model weights saved in model_checkpoint_epoch_61_r2_0.2207.pth/model_1.safetensors
+2025-04-18 16:35:22,450 - INFO - Optimizer state saved in model_checkpoint_epoch_61_r2_0.2207.pth/optimizer.bin
+2025-04-18 16:35:22,471 - INFO - Optimizer state saved in model_checkpoint_epoch_61_r2_0.2207.pth/optimizer_1.bin
+2025-04-18 16:35:22,472 - INFO - Sampler state for dataloader 0 saved in model_checkpoint_epoch_61_r2_0.2207.pth/sampler.bin
+2025-04-18 16:35:22,472 - INFO - Sampler state for dataloader 1 saved in model_checkpoint_epoch_61_r2_0.2207.pth/sampler_1.bin
+2025-04-18 16:35:22,472 - INFO - Sampler state for dataloader 2 saved in model_checkpoint_epoch_61_r2_0.2207.pth/sampler_2.bin
+2025-04-18 16:35:22,472 - INFO - Sampler state for dataloader 3 saved in model_checkpoint_epoch_61_r2_0.2207.pth/sampler_3.bin
+2025-04-18 16:35:22,475 - INFO - Random states saved in model_checkpoint_epoch_61_r2_0.2207.pth/random_states_0.pkl
+2025-04-18 16:38:14,316 - INFO - Saving current state to model_checkpoint_epoch_66_r2_0.2207.pth
+2025-04-18 16:38:14,317 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 16:38:14,328 - INFO - Model weights saved in model_checkpoint_epoch_66_r2_0.2207.pth/model.safetensors
+2025-04-18 16:38:14,329 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 16:38:14,340 - INFO - Model weights saved in model_checkpoint_epoch_66_r2_0.2207.pth/model_1.safetensors
+2025-04-18 16:38:14,362 - INFO - Optimizer state saved in model_checkpoint_epoch_66_r2_0.2207.pth/optimizer.bin
+2025-04-18 16:38:14,383 - INFO - Optimizer state saved in model_checkpoint_epoch_66_r2_0.2207.pth/optimizer_1.bin
+2025-04-18 16:38:14,384 - INFO - Sampler state for dataloader 0 saved in model_checkpoint_epoch_66_r2_0.2207.pth/sampler.bin
+2025-04-18 16:38:14,384 - INFO - Sampler state for dataloader 1 saved in model_checkpoint_epoch_66_r2_0.2207.pth/sampler_1.bin
+2025-04-18 16:38:14,384 - INFO - Sampler state for dataloader 2 saved in model_checkpoint_epoch_66_r2_0.2207.pth/sampler_2.bin
+2025-04-18 16:38:14,384 - INFO - Sampler state for dataloader 3 saved in model_checkpoint_epoch_66_r2_0.2207.pth/sampler_3.bin
+2025-04-18 16:38:14,387 - INFO - Random states saved in model_checkpoint_epoch_66_r2_0.2207.pth/random_states_0.pkl
+2025-04-18 16:41:06,534 - INFO - Saving current state to model_checkpoint_epoch_71_r2_0.2281.pth
+2025-04-18 16:41:06,535 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 16:41:06,547 - INFO - Model weights saved in model_checkpoint_epoch_71_r2_0.2281.pth/model.safetensors
+2025-04-18 16:41:06,548 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 16:41:06,558 - INFO - Model weights saved in model_checkpoint_epoch_71_r2_0.2281.pth/model_1.safetensors
+2025-04-18 16:41:06,580 - INFO - Optimizer state saved in model_checkpoint_epoch_71_r2_0.2281.pth/optimizer.bin
+2025-04-18 16:41:06,602 - INFO - Optimizer state saved in model_checkpoint_epoch_71_r2_0.2281.pth/optimizer_1.bin
+2025-04-18 16:41:06,602 - INFO - Sampler state for dataloader 0 saved in model_checkpoint_epoch_71_r2_0.2281.pth/sampler.bin
+2025-04-18 16:41:06,603 - INFO - Sampler state for dataloader 1 saved in model_checkpoint_epoch_71_r2_0.2281.pth/sampler_1.bin
+2025-04-18 16:41:06,603 - INFO - Sampler state for dataloader 2 saved in model_checkpoint_epoch_71_r2_0.2281.pth/sampler_2.bin
+2025-04-18 16:41:06,603 - INFO - Sampler state for dataloader 3 saved in model_checkpoint_epoch_71_r2_0.2281.pth/sampler_3.bin
+2025-04-18 16:41:06,607 - INFO - Random states saved in model_checkpoint_epoch_71_r2_0.2281.pth/random_states_0.pkl
+2025-04-18 16:43:58,679 - INFO - Saving current state to model_checkpoint_epoch_76_r2_0.2281.pth
+2025-04-18 16:43:58,680 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 16:43:58,691 - INFO - Model weights saved in model_checkpoint_epoch_76_r2_0.2281.pth/model.safetensors
+2025-04-18 16:43:58,691 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 16:43:58,700 - INFO - Model weights saved in model_checkpoint_epoch_76_r2_0.2281.pth/model_1.safetensors
+2025-04-18 16:43:58,724 - INFO - Optimizer state saved in model_checkpoint_epoch_76_r2_0.2281.pth/optimizer.bin
+2025-04-18 16:43:58,747 - INFO - Optimizer state saved in model_checkpoint_epoch_76_r2_0.2281.pth/optimizer_1.bin
+2025-04-18 16:43:58,747 - INFO - Sampler state for dataloader 0 saved in model_checkpoint_epoch_76_r2_0.2281.pth/sampler.bin
+2025-04-18 16:43:58,747 - INFO - Sampler state for dataloader 1 saved in model_checkpoint_epoch_76_r2_0.2281.pth/sampler_1.bin
+2025-04-18 16:43:58,747 - INFO - Sampler state for dataloader 2 saved in model_checkpoint_epoch_76_r2_0.2281.pth/sampler_2.bin
+2025-04-18 16:43:58,747 - INFO - Sampler state for dataloader 3 saved in model_checkpoint_epoch_76_r2_0.2281.pth/sampler_3.bin
+2025-04-18 16:43:58,751 - INFO - Random states saved in model_checkpoint_epoch_76_r2_0.2281.pth/random_states_0.pkl
+2025-04-18 16:46:50,074 - INFO - Saving current state to model_checkpoint_epoch_81_r2_0.2281.pth
+2025-04-18 16:46:50,075 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 16:46:50,084 - INFO - Model weights saved in model_checkpoint_epoch_81_r2_0.2281.pth/model.safetensors
+2025-04-18 16:46:50,084 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 16:46:50,093 - INFO - Model weights saved in model_checkpoint_epoch_81_r2_0.2281.pth/model_1.safetensors
+2025-04-18 16:46:50,114 - INFO - Optimizer state saved in model_checkpoint_epoch_81_r2_0.2281.pth/optimizer.bin
+2025-04-18 16:46:50,135 - INFO - Optimizer state saved in model_checkpoint_epoch_81_r2_0.2281.pth/optimizer_1.bin
+2025-04-18 16:46:50,135 - INFO - Sampler state for dataloader 0 saved in model_checkpoint_epoch_81_r2_0.2281.pth/sampler.bin
+2025-04-18 16:46:50,135 - INFO - Sampler state for dataloader 1 saved in model_checkpoint_epoch_81_r2_0.2281.pth/sampler_1.bin
+2025-04-18 16:46:50,135 - INFO - Sampler state for dataloader 2 saved in model_checkpoint_epoch_81_r2_0.2281.pth/sampler_2.bin
+2025-04-18 16:46:50,135 - INFO - Sampler state for dataloader 3 saved in model_checkpoint_epoch_81_r2_0.2281.pth/sampler_3.bin
+2025-04-18 16:46:50,139 - INFO - Random states saved in model_checkpoint_epoch_81_r2_0.2281.pth/random_states_0.pkl
+2025-04-18 16:49:42,826 - INFO - Saving current state to model_checkpoint_epoch_86_r2_0.2297.pth
+2025-04-18 16:49:42,826 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 16:49:42,837 - INFO - Model weights saved in model_checkpoint_epoch_86_r2_0.2297.pth/model.safetensors
+2025-04-18 16:49:42,838 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 16:49:42,849 - INFO - Model weights saved in model_checkpoint_epoch_86_r2_0.2297.pth/model_1.safetensors
+2025-04-18 16:49:42,875 - INFO - Optimizer state saved in model_checkpoint_epoch_86_r2_0.2297.pth/optimizer.bin
+2025-04-18 16:49:42,897 - INFO - Optimizer state saved in model_checkpoint_epoch_86_r2_0.2297.pth/optimizer_1.bin
+2025-04-18 16:49:42,897 - INFO - Sampler state for dataloader 0 saved in model_checkpoint_epoch_86_r2_0.2297.pth/sampler.bin
+2025-04-18 16:49:42,897 - INFO - Sampler state for dataloader 1 saved in model_checkpoint_epoch_86_r2_0.2297.pth/sampler_1.bin
+2025-04-18 16:49:42,897 - INFO - Sampler state for dataloader 2 saved in model_checkpoint_epoch_86_r2_0.2297.pth/sampler_2.bin
+2025-04-18 16:49:42,897 - INFO - Sampler state for dataloader 3 saved in model_checkpoint_epoch_86_r2_0.2297.pth/sampler_3.bin
+2025-04-18 16:49:42,901 - INFO - Random states saved in model_checkpoint_epoch_86_r2_0.2297.pth/random_states_0.pkl
+2025-04-18 16:52:35,149 - INFO - Saving current state to model_checkpoint_epoch_91_r2_0.2377.pth
+2025-04-18 16:52:35,150 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 16:52:35,159 - INFO - Model weights saved in model_checkpoint_epoch_91_r2_0.2377.pth/model.safetensors
+2025-04-18 16:52:35,160 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 16:52:35,170 - INFO - Model weights saved in model_checkpoint_epoch_91_r2_0.2377.pth/model_1.safetensors
+2025-04-18 16:52:35,193 - INFO - Optimizer state saved in model_checkpoint_epoch_91_r2_0.2377.pth/optimizer.bin
+2025-04-18 16:52:35,216 - INFO - Optimizer state saved in model_checkpoint_epoch_91_r2_0.2377.pth/optimizer_1.bin
+2025-04-18 16:52:35,216 - INFO - Sampler state for dataloader 0 saved in model_checkpoint_epoch_91_r2_0.2377.pth/sampler.bin
+2025-04-18 16:52:35,216 - INFO - Sampler state for dataloader 1 saved in model_checkpoint_epoch_91_r2_0.2377.pth/sampler_1.bin
+2025-04-18 16:52:35,216 - INFO - Sampler state for dataloader 2 saved in model_checkpoint_epoch_91_r2_0.2377.pth/sampler_2.bin
+2025-04-18 16:52:35,216 - INFO - Sampler state for dataloader 3 saved in model_checkpoint_epoch_91_r2_0.2377.pth/sampler_3.bin
+2025-04-18 16:52:35,220 - INFO - Random states saved in model_checkpoint_epoch_91_r2_0.2377.pth/random_states_0.pkl
+2025-04-18 16:55:26,340 - INFO - Saving current state to model_checkpoint_epoch_96_r2_0.2382.pth
+2025-04-18 16:55:26,341 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 16:55:26,351 - INFO - Model weights saved in model_checkpoint_epoch_96_r2_0.2382.pth/model.safetensors
+2025-04-18 16:55:26,352 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 16:55:26,361 - INFO - Model weights saved in model_checkpoint_epoch_96_r2_0.2382.pth/model_1.safetensors
+2025-04-18 16:55:26,385 - INFO - Optimizer state saved in model_checkpoint_epoch_96_r2_0.2382.pth/optimizer.bin
+2025-04-18 16:55:26,407 - INFO - Optimizer state saved in model_checkpoint_epoch_96_r2_0.2382.pth/optimizer_1.bin
+2025-04-18 16:55:26,407 - INFO - Sampler state for dataloader 0 saved in model_checkpoint_epoch_96_r2_0.2382.pth/sampler.bin
+2025-04-18 16:55:26,407 - INFO - Sampler state for dataloader 1 saved in model_checkpoint_epoch_96_r2_0.2382.pth/sampler_1.bin
+2025-04-18 16:55:26,407 - INFO - Sampler state for dataloader 2 saved in model_checkpoint_epoch_96_r2_0.2382.pth/sampler_2.bin
+2025-04-18 16:55:26,407 - INFO - Sampler state for dataloader 3 saved in model_checkpoint_epoch_96_r2_0.2382.pth/sampler_3.bin
+2025-04-18 16:55:26,412 - INFO - Random states saved in model_checkpoint_epoch_96_r2_0.2382.pth/random_states_0.pkl
+2025-04-18 16:58:17,267 - INFO - Saving current state to model_checkpoint_epoch_101_r2_0.2382.pth
+2025-04-18 16:58:17,268 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 16:58:17,278 - INFO - Model weights saved in model_checkpoint_epoch_101_r2_0.2382.pth/model.safetensors
+2025-04-18 16:58:17,278 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 16:58:17,287 - INFO - Model weights saved in model_checkpoint_epoch_101_r2_0.2382.pth/model_1.safetensors
+2025-04-18 16:58:17,308 - INFO - Optimizer state saved in model_checkpoint_epoch_101_r2_0.2382.pth/optimizer.bin
+2025-04-18 16:58:17,329 - INFO - Optimizer state saved in model_checkpoint_epoch_101_r2_0.2382.pth/optimizer_1.bin
+2025-04-18 16:58:17,330 - INFO - Sampler state for dataloader 0 saved in model_checkpoint_epoch_101_r2_0.2382.pth/sampler.bin
+2025-04-18 16:58:17,330 - INFO - Sampler state for dataloader 1 saved in model_checkpoint_epoch_101_r2_0.2382.pth/sampler_1.bin
+2025-04-18 16:58:17,330 - INFO - Sampler state for dataloader 2 saved in model_checkpoint_epoch_101_r2_0.2382.pth/sampler_2.bin
+2025-04-18 16:58:17,330 - INFO - Sampler state for dataloader 3 saved in model_checkpoint_epoch_101_r2_0.2382.pth/sampler_3.bin
+2025-04-18 16:58:17,333 - INFO - Random states saved in model_checkpoint_epoch_101_r2_0.2382.pth/random_states_0.pkl
+2025-04-18 17:01:09,528 - INFO - Saving current state to model_checkpoint_epoch_106_r2_0.2453.pth
+2025-04-18 17:01:09,529 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 17:01:09,539 - INFO - Model weights saved in model_checkpoint_epoch_106_r2_0.2453.pth/model.safetensors
+2025-04-18 17:01:09,539 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 17:01:09,550 - INFO - Model weights saved in model_checkpoint_epoch_106_r2_0.2453.pth/model_1.safetensors
+2025-04-18 17:01:09,572 - INFO - Optimizer state saved in model_checkpoint_epoch_106_r2_0.2453.pth/optimizer.bin
+2025-04-18 17:01:09,598 - INFO - Optimizer state saved in model_checkpoint_epoch_106_r2_0.2453.pth/optimizer_1.bin
+2025-04-18 17:01:09,598 - INFO - Sampler state for dataloader 0 saved in model_checkpoint_epoch_106_r2_0.2453.pth/sampler.bin
+2025-04-18 17:01:09,599 - INFO - Sampler state for dataloader 1 saved in model_checkpoint_epoch_106_r2_0.2453.pth/sampler_1.bin
+2025-04-18 17:01:09,599 - INFO - Sampler state for dataloader 2 saved in model_checkpoint_epoch_106_r2_0.2453.pth/sampler_2.bin
+2025-04-18 17:01:09,599 - INFO - Sampler state for dataloader 3 saved in model_checkpoint_epoch_106_r2_0.2453.pth/sampler_3.bin
+2025-04-18 17:01:09,603 - INFO - Random states saved in model_checkpoint_epoch_106_r2_0.2453.pth/random_states_0.pkl
+2025-04-18 17:04:01,731 - INFO - Saving current state to model_checkpoint_epoch_111_r2_0.2453.pth
+2025-04-18 17:04:01,732 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 17:04:01,742 - INFO - Model weights saved in model_checkpoint_epoch_111_r2_0.2453.pth/model.safetensors
+2025-04-18 17:04:01,742 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 17:04:01,752 - INFO - Model weights saved in model_checkpoint_epoch_111_r2_0.2453.pth/model_1.safetensors
+2025-04-18 17:04:01,774 - INFO - Optimizer state saved in model_checkpoint_epoch_111_r2_0.2453.pth/optimizer.bin
+2025-04-18 17:04:01,795 - INFO - Optimizer state saved in model_checkpoint_epoch_111_r2_0.2453.pth/optimizer_1.bin
+2025-04-18 17:04:01,796 - INFO - Sampler state for dataloader 0 saved in model_checkpoint_epoch_111_r2_0.2453.pth/sampler.bin
+2025-04-18 17:04:01,796 - INFO - Sampler state for dataloader 1 saved in model_checkpoint_epoch_111_r2_0.2453.pth/sampler_1.bin
+2025-04-18 17:04:01,796 - INFO - Sampler state for dataloader 2 saved in model_checkpoint_epoch_111_r2_0.2453.pth/sampler_2.bin
+2025-04-18 17:04:01,796 - INFO - Sampler state for dataloader 3 saved in model_checkpoint_epoch_111_r2_0.2453.pth/sampler_3.bin
+2025-04-18 17:04:01,800 - INFO - Random states saved in model_checkpoint_epoch_111_r2_0.2453.pth/random_states_0.pkl
+2025-04-18 17:06:53,395 - INFO - Saving current state to model_checkpoint_epoch_116_r2_0.2453.pth
+2025-04-18 17:06:53,396 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 17:06:53,406 - INFO - Model weights saved in model_checkpoint_epoch_116_r2_0.2453.pth/model.safetensors
+2025-04-18 17:06:53,406 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 17:06:53,415 - INFO - Model weights saved in model_checkpoint_epoch_116_r2_0.2453.pth/model_1.safetensors
+2025-04-18 17:06:53,437 - INFO - Optimizer state saved in model_checkpoint_epoch_116_r2_0.2453.pth/optimizer.bin
+2025-04-18 17:06:53,459 - INFO - Optimizer state saved in model_checkpoint_epoch_116_r2_0.2453.pth/optimizer_1.bin
+2025-04-18 17:06:53,459 - INFO - Sampler state for dataloader 0 saved in model_checkpoint_epoch_116_r2_0.2453.pth/sampler.bin
+2025-04-18 17:06:53,459 - INFO - Sampler state for dataloader 1 saved in model_checkpoint_epoch_116_r2_0.2453.pth/sampler_1.bin
+2025-04-18 17:06:53,459 - INFO - Sampler state for dataloader 2 saved in model_checkpoint_epoch_116_r2_0.2453.pth/sampler_2.bin
+2025-04-18 17:06:53,459 - INFO - Sampler state for dataloader 3 saved in model_checkpoint_epoch_116_r2_0.2453.pth/sampler_3.bin
+2025-04-18 17:06:53,463 - INFO - Random states saved in model_checkpoint_epoch_116_r2_0.2453.pth/random_states_0.pkl
+2025-04-18 17:09:45,882 - INFO - Saving current state to model_checkpoint_epoch_121_r2_0.2453.pth
+2025-04-18 17:09:45,883 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 17:09:45,894 - INFO - Model weights saved in model_checkpoint_epoch_121_r2_0.2453.pth/model.safetensors
+2025-04-18 17:09:45,894 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 17:09:45,903 - INFO - Model weights saved in model_checkpoint_epoch_121_r2_0.2453.pth/model_1.safetensors
+2025-04-18 17:09:45,927 - INFO - Optimizer state saved in model_checkpoint_epoch_121_r2_0.2453.pth/optimizer.bin
+2025-04-18 17:09:45,948 - INFO - Optimizer state saved in model_checkpoint_epoch_121_r2_0.2453.pth/optimizer_1.bin
+2025-04-18 17:09:45,949 - INFO - Sampler state for dataloader 0 saved in model_checkpoint_epoch_121_r2_0.2453.pth/sampler.bin
+2025-04-18 17:09:45,949 - INFO - Sampler state for dataloader 1 saved in model_checkpoint_epoch_121_r2_0.2453.pth/sampler_1.bin
+2025-04-18 17:09:45,949 - INFO - Sampler state for dataloader 2 saved in model_checkpoint_epoch_121_r2_0.2453.pth/sampler_2.bin
+2025-04-18 17:09:45,949 - INFO - Sampler state for dataloader 3 saved in model_checkpoint_epoch_121_r2_0.2453.pth/sampler_3.bin
+2025-04-18 17:09:45,953 - INFO - Random states saved in model_checkpoint_epoch_121_r2_0.2453.pth/random_states_0.pkl
+2025-04-18 17:12:38,335 - INFO - Saving current state to model_checkpoint_epoch_126_r2_0.2453.pth
+2025-04-18 17:12:38,336 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 17:12:38,346 - INFO - Model weights saved in model_checkpoint_epoch_126_r2_0.2453.pth/model.safetensors
+2025-04-18 17:12:38,346 - WARNING - Removed shared tensor {'lstm.weight_hh_l0', 'lstm.weight_ih_l1', 'lstm.bias_ih_l0', 'lstm.bias_hh_l0', 'lstm.bias_hh_l1', 'lstm.weight_hh_l1', 'lstm.bias_ih_l1'} while saving. This should be OK, but check by verifying that you don't receive any warning while reloading
+2025-04-18 17:12:38,356 - INFO - Model weights saved in model_checkpoint_epoch_126_r2_0.2453.pth/model_1.safetensors
+2025-04-18 17:12:38,380 - INFO - Optimizer state saved in model_checkpoint_epoch_126_r2_0.2453.pth/optimizer.bin
+2025-04-18 17:12:38,402 - INFO - Optimizer state saved in model_checkpoint_epoch_126_r2_0.2453.pth/optimizer_1.bin
+2025-04-18 17:12:38,402 - INFO - Sampler state for dataloader 0 saved in model_checkpoint_epoch_126_r2_0.2453.pth/sampler.bin
+2025-04-18 17:12:38,402 - INFO - Sampler state for dataloader 1 saved in model_checkpoint_epoch_126_r2_0.2453.pth/sampler_1.bin
+2025-04-18 17:12:38,402 - INFO - Sampler state for dataloader 2 saved in model_checkpoint_epoch_126_r2_0.2453.pth/sampler_2.bin
+2025-04-18 17:12:38,402 - INFO - Sampler state for dataloader 3 saved in model_checkpoint_epoch_126_r2_0.2453.pth/sampler_3.bin
+2025-04-18 17:12:38,406 - INFO - Random states saved in model_checkpoint_epoch_126_r2_0.2453.pth/random_states_0.pkl

@@ -318,3 +318,163 @@
 2025-04-18 15:33:44,761 - INFO -   P-value: 0.0000
 2025-04-18 15:33:44,761 - INFO - Distribution Fit: Inverse Gamma
 2025-04-18 15:33:44,761 - INFO - Distribution Parameters: {'a': 3.5093212085018015, 'loc': -0.2207140712018134, 'scale': 55.73445932737795}
+2025-04-18 16:31:57,317 - INFO - Validation and Training Set Split Statistics
+2025-04-18 16:31:57,317 - INFO - Timestamp: 2025-04-18 16:31:57
+2025-04-18 16:31:57,317 - INFO - Validation set size: 1509 (9.14%)
+2025-04-18 16:31:57,317 - INFO - Training set size: 15005 (90.86%)
+2025-04-18 16:31:57,317 - INFO - Minimum Distance Statistics (km):
+2025-04-18 16:31:57,317 - INFO -   Mean: 65.2439
+2025-04-18 16:31:57,317 - INFO -   Median: 4.1731
+2025-04-18 16:31:57,317 - INFO -   Min: 1.2497
+2025-04-18 16:31:57,317 - INFO -   Max: 706.9584
+2025-04-18 16:31:57,317 - INFO -   Std: 108.5577
+2025-04-18 16:31:57,317 - INFO - OC Distribution Statistics:
+2025-04-18 16:31:57,317 - INFO -   Validation Mean: 16.5014
+2025-04-18 16:31:57,317 - INFO -   Validation Std: 7.6996
+2025-04-18 16:31:57,317 - INFO -   Training Mean: 23.1327
+2025-04-18 16:31:57,317 - INFO -   Training Std: 20.3896
+2025-04-18 16:31:57,318 - INFO - Kolmogorov-Smirnov Test:
+2025-04-18 16:31:57,318 - INFO -   KS Statistic: 0.2230
+2025-04-18 16:31:57,318 - INFO -   P-value: 0.0000
+2025-04-18 16:31:57,318 - INFO - Distribution Fit: Inverse Gamma
+2025-04-18 16:31:57,318 - INFO - Distribution Parameters: {'a': 3.5093212085018015, 'loc': -0.2207140712018134, 'scale': 55.73445932737795}
+2025-04-18 16:31:57,321 - INFO - Validation and Training Set Split Statistics
+2025-04-18 16:31:57,321 - INFO - Timestamp: 2025-04-18 16:31:57
+2025-04-18 16:31:57,321 - INFO - Validation set size: 1354 (8.20%)
+2025-04-18 16:31:57,321 - INFO - Training set size: 15160 (91.80%)
+2025-04-18 16:31:57,321 - INFO - Minimum Distance Statistics (km):
+2025-04-18 16:31:57,321 - INFO -   Mean: 74.2657
+2025-04-18 16:31:57,321 - INFO -   Median: 5.5634
+2025-04-18 16:31:57,321 - INFO -   Min: 0.4760
+2025-04-18 16:31:57,321 - INFO -   Max: 1106.1626
+2025-04-18 16:31:57,321 - INFO -   Std: 129.9862
+2025-04-18 16:31:57,321 - INFO - OC Distribution Statistics:
+2025-04-18 16:31:57,321 - INFO -   Validation Mean: 16.4342
+2025-04-18 16:31:57,321 - INFO -   Validation Std: 8.1531
+2025-04-18 16:31:57,321 - INFO -   Training Mean: 23.0709
+2025-04-18 16:31:57,321 - INFO -   Training Std: 20.2932
+2025-04-18 16:31:57,321 - INFO - Kolmogorov-Smirnov Test:
+2025-04-18 16:31:57,321 - INFO -   KS Statistic: 0.2127
+2025-04-18 16:31:57,321 - INFO -   P-value: 0.0000
+2025-04-18 16:31:57,322 - INFO - Distribution Fit: Inverse Gamma
+2025-04-18 16:31:57,322 - INFO - Distribution Parameters: {'a': 3.5093212085018015, 'loc': -0.2207140712018134, 'scale': 55.73445932737795}
+2025-04-18 16:31:57,600 - INFO - Validation and Training Set Split Statistics
+2025-04-18 16:31:57,600 - INFO - Timestamp: 2025-04-18 16:31:57
+2025-04-18 16:31:57,600 - INFO - Validation set size: 1634 (9.89%)
+2025-04-18 16:31:57,600 - INFO - Training set size: 14880 (90.11%)
+2025-04-18 16:31:57,600 - INFO - Minimum Distance Statistics (km):
+2025-04-18 16:31:57,600 - INFO -   Mean: 52.5030
+2025-04-18 16:31:57,600 - INFO -   Median: 3.7181
+2025-04-18 16:31:57,600 - INFO -   Min: 0.8728
+2025-04-18 16:31:57,600 - INFO -   Max: 716.7388
+2025-04-18 16:31:57,600 - INFO -   Std: 97.0965
+2025-04-18 16:31:57,601 - INFO - OC Distribution Statistics:
+2025-04-18 16:31:57,601 - INFO -   Validation Mean: 16.3509
+2025-04-18 16:31:57,601 - INFO -   Validation Std: 7.4091
+2025-04-18 16:31:57,601 - INFO -   Training Mean: 23.2050
+2025-04-18 16:31:57,601 - INFO -   Training Std: 20.4601
+2025-04-18 16:31:57,601 - INFO - Kolmogorov-Smirnov Test:
+2025-04-18 16:31:57,601 - INFO -   KS Statistic: 0.2223
+2025-04-18 16:31:57,601 - INFO -   P-value: 0.0000
+2025-04-18 16:31:57,601 - INFO - Distribution Fit: Inverse Gamma
+2025-04-18 16:31:57,601 - INFO - Distribution Parameters: {'a': 3.5093212085018015, 'loc': -0.2207140712018134, 'scale': 55.73445932737795}
+2025-04-18 16:32:00,392 - INFO - Validation and Training Set Split Statistics
+2025-04-18 16:32:00,392 - INFO - Timestamp: 2025-04-18 16:32:00
+2025-04-18 16:32:00,392 - INFO - Validation set size: 1351 (8.18%)
+2025-04-18 16:32:00,392 - INFO - Training set size: 15163 (91.82%)
+2025-04-18 16:32:00,392 - INFO - Minimum Distance Statistics (km):
+2025-04-18 16:32:00,392 - INFO -   Mean: 67.8937
+2025-04-18 16:32:00,392 - INFO -   Median: 4.2015
+2025-04-18 16:32:00,392 - INFO -   Min: 0.8394
+2025-04-18 16:32:00,392 - INFO -   Max: 716.7388
+2025-04-18 16:32:00,392 - INFO -   Std: 111.3073
+2025-04-18 16:32:00,392 - INFO - OC Distribution Statistics:
+2025-04-18 16:32:00,392 - INFO -   Validation Mean: 16.3794
+2025-04-18 16:32:00,392 - INFO -   Validation Std: 7.8187
+2025-04-18 16:32:00,392 - INFO -   Training Mean: 23.0745
+2025-04-18 16:32:00,392 - INFO -   Training Std: 20.3018
+2025-04-18 16:32:00,392 - INFO - Kolmogorov-Smirnov Test:
+2025-04-18 16:32:00,392 - INFO -   KS Statistic: 0.2133
+2025-04-18 16:32:00,392 - INFO -   P-value: 0.0000
+2025-04-18 16:32:00,393 - INFO - Distribution Fit: Inverse Gamma
+2025-04-18 16:32:00,393 - INFO - Distribution Parameters: {'a': 3.5093212085018015, 'loc': -0.2207140712018134, 'scale': 55.73445932737795}
+2025-04-18 16:34:40,448 - INFO - Validation and Training Set Split Statistics
+2025-04-18 16:34:40,448 - INFO - Timestamp: 2025-04-18 16:34:40
+2025-04-18 16:34:40,448 - INFO - Validation set size: 1325 (8.02%)
+2025-04-18 16:34:40,448 - INFO - Training set size: 15189 (91.98%)
+2025-04-18 16:34:40,449 - INFO - Minimum Distance Statistics (km):
+2025-04-18 16:34:40,449 - INFO -   Mean: 76.3023
+2025-04-18 16:34:40,449 - INFO -   Median: 4.5217
+2025-04-18 16:34:40,449 - INFO -   Min: 1.2773
+2025-04-18 16:34:40,449 - INFO -   Max: 1100.1683
+2025-04-18 16:34:40,449 - INFO -   Std: 129.9390
+2025-04-18 16:34:40,449 - INFO - OC Distribution Statistics:
+2025-04-18 16:34:40,449 - INFO -   Validation Mean: 16.6052
+2025-04-18 16:34:40,449 - INFO -   Validation Std: 8.2821
+2025-04-18 16:34:40,449 - INFO -   Training Mean: 23.0434
+2025-04-18 16:34:40,449 - INFO -   Training Std: 20.2793
+2025-04-18 16:34:40,449 - INFO - Kolmogorov-Smirnov Test:
+2025-04-18 16:34:40,449 - INFO -   KS Statistic: 0.2133
+2025-04-18 16:34:40,449 - INFO -   P-value: 0.0000
+2025-04-18 16:34:40,449 - INFO - Distribution Fit: Inverse Gamma
+2025-04-18 16:34:40,449 - INFO - Distribution Parameters: {'a': 3.5093212085018015, 'loc': -0.2207140712018134, 'scale': 55.73445932737795}
+2025-04-18 16:34:40,479 - INFO - Validation and Training Set Split Statistics
+2025-04-18 16:34:40,479 - INFO - Timestamp: 2025-04-18 16:34:40
+2025-04-18 16:34:40,479 - INFO - Validation set size: 1321 (8.00%)
+2025-04-18 16:34:40,479 - INFO - Training set size: 15193 (92.00%)
+2025-04-18 16:34:40,479 - INFO - Minimum Distance Statistics (km):
+2025-04-18 16:34:40,479 - INFO -   Mean: 64.0652
+2025-04-18 16:34:40,479 - INFO -   Median: 4.2475
+2025-04-18 16:34:40,479 - INFO -   Min: 1.1342
+2025-04-18 16:34:40,479 - INFO -   Max: 525.8753
+2025-04-18 16:34:40,479 - INFO -   Std: 97.3436
+2025-04-18 16:34:40,479 - INFO - OC Distribution Statistics:
+2025-04-18 16:34:40,479 - INFO -   Validation Mean: 16.9973
+2025-04-18 16:34:40,479 - INFO -   Validation Std: 7.6844
+2025-04-18 16:34:40,479 - INFO -   Training Mean: 23.0076
+2025-04-18 16:34:40,479 - INFO -   Training Std: 20.3082
+2025-04-18 16:34:40,479 - INFO - Kolmogorov-Smirnov Test:
+2025-04-18 16:34:40,479 - INFO -   KS Statistic: 0.1937
+2025-04-18 16:34:40,479 - INFO -   P-value: 0.0000
+2025-04-18 16:34:40,479 - INFO - Distribution Fit: Inverse Gamma
+2025-04-18 16:34:40,479 - INFO - Distribution Parameters: {'a': 3.5093212085018015, 'loc': -0.2207140712018134, 'scale': 55.73445932737795}
+2025-04-18 16:34:40,835 - INFO - Validation and Training Set Split Statistics
+2025-04-18 16:34:40,835 - INFO - Timestamp: 2025-04-18 16:34:40
+2025-04-18 16:34:40,835 - INFO - Validation set size: 1422 (8.61%)
+2025-04-18 16:34:40,835 - INFO - Training set size: 15092 (91.39%)
+2025-04-18 16:34:40,835 - INFO - Minimum Distance Statistics (km):
+2025-04-18 16:34:40,835 - INFO -   Mean: 60.8057
+2025-04-18 16:34:40,835 - INFO -   Median: 4.1551
+2025-04-18 16:34:40,835 - INFO -   Min: 1.0596
+2025-04-18 16:34:40,835 - INFO -   Max: 706.9584
+2025-04-18 16:34:40,835 - INFO -   Std: 103.6860
+2025-04-18 16:34:40,835 - INFO - OC Distribution Statistics:
+2025-04-18 16:34:40,835 - INFO -   Validation Mean: 16.4412
+2025-04-18 16:34:40,835 - INFO -   Validation Std: 7.3809
+2025-04-18 16:34:40,835 - INFO -   Training Mean: 23.1002
+2025-04-18 16:34:40,835 - INFO -   Training Std: 20.3546
+2025-04-18 16:34:40,835 - INFO - Kolmogorov-Smirnov Test:
+2025-04-18 16:34:40,835 - INFO -   KS Statistic: 0.2298
+2025-04-18 16:34:40,835 - INFO -   P-value: 0.0000
+2025-04-18 16:34:40,835 - INFO - Distribution Fit: Inverse Gamma
+2025-04-18 16:34:40,835 - INFO - Distribution Parameters: {'a': 3.5093212085018015, 'loc': -0.2207140712018134, 'scale': 55.73445932737795}
+2025-04-18 16:34:43,758 - INFO - Validation and Training Set Split Statistics
+2025-04-18 16:34:43,759 - INFO - Timestamp: 2025-04-18 16:34:43
+2025-04-18 16:34:43,759 - INFO - Validation set size: 1333 (8.07%)
+2025-04-18 16:34:43,759 - INFO - Training set size: 15181 (91.93%)
+2025-04-18 16:34:43,759 - INFO - Minimum Distance Statistics (km):
+2025-04-18 16:34:43,759 - INFO -   Mean: 70.1542
+2025-04-18 16:34:43,759 - INFO -   Median: 4.9161
+2025-04-18 16:34:43,759 - INFO -   Min: 0.8608
+2025-04-18 16:34:43,759 - INFO -   Max: 705.4078
+2025-04-18 16:34:43,759 - INFO -   Std: 113.0426
+2025-04-18 16:34:43,759 - INFO - OC Distribution Statistics:
+2025-04-18 16:34:43,759 - INFO -   Validation Mean: 16.4936
+2025-04-18 16:34:43,759 - INFO -   Validation Std: 7.5480
+2025-04-18 16:34:43,759 - INFO -   Training Mean: 23.0565
+2025-04-18 16:34:43,759 - INFO -   Training Std: 20.3052
+2025-04-18 16:34:43,759 - INFO - Kolmogorov-Smirnov Test:
+2025-04-18 16:34:43,759 - INFO -   KS Statistic: 0.2216
+2025-04-18 16:34:43,759 - INFO -   P-value: 0.0000
+2025-04-18 16:34:43,759 - INFO - Distribution Fit: Inverse Gamma
+2025-04-18 16:34:43,759 - INFO - Distribution Parameters: {'a': 3.5093212085018015, 'loc': -0.2207140712018134, 'scale': 55.73445932737795}

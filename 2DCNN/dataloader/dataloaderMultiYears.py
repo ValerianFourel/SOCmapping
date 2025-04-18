@@ -1,5 +1,3 @@
-
-
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -8,7 +6,7 @@ from pathlib import Path
 import re
 import glob
 import pandas as pd
-from config import bands_list_order , time_before, LOADING_TIME_BEGINNING , window_size
+from config import bands_list_order, time_before, LOADING_TIME_BEGINNING, window_size
 
 
 def get_metadata(self, id_num):
@@ -30,6 +28,7 @@ def get_metadata(self, id_num):
         }
     return None
 
+
 def get_available_ids(self):
     """Return list of available IDs"""
     return list(self.id_to_file.keys())
@@ -42,9 +41,7 @@ class RasterTensorDataset(Dataset):
 
         Parameters:
         base_path: str, base path to RasterTensorData directory
-        subfolder: str, name of the subfolder (e.g., 'Elevation')
         """
-        
         self.folder_path = base_path
 
         # Create ID to filename mapping
@@ -63,7 +60,7 @@ class RasterTensorDataset(Dataset):
             match = re.search(r'ID(\d+)N', file_path)
             if match:
                 id_num = int(match.group(1))
-                id_to_file[id_num] = file_path
+                id_to_file[id_num] = Path(file_path)
 
         return id_to_file
 
@@ -75,7 +72,7 @@ class RasterTensorDataset(Dataset):
         id_num: int, ID number from filename
         x: int, x coordinate
         y: int, y coordinate
-        window_size: int, size of the square window (default 17)
+        window_size: int, size of the square window (default from config)
 
         Returns:
         torch.Tensor: window_size x window_size tensor
@@ -109,47 +106,26 @@ class RasterTensorDataset(Dataset):
                 y_offset:y_offset+window.shape[1]
             ] = window
             window = padded_window
-        
-        #window = np.asarray(window)
+
         return torch.from_numpy(window).float()
 
     def __len__(self):
         return len(self.id_to_file)
 
     def __getitem__(self, idx):
-        # This is a placeholder implementation
-        # Modify according to your specific needs
+        # Placeholder implementation
         id_num = list(self.id_to_file.keys())[idx]
         return self.data_cache[id_num]
 
-# Example usage:
-"""
-# Initialize the dataset
-base_path = "/content/drive/MyDrive/Colab Notebooks/MappingSOC/Data/RasterTensorData"
-dataset = RasterTensorDataset(base_path, "Elevation")
-
-# Get the dictionary mapping IDs to filenames
-id_mapping = dataset.id_to_file
-print("ID to filename mapping:", id_mapping)
-
-# Get a 17x17 window for a specific location
-id_num = 10  # example ID
-x, y = 100, 100  # example coordinates
-window = dataset.get_tensor_by_location(id_num, x, y)
-print("Window shape:", window.shape)
-
-# Create a DataLoader if needed
-from torch.utils.data import DataLoader
-dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
-"""
-
 
 class MultiRasterDatasetMultiYears(Dataset):
-    def __init__(self, samples_coordinates_array_subfolders ,  data_array_subfolders , dataframe, time_before = time_before):
+    def __init__(self, samples_coordinates_array_subfolders, data_array_subfolders, dataframe, time_before=time_before):
         """
         Parameters:
-        subfolders: list of str, names of subfolders to include
+        samples_coordinates_array_subfolders: list of str, paths to subfolders containing coordinates
+        data_array_subfolders: list of str, paths to subfolders containing data
         dataframe: pandas.DataFrame, contains columns GPS_LONG, GPS_LAT, and OC (target variable)
+        time_before: int, number of previous time steps to consider for non-elevation bands
         """
         self.data_array_subfolders = data_array_subfolders
         self.seasonalityBased = self.check_seasonality(data_array_subfolders)
@@ -158,30 +134,35 @@ class MultiRasterDatasetMultiYears(Dataset):
         self.dataframe = dataframe
         self.datasets = {
             self.get_last_three_folders(subfolder): RasterTensorDataset(subfolder)
-            for subfolder in  self.data_array_subfolders
+            for subfolder in self.data_array_subfolders
         }
         
         self.coordinates = {
-            self.get_last_three_folders(subfolder): np.load(f"{subfolder}/coordinates.npy")#[np.isfinite(np.load(f"{subfolder}/coordinates.npy"))]
+            self.get_last_three_folders(subfolder): np.load(f"{subfolder}/coordinates.npy")
             for subfolder in self.samples_coordinates_array_subfolders
         }
 
-    def check_seasonality(self,data_array_subfolders):
-        seasons = ['winter', 'spring', 'summer', 'autumn']
+        # Ensure the total number of channels matches the expected 26
+        self.expected_channels = 26
+        self.non_elevation_bands = [band for band in bands_list_order if band != 'Elevation']
+        self.channels_per_band = time_before  # Each non-elevation band contributes time_before channels
+        if len(self.non_elevation_bands) * self.channels_per_band + 1 != self.expected_channels:
+            raise ValueError(
+                f"Expected {self.expected_channels} channels, but got "
+                f"{len(self.non_elevation_bands) * self.channels_per_band + 1} "
+                f"(1 for Elevation + {len(self.non_elevation_bands)} bands * {self.channels_per_band} time steps)"
+            )
 
-        # Check if any subfolder contains a season name
+    def check_seasonality(self, data_array_subfolders):
+        seasons = ['winter', 'spring', 'summer', 'autumn']
         is_seasonal = any(
             any(season in subfolder.lower() for season in seasons)
             for subfolder in data_array_subfolders
         )
-
         return 1 if is_seasonal else 0
 
-
-    def get_last_three_folders(self,path):
-        # Split the path into components
+    def get_last_three_folders(self, path):
         parts = path.rstrip('/').split('/')
-        # Return last 3 components, or all if less than 3
         return '/'.join(parts[-2:])
 
     def find_coordinates_index(self, subfolder, longitude, latitude):
@@ -197,12 +178,10 @@ class MultiRasterDatasetMultiYears(Dataset):
         tuple: (id_num, x, y) if match is found, otherwise raises an error
         """
         coords = self.coordinates[subfolder]
-        # Assuming the first two columns of `coordinates.npy` are longitude and latitude
         match = np.where((coords[:, 1] == longitude) & (coords[:, 0] == latitude))[0]
         if match.size == 0:
-            raise ValueError(f"{coords} Coordinates ({longitude}, {latitude}) not found in {subfolder}")
+            raise ValueError(f"Coordinates ({longitude}, {latitude}) not found in {subfolder}")
 
-        # Return id_num, x, y from the same row
         return coords[match[0], 2], coords[match[0], 3], coords[match[0], 4]
 
     def __getitem__(self, index):
@@ -213,66 +192,84 @@ class MultiRasterDatasetMultiYears(Dataset):
         index: int, index of the row in the dataframe
 
         Returns:
-        tuple: (tensor, OC), where tensor is the data and OC is the target variable
+        tuple: (longitude, latitude, tensor, OC), where tensor is of shape (26, 5, 5)
         """
         row = self.dataframe.iloc[index]
         longitude, latitude, oc = row["GPS_LONG"], row["GPS_LAT"], row["OC"]
-        tensors = []
         
-        filtered_array = self.filter_by_season_or_year(row['season'],row['year'],self.seasonalityBased)
-                # Initialize a dictionary to hold the tensors for each band
-        band_tensors = {band: [] for band in bands_list_order}
+        filtered_array = self.filter_by_season_or_year(row['season'], row['year'], self.seasonalityBased)
+        
+        # Initialize a list to hold tensors for all channels (26 in total)
+        channel_tensors = []
 
-        for subfolder in filtered_array:
-            subfolder = self.get_last_three_folders(subfolder)
-
-            # Check if the forelast subfolder is 'Elevation'
-            if subfolder.split(os.path.sep)[-1] == 'Elevation':
-                # Get the tensor for 'Elevation'
-                id_num, x, y = self.find_coordinates_index(subfolder, longitude, latitude)
-                elevation_tensor = self.datasets[subfolder].get_tensor_by_location(id_num, x, y)
-
-                if elevation_tensor is not None:
-                    # Repeat the 'Elevation' tensor self.time_before times
-                    for _ in range(self.time_before):
-                        band_tensors['Elevation'].append(elevation_tensor)
+        # Handle Elevation (1 channel, added once)
+        elevation_subfolder = next(
+            (subfolder for subfolder in filtered_array if 'Elevation' in subfolder), None
+        )
+        if elevation_subfolder:
+            subfolder_key = self.get_last_three_folders(elevation_subfolder)
+            id_num, x, y = self.find_coordinates_index(subfolder_key, longitude, latitude)
+            elevation_tensor = self.datasets[subfolder_key].get_tensor_by_location(id_num, x, y)
+            if elevation_tensor is not None:
+                channel_tensors.append(elevation_tensor)
             else:
-                # Get the year from the last subfolder
-                year = int(subfolder.split(os.path.sep)[-1])
+                channel_tensors.append(torch.zeros(window_size, window_size))
+        else:
+            channel_tensors.append(torch.zeros(window_size, window_size))
 
-                # Decrement the year by self.time_before
-                for decrement in range(self.time_before):
-                    current_year = year - decrement
+        # Handle non-elevation bands (each band contributes time_before channels)
+        for band in self.non_elevation_bands:
+            # Get subfolders for the current band and specified year/season
+            band_subfolders = [
+                subfolder for subfolder in filtered_array
+                if band in subfolder and not 'Elevation' in subfolder
+            ]
+            if not band_subfolders:
+                # If no data for the band, add zero tensors for all time steps
+                for _ in range(self.time_before):
+                    channel_tensors.append(torch.zeros(window_size, window_size))
+                continue
 
-                    # Construct the subfolder with the decremented year
-                    decremented_subfolder = os.path.sep.join(subfolder.split(os.path.sep)[:-1] + [str(current_year)])
+            # Get the base year from the first matching subfolder
+            base_subfolder = band_subfolders[0]
+            base_subfolder_key = self.get_last_three_folders(base_subfolder)
+            try:
+                base_year = int(base_subfolder_key.split(os.path.sep)[-1])
+            except ValueError:
+                base_year = row['year']  # Fallback to row year if parsing fails
 
-                    id_num, x, y = self.find_coordinates_index(decremented_subfolder, longitude, latitude)
-                    tensor = self.datasets[decremented_subfolder].get_tensor_by_location(id_num, x, y)
+            # Collect tensors for the current band across time_before years
+            for decrement in range(self.time_before):
+                current_year = base_year - decrement
+                decremented_subfolder = os.path.sep.join(
+                    base_subfolder_key.split(os.path.sep)[:-1] + [str(current_year)]
+                )
+                
+                # Check if the decremented subfolder exists in datasets
+                if decremented_subfolder in self.datasets:
+                    try:
+                        id_num, x, y = self.find_coordinates_index(decremented_subfolder, longitude, latitude)
+                        tensor = self.datasets[decremented_subfolder].get_tensor_by_location(id_num, x, y)
+                        if tensor is not None:
+                            channel_tensors.append(tensor)
+                        else:
+                            channel_tensors.append(torch.zeros(window_size, window_size))
+                    except ValueError:
+                        channel_tensors.append(torch.zeros(window_size, window_size))
+                else:
+                    channel_tensors.append(torch.zeros(window_size, window_size))
 
-                    if tensor is not None:
-                        # Append the tensor to the corresponding band in the dictionary
-                        band = subfolder.split(os.path.sep)[-2]
-                        band_tensors[band].append(tensor)
-
-        # Stack the tensors for each band
-        stacked_tensors = []
-        for band in bands_list_order:
-            if band_tensors[band]:
-                # Stack the tensors for the current band
-                stacked_tensor = torch.stack(band_tensors[band])
-                stacked_tensors.append(stacked_tensor)
-
-        # Concatenate all stacked tensors along the band dimension
-        final_tensor = torch.stack(stacked_tensors)
-        final_tensor = final_tensor.permute(0, 2, 3, 1)
+        # Stack all tensors to form the final tensor of shape (26, 5, 5)
+        if len(channel_tensors) != self.expected_channels:
+            raise ValueError(
+                f"Expected {self.expected_channels} channels, but got {len(channel_tensors)}"
+            )
+        
+        final_tensor = torch.stack(channel_tensors)
 
         return longitude, latitude, final_tensor, oc
-       
 
-    
-    def filter_by_season_or_year(self, season,year,Season_or_year):
-
+    def filter_by_season_or_year(self, season, year, Season_or_year):
         if Season_or_year:
             filtered_array = [
                 path for path in self.samples_coordinates_array_subfolders
@@ -280,13 +277,12 @@ class MultiRasterDatasetMultiYears(Dataset):
                 ('MODIS_NPP' in path and path.endswith(str(year))) or
                 (not 'Elevation' in path and not 'MODIS_NPP' in path and path.endswith(season))
             ]
-            
         else:
             filtered_array = [
-                            path for path in self.samples_coordinates_array_subfolders
-                            if ('Elevation' in path) or
-                            (not 'Elevation' in path and path.endswith(str(year)))
-                        ]
+                path for path in self.samples_coordinates_array_subfolders
+                if ('Elevation' in path) or
+                (not 'Elevation' in path and path.endswith(str(year)))
+            ]
         return filtered_array
 
     def __len__(self):
@@ -298,29 +294,3 @@ class MultiRasterDatasetMultiYears(Dataset):
     def get_tensor_by_location(self, subfolder, id_num, x, y):
         """Get tensor from specific subfolder dataset"""
         return self.datasets[subfolder].get_tensor_by_location(id_num, x, y)
-
-class NormalizedMultiRasterDatasetMultiYears(MultiRasterDatasetMultiYears):
-     """Wrapper around MultiRasterDatasetMultiYears that adds feature normalization"""
-     def __init__(self, samples_coordinates_array_path, data_array_path, df):
-         super().__init__(samples_coordinates_array_path, data_array_path, df)
-         self.compute_statistics()
-         
-     def compute_statistics(self):
-         """Compute mean and std across all features for normalization"""
-         features_list = []
-         for i in range(len(self)):
-             _, _, features, _ = super().__getitem__(i)
-             features_list.append(features.numpy())
-             
-         features_array = np.stack(features_list)
-         self.feature_means = torch.tensor(np.mean(features_array, axis=(0, 2, 3)), dtype=torch.float32)
-         self.feature_stds = torch.tensor(np.std(features_array, axis=(0, 2, 3)), dtype=torch.float32)
-         self.feature_stds = torch.clamp(self.feature_stds, min=1e-8)
-         
-     def __getitem__(self, idx):
-         longitude, latitude, features, target = super().__getitem__(idx)
-         features = (features - self.feature_means[:, None, None]) / self.feature_stds[:, None, None]
-         return longitude, latitude, features, target
-     
-     def getStatistics(self):
-         return self.feature_means, self.feature_stds
