@@ -1,0 +1,93 @@
+Training Metrics and Configuration
+==================================================
+
+Command Line Arguments:
+------------------------------
+lr: 0.0001
+loss_type: mse
+loss_alpha: 0.5
+target_transform: none
+use_validation: True
+num_bins: 128
+output_dir: output
+target_val_ratio: 0.08
+use_gpu: True
+distance_threshold: 1.2
+target_fraction: 0.75
+num_runs: 5
+
+Wandb Runs Information:
+------------------------------
+Run 1:
+  Project: socmapping-3dcnn
+  Run Name: run_1
+  Run ID: eaubstsl
+
+Run 2:
+  Project: socmapping-3dcnn
+  Run Name: run_2
+  Run ID: soete5x4
+
+Run 3:
+  Project: socmapping-3dcnn
+  Run Name: run_3
+  Run ID: 86p6lyox
+
+Run 4:
+  Project: socmapping-3dcnn
+  Run Name: run_4
+  Run ID: d9rbfj8o
+
+Run 5:
+  Project: socmapping-3dcnn
+  Run Name: run_5
+  Run ID: luq9nw28
+
+Average Metrics Across Runs:
+------------------------------
+train_loss: 80885.4460
+val_loss: 2598.8070
+correlation: -0.0212
+r_squared: 0.0032
+mse: 2554.5706
+rmse: 31.0612
+mae: 25.9229
+rpiq: 0.3595
+output_std: 15.6366
+target_std: 7.6585
+
+Average Min Distance Statistics:
+------------------------------
+avg_mean: 64.1301
+std_mean: 1.6269
+avg_median: 4.4935
+std_median: 0.3292
+avg_min: 0.9069
+std_min: 0.2735
+avg_max: 799.9916
+std_max: 51.4370
+avg_std: 111.4922
+std_std: 4.1222
+
+Best Metrics Across Runs:
+------------------------------
+r_squared:
+  Mean: 0.0112
+  Std: 0.0095
+  Values: ['0.0092', '0.0040', '0.0097', '0.0296', '0.0037']
+
+mae:
+  Mean: 27.9371
+  Std: 20.5006
+  Values: ['6.2632', '66.9002', '21.9714', '24.9011', '19.6493']
+
+rmse:
+  Mean: 36.5254
+  Std: 20.4305
+  Values: ['9.8742', '68.6032', '33.6278', '48.2257', '22.2962']
+
+rpiq:
+  Mean: 0.2235
+  Std: 0.1698
+  Values: ['0.5469', '0.0743', '0.1576', '0.1099', '0.2287']
+

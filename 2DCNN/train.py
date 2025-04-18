@@ -16,7 +16,7 @@ from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,
                    MatrixCoordinates_1mil_Seasonally, DataSeasonally, window_size,
                    file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC, time_before)
 from torch.utils.data import Dataset, DataLoader
-from modelCNNMultiYear import Small3DCNN
+from model2DCNN import ResNet2DCNN # Small3DCNN
 from accelerate import Accelerator
 import argparse
 from balancedDataset import create_validation_train_sets
@@ -315,9 +315,9 @@ def train_model(args, model, train_loader, val_loader, num_epochs=100, target_tr
 def parse_args():
     parser = argparse.ArgumentParser(description='Train 3DCNN model with customizable parameters')
     parser.add_argument('--lr', type=float, default=0.0001, help='Learning rate')
-    parser.add_argument('--loss_type', type=str, default='l1', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
+    parser.add_argument('--loss_type', type=str, default='composite_l2', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
     parser.add_argument('--loss_alpha', type=float, default=0.5, help='Weight for L1 loss in composite loss (if used)')
-    parser.add_argument('--target_transform', type=str, default='log', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
+    parser.add_argument('--target_transform', type=str, default='normalize', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
     parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')
     parser.add_argument('--num-bins', type=int, default=128, help='Number of bins for OC resampling')
     parser.add_argument('--output-dir', type=str, default='output', help='Output directory')
@@ -511,11 +511,10 @@ if __name__ == "__main__":
             print(f"Run {run + 1} - Size of the first batch: {first_batch.shape}")
 
         # Initialize model
-        model = Small3DCNN(
-            input_channels=len(bands_list_order),
+        model = ResNet2DCNN(
+            input_channels=(len(bands_list_order)-1)*time_before+1,  # Number of input bands
             input_height=window_size,
             input_width=window_size,
-            input_time=time_before
         )
         
         if accelerator.is_main_process:
@@ -588,11 +587,10 @@ if __name__ == "__main__":
         if args.use_validation and all_best_metrics['r_squared']:
             best_run_idx = np.argmax(all_best_metrics['r_squared'])
             average_best_r2 = np.mean(all_best_metrics['r_squared'])
-            best_model_state = {k: v.cpu() for k, v in train_model(args, Small3DCNN(
-                input_channels=len(bands_list_order),
+            best_model_state = {k: v.cpu() for k, v in train_model(args, ResNet2DCNN(
+                input_channels=(len(bands_list_order)-1)*time_before+1,  # Number of input bands,
                 input_height=window_size,
                 input_width=window_size,
-                input_time=time_before
             ), train_loader, val_loader, num_epochs=num_epochs, target_transform=args.target_transform, loss_type=args.loss_type)[3].items()}
             model_path = (f'cnn_model_best_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
                           f'TIME_END_{TIME_END}_TRANSFORM_{args.target_transform}_'

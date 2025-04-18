@@ -21,7 +21,8 @@ from config import (
 import argparse
 from SimpleTFT import SimpleTFT
 from balancedDataset import create_validation_train_sets
-
+import uuid
+import os
 # Define the composite loss function
 def composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
     """Composite loss combining L1 and scaled chi-squared loss"""
@@ -93,28 +94,6 @@ from accelerate import Accelerator
 import wandb
 from torch.utils.data import DataLoader
 
-# [parse_args and composite_l2_chi2_loss functions remain unchanged]
-# Argument parser with new options for loss type and log transformation
-def parse_args():
-    parser = argparse.ArgumentParser(description='Train SimpleTFT model with customizable parameters')
-    parser.add_argument('--lr', type=float, default=0.0002, help='Learning rate')
-    parser.add_argument('--num_heads', type=int, default=NUM_HEADS, help='Number of attention heads')
-    parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of transformer layers')
-    parser.add_argument('--loss_alpha', type=float, default=0.8, help='Weight for L1 loss in composite loss')
-    parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')
-    parser.add_argument('--hidden_size', type=int, default=128, help='Hidden size for TFT model')
-    parser.add_argument('--loss_type', type=str, default='composite_l2', choices=['composite_l1', 'l1', 'mse','composite_l2'], 
-                        help='Type of loss function to use: composite, mse, or l1')
-    parser.add_argument('--apply_log', action='store_true', help='Apply log transformation to targets')
-    parser.add_argument('--target_transform', type=str, default='none', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
-    parser.add_argument('--num-bins', type=int, default=128, help='Number of bins for OC resampling')
-    parser.add_argument('--output-dir', type=str, default='output', help='Output directory')
-    parser.add_argument('--target-val-ratio', type=float, default=0.08, help='Target validation ratio')
-    parser.add_argument('--use-gpu', action='store_true', default=True, help='Use GPU')
-    parser.add_argument('--distance-threshold', type=float, default=1.4, help='Minimum distance threshold for validation points')
-    parser.add_argument('--target-fraction', type=float, default=0.75, help='Fraction of max bin count for resampling')
-    parser.add_argument('--num-runs', type=int, default=5, help='Number of times to run the process')    
-    return parser.parse_args()
 
 def composite_l2_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
     """Composite loss combining L2 and scaled chi-squared loss"""
@@ -136,7 +115,32 @@ def composite_l2_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
     # Combine the losses with the weighting factor alpha
     return alpha * l2_loss + (1 - alpha) * chi2_scaled
 
-# [train_model function remains unchanged]
+# [parse_args and composite_l2_chi2_loss functions remain unchanged]
+# Argument parser with new options for loss type and log transformation
+
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Train SimpleTFT model with customizable parameters')
+    parser.add_argument('--lr', type=float, default=0.0002, help='Learning rate')
+    parser.add_argument('--num_heads', type=int, default=NUM_HEADS, help='Number of attention heads')
+    parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of transformer layers')
+    parser.add_argument('--loss_alpha', type=float, default=0.8, help='Weight for L1 loss in composite loss')
+    parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')
+    parser.add_argument('--hidden_size', type=int, default=128, help='Hidden size for TFT model')
+    parser.add_argument('--loss_type', type=str, default='composite_l2', choices=['composite_l1', 'l1', 'mse','composite_l2'], 
+                        help='Type of loss function to use: composite, mse, or l1')
+    parser.add_argument('--apply_log', action='store_true', help='Apply log transformation to targets')
+    parser.add_argument('--target_transform', type=str, default='log', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
+    parser.add_argument('--num-bins', type=int, default=128, help='Number of bins for OC resampling')
+    parser.add_argument('--output-dir', type=str, default='output', help='Output directory')
+    parser.add_argument('--target-val-ratio', type=float, default=0.08, help='Target validation ratio')
+    parser.add_argument('--use-gpu', action='store_true', default=True, help='Use GPU')
+    parser.add_argument('--distance-threshold', type=float, default=1.4, help='Minimum distance threshold for validation points')
+    parser.add_argument('--target-fraction', type=float, default=0.75, help='Fraction of max bin count for resampling')
+    parser.add_argument('--num-runs', type=int, default=5, help='Number of times to run the process')    
+    return parser.parse_args()
+
 def train_model(args, model, train_loader, val_loader, num_epochs=num_epochs, accelerator=None, lr=0.001,
                 min_r2=0.5, use_validation=True, loss_type='composite_l2', target_transform='none'):
     # Handle target normalization if selected
@@ -174,6 +178,7 @@ def train_model(args, model, train_loader, val_loader, num_epochs=num_epochs, ac
     best_r2 = -float('inf')
     best_model_state = None
     best_metrics = {'r_squared': 0.0, 'rmse': float('inf'), 'mae': float('inf'), 'rpiq': 0.0}
+    epoch_metrics = []
 
     for epoch in range(num_epochs):
         model.train()
@@ -183,7 +188,7 @@ def train_model(args, model, train_loader, val_loader, num_epochs=num_epochs, ac
             optimizer.zero_grad()
             outputs = model(features)  # Ensure outputs are a tensor
             # Apply transformation to targets
-            if target_transform == 'log':
+            if target_transform == 'log' or args.apply_log:
                 targets = torch.log(targets + 1e-10)
             elif target_transform == 'normalize':
                 targets = (targets - target_mean) / (target_std + 1e-10)
@@ -216,7 +221,7 @@ def train_model(args, model, train_loader, val_loader, num_epochs=num_epochs, ac
                 for longitudes, latitudes, features, targets in val_loader:
                     outputs = model(features)
                     # Apply transformation to targets
-                    if target_transform == 'log':
+                    if target_transform == 'log' or args.apply_log:
                         targets = torch.log(targets + 1e-10)
                     elif target_transform == 'normalize':
                         targets = (targets - target_mean) / (target_std + 1e-10)
@@ -239,7 +244,7 @@ def train_model(args, model, train_loader, val_loader, num_epochs=num_epochs, ac
                 val_targets = np.concatenate(val_targets_list)
 
                 # Inverse transform to original scale
-                if target_transform == 'log':
+                if target_transform == 'log' or args.apply_log:
                     original_val_outputs = np.exp(val_outputs)
                     original_val_targets = np.exp(val_targets)
                 elif target_transform == 'normalize':
@@ -267,26 +272,28 @@ def train_model(args, model, train_loader, val_loader, num_epochs=num_epochs, ac
                     mae = float('nan')
                     rpiq = float('nan')
         else:
-            val_loss = 0.0
+            val_loss = float('nan')
             val_outputs = np.array([])
             val_targets_list = np.array([])
-            r_squared = 0.0
-            rmse = 0.0
-            mae = 0.0
-            rpiq = 0.0
+            r_squared = 1.0
+            rmse = float('nan')
+            mae = float('nan')
+            rpiq = float('nan')
 
         if accelerator.is_main_process:
-            wandb.log({
+            log_dict = {
                 'epoch': epoch + 1,
                 'train_loss_avg': train_loss,
                 'val_loss': val_loss,
-                'correlation': correlation if use_validation else 0.0,
+                'correlation': correlation if use_validation else float('nan'),
                 'r_squared': r_squared,
-                'mse': mse if use_validation else 0.0,
+                'mse': mse if use_validation else float('nan'),
                 'rmse': rmse,
                 'mae': mae,
-                'rpiq': rpiq if use_validation else 0.0
-            })
+                'rpiq': rpiq if use_validation else float('nan')
+            }
+            wandb.log(log_dict)
+            epoch_metrics.append(log_dict)
 
             if use_validation and r_squared > best_r2 and r_squared >= min_r2:
                 best_r2 = r_squared
@@ -294,7 +301,7 @@ def train_model(args, model, train_loader, val_loader, num_epochs=num_epochs, ac
                 best_metrics = {'r_squared': r_squared, 'rmse': rmse, 'mae': mae, 'rpiq': rpiq}
                 wandb.run.summary['best_r2'] = best_r2
             elif not use_validation and epoch == num_epochs - 1:
-                best_r2 = 0.0
+                best_r2 = 1.0
                 best_model_state = accelerator.unwrap_model(model).state_dict()
                 best_metrics = {'r_squared': r_squared, 'rmse': rmse, 'mae': mae, 'rpiq': rpiq}
                 wandb.run.summary['best_r2'] = best_r2
@@ -305,41 +312,145 @@ def train_model(args, model, train_loader, val_loader, num_epochs=num_epochs, ac
         if use_validation:
             accelerator.print(f'R²: {r_squared:.4f}, RMSE: {rmse:.4f}, MAE: {mae:.4f}, RPIQ: {rpiq:.4f}\n')
 
-    return model, val_outputs, val_targets_list, best_model_state, best_r2, best_metrics
+    return model, val_outputs, val_targets_list, best_model_state, best_r2, best_metrics, epoch_metrics
+
+def compute_average_metrics(all_runs_metrics):
+    if not all_runs_metrics:
+        return {}
+    
+    metric_sums = {}
+    metric_counts = {}
+    
+    for run_metrics in all_runs_metrics:
+        for epoch_metrics in run_metrics:
+            for metric, value in epoch_metrics.items():
+                if metric == 'epoch':
+                    continue
+                if not np.isnan(value):
+                    if metric not in metric_sums:
+                        metric_sums[metric] = 0.0
+                        metric_counts[metric] = 0
+                    metric_sums[metric] += value
+                    metric_counts[metric] += 1
+    
+    avg_metrics = {}
+    for metric in metric_sums:
+        avg_metrics[metric] = metric_sums[metric] / metric_counts[metric] if metric_counts[metric] > 0 else float('nan')
+    
+    return avg_metrics
+
+def compute_min_distance_stats(min_distance_stats_all):
+    if not min_distance_stats_all:
+        return {}
+    
+    stats = {'mean': [], 'median': [], 'min': [], 'max': [], 'std': []}
+    for stat_dict in min_distance_stats_all:
+        for key in stats:
+            if not np.isnan(stat_dict[key]):
+                stats[key].append(stat_dict[key])
+    
+    avg_stats = {}
+    for key in stats:
+        avg_stats[f'avg_{key}'] = np.mean(stats[key]) if stats[key] else float('nan')
+        avg_stats[f'std_{key}'] = np.std(stats[key]) if stats[key] else float('nan')
+    
+    return avg_stats
+
+def save_metrics_to_file(args, wandb_runs_info, avg_metrics, min_distance_stats, all_best_metrics, filename='training_metrics.txt'):
+    with open(filename, 'w') as f:
+        f.write("Training Metrics and Configuration\n")
+        f.write("=" * 50 + "\n\n")
+        
+        # Write args
+        f.write("Command Line Arguments:\n")
+        f.write("-" * 30 + "\n")
+        for arg, value in vars(args).items():
+            f.write(f"{arg}: {value}\n")
+        f.write("\n")
+        
+        # Write wandb runs info
+        f.write("Wandb Runs Information:\n")
+        f.write("-" * 30 + "\n")
+        for run_idx, run_info in enumerate(wandb_runs_info, 1):
+            f.write(f"Run {run_idx}:\n")
+            f.write(f"  Project: {run_info['project']}\n")
+            f.write(f"  Run Name: {run_info['name']}\n")
+            f.write(f"  Run ID: {run_info['id']}\n")
+            f.write("\n")
+        
+        # Write average metrics
+        f.write("Average Metrics Across Runs:\n")
+        f.write("-" * 30 + "\n")
+        for metric, value in avg_metrics.items():
+            f.write(f"{metric}: {value:.4f}\n")
+        f.write("\n")
+        
+        # Write min distance stats
+        f.write("Average Min Distance Statistics:\n")
+        f.write("-" * 30 + "\n")
+        for stat, value in min_distance_stats.items():
+            f.write(f"{stat}: {value:.4f}\n")
+        f.write("\n")
+        
+        # Write best metrics
+        f.write("Best Metrics Across Runs:\n")
+        f.write("-" * 30 + "\n")
+        for metric in ['r_squared', 'rmse', 'mae', 'rpiq']:
+            values = [m[metric] for m in all_best_metrics if not np.isnan(m[metric])]
+            if values:
+                f.write(f"{metric}:\n")
+                f.write(f"  Mean: {np.mean(values):.4f}\n")
+                f.write(f"  Std: {np.std(values):.4f}\n")
+                f.write(f"  Values: {[f'{v:.4f}' for v in values]}\n")
+                f.write("\n")
 
 if __name__ == "__main__":
     args = parse_args()
     accelerator = Accelerator()  # Automatically handles DDP
-
-    # Lists to store best metrics across runs
+    
+    # Initialize lists to store metrics and best metrics across runs
+    all_runs_metrics = []
     all_best_metrics = []
+    min_distance_stats_all = []
+    wandb_runs_info = []
 
     for run in range(args.num_runs):
+        if accelerator.is_main_process:
+            print(f"\nStarting Run {run + 1}/{args.num_runs}")
+
         # Initialize wandb for each run
-        wandb.init(
-            project="socmapping-SimpleTFT",
-            config={
-                "max_oc": MAX_OC,
-                "time_beginning": TIME_BEGINNING,
-                "time_end": TIME_END,
-                "window_size": window_size,
-                "time_before": time_before,
-                "bands": len(bands_list_order),
-                "epochs": num_epochs,
-                "batch_size": 256,
-                "learning_rate": args.lr,
-                "num_heads": args.num_heads,
-                "num_layers": args.num_layers,
-                "dropout_rate": 0.3,
-                "loss_alpha": args.loss_alpha,
-                "use_validation": args.use_validation,
-                "hidden_size": args.hidden_size,
-                "model_type": "SimpleTFT",
-                "loss_type": args.loss_type,
-                "target_transform": args.target_transform,
-                "run_number": run + 1
-            }
-        )
+        if accelerator.is_main_process:
+            wandb_run = wandb.init(
+                project="socmapping-SimpleTFT",
+                name=f"run_{run+1}",
+                config={
+                    "max_oc": MAX_OC,
+                    "time_beginning": TIME_BEGINNING,
+                    "time_end": TIME_END,
+                    "window_size": window_size,
+                    "time_before": time_before,
+                    "bands": len(bands_list_order),
+                    "epochs": num_epochs,
+                    "batch_size": 256,
+                    "learning_rate": args.lr,
+                    "num_heads": args.num_heads,
+                    "num_layers": args.num_layers,
+                    "dropout_rate": 0.3,
+                    "loss_alpha": args.loss_alpha,
+                    "use_validation": args.use_validation,
+                    "hidden_size": args.hidden_size,
+                    "model_type": "SimpleTFT",
+                    "loss_type": args.loss_type,
+                    "target_transform": args.target_transform,
+                    "apply_log": args.apply_log,
+                    "run_number": run + 1
+                }
+            )
+            wandb_runs_info.append({
+                'project': wandb_run.project,
+                'name': wandb_run.name,
+                'id': wandb_run.id
+            })
 
         # Load and prepare data
         df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
@@ -358,19 +469,20 @@ if __name__ == "__main__":
         data_array_path = list(dict.fromkeys(flatten_paths(data_array_path)))
 
         if args.use_validation:
-            val_df, train_df = create_validation_train_sets(
-                df=None,
+            val_df, train_df, min_distance_stats = create_validation_train_sets(
+                df=df,
                 output_dir=args.output_dir,
                 target_val_ratio=args.target_val_ratio,
                 use_gpu=args.use_gpu,
                 distance_threshold=args.distance_threshold
             )
+            min_distance_stats_all.append(min_distance_stats)
         else:
             train_df, val_df = create_balanced_dataset(df, args.use_validation)
 
         if args.use_validation:
             if len(val_df) == 0:
-                raise ValueError("Validation DataFrame is empty after balancing")
+                raise ValueError(f"Run {run+1}: Validation DataFrame is empty after balancing")
             train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
             val_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df)
             if accelerator.is_main_process:
@@ -386,15 +498,15 @@ if __name__ == "__main__":
             val_loader = None
 
         if accelerator.is_main_process:
-            wandb.run.summary["train_size"] = len(train_df)
-            wandb.run.summary["val_size"] = len(val_df) if args.use_validation else 0
+            wandb_run.summary["train_size"] = len(train_df)
+            wandb_run.summary["val_size"] = len(val_df) if args.use_validation else 0
 
         # Check first batch size
         for batch in train_loader:
             _, _, first_batch, _ = batch
             break
         if accelerator.is_main_process:
-            print(f"Run {run+1}: Size of the first batch:", first_batch.shape)
+            print(f"Run {run+1}: Size of the first batch: {first_batch.shape}")
 
         # Initialize model
         model = SimpleTFT(
@@ -409,10 +521,10 @@ if __name__ == "__main__":
             model = accelerator.prepare(model)
 
         if accelerator.is_main_process:
-            wandb.run.summary["model_parameters"] = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            wandb_run.summary["model_parameters"] = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-        # Train the model with new arguments
-        model, val_outputs, val_targets, best_model_state, best_r2, best_metrics = train_model(
+        # Train the model
+        model, val_outputs, val_targets, best_model_state, best_r2, best_metrics, epoch_metrics = train_model(
             args,
             model,
             train_loader,
@@ -426,35 +538,59 @@ if __name__ == "__main__":
             target_transform=args.target_transform
         )
 
-        # Store best metrics for this run
+        # Store metrics
+        all_runs_metrics.append(epoch_metrics)
         all_best_metrics.append(best_metrics)
 
         # Save the best model
         if accelerator.is_main_process and best_model_state is not None:
-            final_model_path = f'tft_model_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}_R2_{best_r2:.4f}_transform_{args.target_transform}_loss_type_{args.loss_type}_run_{run+1}.pth'
+            final_model_path = f'tft_model_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}_R2_{best_r2:.4f}_TRANSFORM_{args.target_transform}_LOSS_{args.loss_type}_run_{run+1}.pth'
             accelerator.save(best_model_state, final_model_path)
-            wandb.save(final_model_path)
+            wandb_run.save(final_model_path)
             print(f"Run {run+1}: Model with best R² ({best_r2:.4f}) saved successfully at: {final_model_path}")
         elif accelerator.is_main_process:
             print(f"Run {run+1}: No model saved - R² threshold not met or no validation used")
 
-        wandb.finish()
+        if accelerator.is_main_process:
+            wandb_run.finish()
 
-    # Compute and log average of best metrics
+    # Compute and log average metrics
     if accelerator.is_main_process:
-        avg_metrics = {
-            'avg_r_squared': np.mean([m['r_squared'] for m in all_best_metrics]),
-            'avg_rmse': np.mean([m['rmse'] for m in all_best_metrics if not np.isnan(m['rmse'])]),
-            'avg_mae': np.mean([m['mae'] for m in all_best_metrics if not np.isnan(m['mae'])]),
-            'avg_rpiq': np.mean([m['rpiq'] for m in all_best_metrics if not np.isnan(m['rpiq'])])
-        }
-        print("\nAverage Best Metrics Across Runs:")
-        print(f"Average R²: {avg_metrics['avg_r_squared']:.4f}")
-        print(f"Average RMSE: {avg_metrics['avg_rmse']:.4f}")
-        print(f"Average MAE: {avg_metrics['avg_mae']:.4f}")
-        print(f"Average RPIQ: {avg_metrics['avg_rpiq']:.4f}")
-
+        avg_metrics = compute_average_metrics(all_runs_metrics)
+        min_distance_stats = compute_min_distance_stats(min_distance_stats_all)
+        
+        print("\nAverage Metrics Across Runs:")
+        for metric, value in avg_metrics.items():
+            print(f"{metric}: {value:.4f}")
+        
+        print("\nAverage Min Distance Statistics:")
+        for stat, value in min_distance_stats.items():
+            print(f"{stat}: {value:.4f}")
+        
+        print("\nBest Metrics Across Runs:")
+        for metric in ['r_squared', 'rmse', 'mae', 'rpiq']:
+            values = [m[metric] for m in all_best_metrics if not np.isnan(m[metric])]
+            if values:
+                print(f"{metric} - Mean: {np.mean(values):.4f}, Std: {np.std(values):.4f}")
+        
+        # Save all metrics to file
+        output_file = os.path.join(args.output_dir, f'training_metrics_tft_{uuid.uuid4().hex[:8]}.txt')
+        save_metrics_to_file(args, wandb_runs_info, avg_metrics, min_distance_stats, all_best_metrics, filename=output_file)
+        print(f"\nMetrics saved to: {output_file}")
+        
         # Log average metrics to a final wandb run
-        wandb.init(project="socmapping-SimpleTFT", name="average_metrics")
-        wandb.log(avg_metrics)
-        wandb.finish()
+        wandb_run = wandb.init(project="socmapping-SimpleTFT", name="average_metrics")
+        wandb_runs_info.append({
+            'project': wandb_run.project,
+            'name': wandb_run.name,
+            'id': wandb_run.id
+        })
+        wandb_run.log({"average_metrics": avg_metrics, "min_distance_stats": min_distance_stats})
+        for metric in ['r_squared', 'rmse', 'mae', 'rpiq']:
+            values = [m[metric] for m in all_best_metrics if not np.isnan(m[metric])]
+            if values:
+                wandb_run.summary[f"avg_{metric}"] = np.mean(values)
+                wandb_run.summary[f"std_{metric}"] = np.std(values)
+        wandb_run.finish()
+
+    accelerator.print("All runs completed, average metrics and min distance statistics computed and saved!")

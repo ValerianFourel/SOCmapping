@@ -12,6 +12,7 @@ from accelerate import Accelerator
 from tqdm import tqdm
 from scipy import stats
 from scipy.stats import invgamma
+import logging
 
 from config import (
     TIME_BEGINNING, TIME_END, MAX_OC,
@@ -161,6 +162,18 @@ def create_validation_train_sets(df=None, output_dir='output', target_val_ratio=
     training_df : pandas.DataFrame
         DataFrame containing the training set.
     """
+    # Set up logging
+    output_dir = Path(output_dir)
+    output_dir.mkdir(exist_ok=True)
+    log_file = output_dir / 'split_stats.log'
+    stats_file = output_dir / 'split_stats.txt'
+    logging.basicConfig(
+        filename=log_file,
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s'
+    )
+    logger = logging.getLogger()
+
     accelerator = Accelerator()
     device = 'cuda' if use_gpu and torch.cuda.is_available() else 'cpu'
 
@@ -187,11 +200,69 @@ def create_validation_train_sets(df=None, output_dir='output', target_val_ratio=
             distance_threshold=distance_threshold
         )
         
-        return validation_df, training_df
+        # Compute minimum distances between validation and training sets
+        min_distances = compute_min_distances(validation_df, training_df, device)
+        min_distance_stats = {
+            'mean': np.mean(min_distances[~np.isinf(min_distances)]),
+            'median': np.median(min_distances[~np.isinf(min_distances)]),
+            'min': np.min(min_distances[~np.isinf(min_distances)]),
+            'max': np.max(min_distances[~np.isinf(min_distances)]),
+            'std': np.std(min_distances[~np.isinf(min_distances)])
+        }
+        
+        # Compute OC distribution statistics
+        val_oc = validation_df['OC'].dropna().values
+        train_oc = training_df['OC'].dropna().values
+        oc_stats = {
+            'val_mean': np.mean(val_oc),
+            'val_std': np.std(val_oc),
+            'train_mean': np.mean(train_oc),
+            'train_std': np.std(train_oc)
+        }
+        
+        # Perform Kolmogorov-Smirnov test to compare OC distributions
+        ks_stat, ks_pvalue = stats.ks_2samp(val_oc, train_oc)
+        
+        # Prepare statistics output
+        stats_output = [
+            "Validation and Training Set Split Statistics",
+            f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Validation set size: {len(validation_df)} ({len(validation_df)/len(df)*100:.2f}%)",
+            f"Training set size: {len(training_df)} ({len(training_df)/len(df)*100:.2f}%)",
+            "Minimum Distance Statistics (km):",
+        ]
+        for stat_name, value in min_distance_stats.items():
+            stats_output.append(f"  {stat_name.capitalize()}: {value:.4f}")
+        stats_output.extend([
+            "OC Distribution Statistics:",
+            f"  Validation Mean: {oc_stats['val_mean']:.4f}",
+            f"  Validation Std: {oc_stats['val_std']:.4f}",
+            f"  Training Mean: {oc_stats['train_mean']:.4f}",
+            f"  Training Std: {oc_stats['train_std']:.4f}",
+            "Kolmogorov-Smirnov Test:",
+            f"  KS Statistic: {ks_stat:.4f}",
+            f"  P-value: {ks_pvalue:.4f}",
+            f"Distribution Fit: {dist_name}",
+            f"Distribution Parameters: {best_params}"
+        ])
+        
+        # Write statistics to text file
+        with open(stats_file, 'w') as f:
+            f.write('\n'.join(stats_output))
+        
+        # Log statistics
+        for line in stats_output:
+            logger.info(line)
+        
+        return validation_df, training_df, min_distance_stats
     except Exception as e:
-        print(f"Error: {e}")
-        return None, None
-
+        error_msg = f"Error: {e}"
+        logger.error(error_msg)
+        with open(stats_file, 'w') as f:
+            f.write(error_msg)
+        print(error_msg)
+        return None, None, min_distance_stats
+    
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Optimized validation set creation with exponential family distribution')
     parser.add_argument('--output-dir', type=str, default='output', help='Output directory')
@@ -200,7 +271,7 @@ if __name__ == "__main__":
     parser.add_argument('--distance-threshold', type=float, default=1.4, help='Minimum distance threshold for validation points')
     args = parser.parse_args()
 
-    validation_df, training_df = create_validation_train_sets(
+    validation_df, training_df , min_distance_stats = create_validation_train_sets(
         df=None,
         output_dir=args.output_dir,
         target_val_ratio=args.target_val_ratio,

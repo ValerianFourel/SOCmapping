@@ -11,6 +11,9 @@ import wandb
 from accelerate import Accelerator
 import argparse
 
+import uuid
+import os
+
 # Assuming these are imported from your existing files
 from dataloader.dataloaderMultiYears import MultiRasterDatasetMultiYears 
 from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data
@@ -97,6 +100,8 @@ def composite_l2_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
 # composite_l1_chi2_loss, composite_l2_chi2_loss) are already defined in your codebase.
 
 # train_model function (unchanged from previous response)
+
+
 def train_model(args, model, train_loader, val_loader, num_epochs, accelerator, 
                 loss_type='mse', target_transform='none'):
     if target_transform == 'normalize':
@@ -279,11 +284,10 @@ def train_model(args, model, train_loader, val_loader, num_epochs, accelerator,
            val_targets if args.use_validation and val_loader is not None else None, \
            best_model_state, best_r_squared, epoch_metrics
 
-# Function to parse command-line arguments (unchanged)
 def parse_args():
     parser = argparse.ArgumentParser(description='Train RefittedCovLSTM model')
     parser.add_argument('--lr', type=float, default=0.0001, help='Learning rate')
-    parser.add_argument('--loss_type', type=str, default='l1', choices=['composite_l1', 'l1', 'mse', 'composite_l2'], help='Type of loss function')
+    parser.add_argument('--loss_type', type=str, default='composite_l2', choices=['composite_l1', 'l1', 'mse', 'composite_l2'], help='Type of loss function')
     parser.add_argument('--loss_alpha', type=float, default=0.5, help='Weight for L1 loss in composite loss (if used)')
     parser.add_argument('--target_transform', type=str, default='none', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
     parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')
@@ -296,7 +300,6 @@ def parse_args():
     parser.add_argument('--num-runs', type=int, default=5, help='Number of times to run the process')    
     return parser.parse_args()
 
-# Function to compute average metrics across runs (unchanged)
 def compute_average_metrics(all_runs_metrics):
     if not all_runs_metrics:
         return {}
@@ -322,6 +325,69 @@ def compute_average_metrics(all_runs_metrics):
     
     return avg_metrics
 
+def compute_min_distance_stats(min_distance_stats_all):
+    if not min_distance_stats_all:
+        return {}
+    
+    stats = {'mean': [], 'median': [], 'min': [], 'max': [], 'std': []}
+    for stat_dict in min_distance_stats_all:
+        for key in stats:
+            if not np.isnan(stat_dict[key]):
+                stats[key].append(stat_dict[key])
+    
+    avg_stats = {}
+    for key in stats:
+        avg_stats[f'avg_{key}'] = np.mean(stats[key]) if stats[key] else float('nan')
+        avg_stats[f'std_{key}'] = np.std(stats[key]) if stats[key] else float('nan')
+    
+    return avg_stats
+
+def save_metrics_to_file(args, wandb_runs_info, avg_metrics, min_distance_stats, all_best_metrics, filename='training_metrics.txt'):
+    with open(filename, 'w') as f:
+        f.write("Training Metrics and Configuration\n")
+        f.write("=" * 50 + "\n\n")
+        
+        # Write args
+        f.write("Command Line Arguments:\n")
+        f.write("-" * 30 + "\n")
+        for arg, value in vars(args).items():
+            f.write(f"{arg}: {value}\n")
+        f.write("\n")
+        
+        # Write wandb runs info
+        f.write("Wandb Runs Information:\n")
+        f.write("-" * 30 + "\n")
+        for run_idx, run_info in enumerate(wandb_runs_info, 1):
+            f.write(f"Run {run_idx}:\n")
+            f.write(f"  Project: {run_info['project']}\n")
+            f.write(f"  Run Name: {run_info['name']}\n")
+            f.write(f"  Run ID: {run_info['id']}\n")
+            f.write("\n")
+        
+        # Write average metrics
+        f.write("Average Metrics Across Runs:\n")
+        f.write("-" * 30 + "\n")
+        for metric, value in avg_metrics.items():
+            f.write(f"{metric}: {value:.4f}\n")
+        f.write("\n")
+        
+        # Write min distance stats
+        f.write("Average Min Distance Statistics:\n")
+        f.write("-" * 30 + "\n")
+        for stat, value in min_distance_stats.items():
+            f.write(f"{stat}: {value:.4f}\n")
+        f.write("\n")
+        
+        # Write best metrics
+        f.write("Best Metrics Across Runs:\n")
+        f.write("-" * 30 + "\n")
+        for metric, values in all_best_metrics.items():
+            f.write(f"{metric}:\n")
+            f.write(f"  Mean: {np.mean(values):.4f}\n")
+            f.write(f"  Std: {np.std(values):.4f}\n")
+            f.write(f"  Values: {[f'{v:.4f}' for v in values]}\n")
+            f.write("\n")
+
 if __name__ == "__main__":
     # Parse arguments
     args = parse_args()
@@ -345,10 +411,17 @@ if __name__ == "__main__":
     samples_coordinates_array_path = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path)))
     data_array_path = list(dict.fromkeys(flatten_paths(data_array_path)))
     
-    # Initialize lists to store metrics and best R² across runs
+    # Initialize lists to store metrics and best metrics across runs
     all_runs_metrics = []
-    all_best_r_squared = []
-
+    all_best_metrics = {
+        'r_squared': [],
+        'rmse': [],
+        'mae': [],
+        'rpiq': []
+    }
+    min_distance_stats_all = []
+    wandb_runs_info = []
+    
     # Loop through the specified number of runs
     for run in range(args.num_runs):
         if accelerator.is_main_process:
@@ -356,13 +429,14 @@ if __name__ == "__main__":
         
         # Create new train/validation split for this run
         if args.use_validation:
-            val_df, train_df = create_validation_train_sets(
-                df=df,  # Pass the dataframe
+            val_df, train_df, min_distance_stats = create_validation_train_sets(
+                df=df,
                 output_dir=args.output_dir,
                 target_val_ratio=args.target_val_ratio,
                 use_gpu=args.use_gpu,
                 distance_threshold=args.distance_threshold
             )
+            min_distance_stats_all.append(min_distance_stats)
         else:
             train_df, val_df = create_balanced_dataset(df, args.use_validation)
 
@@ -389,8 +463,9 @@ if __name__ == "__main__":
 
         # Initialize wandb for this run
         if accelerator.is_main_process:
-            wandb.init(
+            wandb_run = wandb.init(
                 project="socmapping-CNNLSTM",
+                name=f"run_{run+1}",
                 config={
                     "run_number": run + 1,
                     "max_oc": MAX_OC,
@@ -410,8 +485,13 @@ if __name__ == "__main__":
                     "use_validation": args.use_validation
                 }
             )
-            wandb.run.summary["train_size"] = len(train_df)
-            wandb.run.summary["val_size"] = len(val_df) if val_df is not None else 0
+            wandb_runs_info.append({
+                'project': wandb_run.project,
+                'name': wandb_run.name,
+                'id': wandb_run.id
+            })
+            wandb_run.summary["train_size"] = len(train_df)
+            wandb_run.summary["val_size"] = len(val_df) if val_df is not None else 0
 
         # Initialize model for this run
         model = RefittedCovLSTM(
@@ -424,7 +504,7 @@ if __name__ == "__main__":
         
         # Log model parameters
         if accelerator.is_main_process:
-            wandb.run.summary["model_parameters"] = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            wandb_run.summary["model_parameters"] = sum(p.numel() for p in model.parameters() if p.requires_grad)
             print(f"Run {run + 1} Model parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
 
         # Train model
@@ -436,9 +516,22 @@ if __name__ == "__main__":
             target_transform=args.target_transform
         )
 
-        # Store metrics and best R²
+        # Store metrics and best metrics
         all_runs_metrics.append(epoch_metrics)
-        all_best_r_squared.append(best_r_squared)
+        
+        # Find best metrics for this run
+        best_metrics = {'r_squared': -float('inf'), 'rmse': float('inf'), 'mae': float('inf'), 'rpiq': -float('inf')}
+        for epoch_metric in epoch_metrics:
+            if not np.isnan(epoch_metric['r_squared']) and epoch_metric['r_squared'] > best_metrics['r_squared']:
+                best_metrics['r_squared'] = epoch_metric['r_squared']
+                best_metrics['rmse'] = epoch_metric['rmse']
+                best_metrics['mae'] = epoch_metric['mae']
+                best_metrics['rpiq'] = epoch_metric['rpiq']
+        
+        # Store best metrics
+        for metric in all_best_metrics:
+            if not np.isnan(best_metrics[metric]):
+                all_best_metrics[metric].append(best_metrics[metric])
 
         # Save model for this run
         if accelerator.is_main_process and best_model_state is not None:
@@ -446,25 +539,45 @@ if __name__ == "__main__":
                                f'TIME_END_{TIME_END}_LOSS_{args.loss_type}_TRANSFORM_{args.target_transform}_'
                                f'BEST_R2_{best_r_squared:.4f}.pth')
             torch.save(best_model_state, final_model_path)
-            wandb.save(final_model_path)
+            wandb_run.save(final_model_path)
             print(f"Run {run + 1} best model saved with R²: {best_r_squared:.4f}")
 
         if accelerator.is_main_process:
-            wandb.finish()
+            wandb_run.finish()
 
     # Compute and log average metrics
     if accelerator.is_main_process:
         avg_metrics = compute_average_metrics(all_runs_metrics)
+        min_distance_stats = compute_min_distance_stats(min_distance_stats_all)
+        
         print("\nAverage Metrics Across Runs:")
         for metric, value in avg_metrics.items():
             print(f"{metric}: {value:.4f}")
         
+        print("\nAverage Min Distance Statistics:")
+        for stat, value in min_distance_stats.items():
+            print(f"{stat}: {value:.4f}")
+        
+        print("\nBest Metrics Across Runs:")
+        for metric, values in all_best_metrics.items():
+            print(f"{metric} - Mean: {np.mean(values):.4f}, Std: {np.std(values):.4f}")
+        
+        # Save all metrics to file
+        output_file = os.path.join(args.output_dir, f'training_metrics_{uuid.uuid4().hex[:8]}.txt')
+        save_metrics_to_file(args, wandb_runs_info, avg_metrics, min_distance_stats, all_best_metrics, filename=output_file)
+        print(f"\nMetrics saved to: {output_file}")
+        
         # Log average metrics to a new wandb run
-        wandb.init(project="socmapping-CNNLSTM", name="average_metrics")
-        wandb.log({"average_metrics": avg_metrics})
-        wandb.run.summary["avg_best_r_squared"] = np.mean(all_best_r_squared)
-        wandb.run.summary["std_best_r_squared"] = np.std(all_best_r_squared)
-        print(f"Average Best R²: {np.mean(all_best_r_squared):.4f} ± {np.std(all_best_r_squared):.4f}")
-        wandb.finish()
+        wandb_run = wandb.init(project="socmapping-CNNLSTM", name="average_metrics")
+        wandb_runs_info.append({
+            'project': wandb_run.project,
+            'name': wandb_run.name,
+            'id': wandb_run.id
+        })
+        wandb_run.log({"average_metrics": avg_metrics, "min_distance_stats": min_distance_stats})
+        for metric, values in all_best_metrics.items():
+            wandb_run.summary[f"avg_{metric}"] = np.mean(values)
+            wandb_run.summary[f"std_{metric}"] = np.std(values)
+        wandb_run.finish()
 
-    accelerator.print("All runs completed and average metrics computed!")
+    accelerator.print("All runs completed, average metrics and min distance statistics computed and saved!")
