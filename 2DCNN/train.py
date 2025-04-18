@@ -8,7 +8,7 @@ from tqdm import tqdm
 from pathlib import Path
 import wandb
 from accelerate import Accelerator
-from dataloader.dataloaderMultiYears import MultiRasterDatasetMultiYears #, NormalizedMultiRasterDatasetMultiYears
+from dataloader.dataloaderMultiYears import MultiRasterDatasetMultiYears, NormalizedMultiRasterDatasetMultiYears
 from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data
 from config import (
     TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,
@@ -191,7 +191,7 @@ def train_model(args, model, train_loader, val_loader, num_epochs=num_epochs, ac
                 targets = torch.log(targets + 1e-10)
             elif target_transform == 'normalize':
                 targets = (targets - target_mean) / (target_std + 1e-10)
-
+            print(outputs,targets)
             targets = targets.float()
             outputs = outputs.float()
             loss = criterion(outputs, targets)
@@ -482,15 +482,15 @@ if __name__ == "__main__":
         if args.use_validation:
             if len(val_df) == 0:
                 raise ValueError(f"Run {run+1}: Validation DataFrame is empty after balancing")
-            train_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
-            val_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df)
+            train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
+            val_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df)
             if accelerator.is_main_process:
                 print(f"Run {run+1}: Length of train_dataset: {len(train_dataset)}")
                 print(f"Run {run+1}: Length of val_dataset: {len(val_dataset)}")
-            train_loader = DataLoader(train_dataset, batch_size=512, shuffle=True, num_workers=4, pin_memory=True)
+            train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True, num_workers=4, pin_memory=True)
             val_loader = DataLoader(val_dataset, batch_size=256, shuffle=False, num_workers=4, pin_memory=True)
         else:
-            train_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
+            train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
             if accelerator.is_main_process:
                 print(f"Run {run+1}: Length of train_dataset: {len(train_dataset)}")
             train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True, num_workers=4, pin_memory=True)
