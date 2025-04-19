@@ -1,0 +1,95 @@
+Training Metrics and Configuration
+==================================================
+
+Command Line Arguments:
+------------------------------
+lr: 0.0002
+num_heads: 8
+num_layers: 2
+loss_alpha: 0.8
+use_validation: True
+hidden_size: 128
+loss_type: l1
+apply_log: False
+target_transform: log
+num_bins: 128
+output_dir: output
+target_val_ratio: 0.08
+use_gpu: True
+distance_threshold: 1.4
+target_fraction: 0.75
+num_runs: 5
+
+Wandb Runs Information:
+------------------------------
+Run 1:
+  Project: socmapping-SimpleTFT
+  Run Name: run_1
+  Run ID: lakp87zl
+
+Run 2:
+  Project: socmapping-SimpleTFT
+  Run Name: run_2
+  Run ID: ebwxcjh8
+
+Run 3:
+  Project: socmapping-SimpleTFT
+  Run Name: run_3
+  Run ID: p5a2wdwn
+
+Run 4:
+  Project: socmapping-SimpleTFT
+  Run Name: run_4
+  Run ID: u4ovamdi
+
+Run 5:
+  Project: socmapping-SimpleTFT
+  Run Name: run_5
+  Run ID: dvn5r7vp
+
+Average Metrics Across Runs:
+------------------------------
+train_loss_avg: 0.1904
+val_loss: 0.3343
+correlation: 0.5762
+r_squared: 0.3351
+mse: 160.8092
+rmse: 12.5975
+mae: 7.4220
+rpiq: 0.4177
+
+Average Min Distance Statistics:
+------------------------------
+avg_mean: 64.5070
+std_mean: 7.4522
+avg_median: 4.6582
+std_median: 1.2174
+avg_min: 0.9313
+std_min: 0.3825
+avg_max: 783.7889
+std_max: 80.9311
+avg_std: 111.8855
+std_std: 5.3612
+
+Best Metrics Across Runs:
+------------------------------
+r_squared:
+  Mean: 0.0000
+  Std: 0.0000
+  Values: ['0.0000', '0.0000', '0.0000', '0.0000', '0.0000']
+
+rmse:
+  Mean: inf
+  Std: nan
+  Values: ['inf', 'inf', 'inf', 'inf', 'inf']
+
+mae:
+  Mean: inf
+  Std: nan
+  Values: ['inf', 'inf', 'inf', 'inf', 'inf']
+
+rpiq:
+  Mean: 0.0000
+  Std: 0.0000
+  Values: ['0.0000', '0.0000', '0.0000', '0.0000', '0.0000']
+

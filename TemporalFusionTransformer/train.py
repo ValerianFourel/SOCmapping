@@ -128,10 +128,10 @@ def parse_args():
     parser.add_argument('--loss_alpha', type=float, default=0.8, help='Weight for L1 loss in composite loss')
     parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')
     parser.add_argument('--hidden_size', type=int, default=128, help='Hidden size for TFT model')
-    parser.add_argument('--loss_type', type=str, default='mse', choices=['composite_l1', 'l1', 'mse','composite_l2'], 
+    parser.add_argument('--loss_type', type=str, default='composite_l1', choices=['composite_l1', 'l1', 'mse','composite_l2'], 
                         help='Type of loss function to use: composite, mse, or l1')
     parser.add_argument('--apply_log', action='store_true', help='Apply log transformation to targets')
-    parser.add_argument('--target_transform', type=str, default='log', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
+    parser.add_argument('--target_transform', type=str, default='none', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
     parser.add_argument('--num-bins', type=int, default=128, help='Number of bins for OC resampling')
     parser.add_argument('--output-dir', type=str, default='output', help='Output directory')
     parser.add_argument('--target-val-ratio', type=float, default=0.08, help='Target validation ratio')
