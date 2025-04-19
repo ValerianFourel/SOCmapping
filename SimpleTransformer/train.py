@@ -549,7 +549,7 @@ if __name__ == "__main__":
 
         # Save model
         if accelerator.is_main_process and best_model_state is not None:
-            final_model_path = (f'transformer_model_run_{run+1}_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
+            final_model_path = (f'3dcnn_model_run_{run+1}_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
                                f'TIME_END_{TIME_END}_R2_{best_r2:.4f}_TRANSFORM_{args.target_transform}_'
                                f'LOSS_{args.loss_type}.pth')
             accelerator.save(best_model_state, final_model_path)

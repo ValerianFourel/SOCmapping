@@ -84,16 +84,6 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=True):
         training_df = pd.concat(training_dfs).drop('bin', axis=1)
         return training_df, None
 
-import argparse
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import numpy as np
-from tqdm import tqdm
-from accelerate import Accelerator
-import wandb
-from torch.utils.data import DataLoader
-
 
 def composite_l2_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
     """Composite loss combining L2 and scaled chi-squared loss"""
@@ -153,7 +143,7 @@ def train_model(args, model, train_loader, val_loader, num_epochs=num_epochs, ac
         if accelerator.is_main_process:
             print(f"Target mean: {target_mean}, Target std: {target_std}")
     else:
-        target_mean, target_std = 0.0, 1.0  # No normalization applied
+        target_mean, target_std = 0.0, 1.0
 
     # Define loss function based on loss_type
     if loss_type == 'composite_l1':
@@ -168,8 +158,6 @@ def train_model(args, model, train_loader, val_loader, num_epochs=num_epochs, ac
         raise ValueError(f"Unknown loss type: {loss_type}")
 
     optimizer = optim.Adam(model.parameters(), lr=lr)
-
-    # Prepare with Accelerator (handles DDP automatically)
     train_loader, model, optimizer = accelerator.prepare(train_loader, model, optimizer)
     if use_validation and val_loader is not None:
         val_loader = accelerator.prepare(val_loader)
@@ -185,19 +173,16 @@ def train_model(args, model, train_loader, val_loader, num_epochs=num_epochs, ac
 
         for batch_idx, (longitudes, latitudes, features, targets) in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1}")):
             optimizer.zero_grad()
-            outputs = model(features)  # Ensure outputs are a tensor
-            # Apply transformation to targets
+            outputs = model(features)
             if target_transform == 'log' or args.apply_log:
                 targets = torch.log(targets + 1e-10)
             elif target_transform == 'normalize':
                 targets = (targets - target_mean) / (target_std + 1e-10)
-            # print(outputs,targets)
             targets = targets.float()
             outputs = outputs.float()
             loss = criterion(outputs, targets)
             accelerator.backward(loss)
             optimizer.step()
-
             running_loss += loss.item()
 
             if accelerator.is_main_process:
@@ -219,14 +204,12 @@ def train_model(args, model, train_loader, val_loader, num_epochs=num_epochs, ac
             with torch.no_grad():
                 for longitudes, latitudes, features, targets in val_loader:
                     outputs = model(features)
-                    # Apply transformation to targets
                     if target_transform == 'log' or args.apply_log:
                         targets = torch.log(targets + 1e-10)
                     elif target_transform == 'normalize':
                         targets = (targets - target_mean) / (target_std + 1e-10)
                     loss = criterion(outputs, targets)
                     val_loss += loss.item()
-                    # Gather outputs and targets across all processes
                     val_outputs_list.append(accelerator.gather(outputs).cpu().numpy())
                     val_targets_list.append(accelerator.gather(targets).cpu().numpy())
 
@@ -242,10 +225,8 @@ def train_model(args, model, train_loader, val_loader, num_epochs=num_epochs, ac
                 val_outputs = np.concatenate(val_outputs_list)
                 val_targets = np.concatenate(val_targets_list)
 
-                # Inverse transform to original scale
                 if target_transform == 'log' or args.apply_log:
-                    val_outputs = np.clip(val_outputs, -500, 500)  # Adjust the range as needed
-
+                    val_outputs = np.clip(val_outputs, -500, 500)
                     original_val_outputs = np.exp(val_outputs)
                     original_val_targets = np.exp(val_targets)
                 elif target_transform == 'normalize':
@@ -255,7 +236,6 @@ def train_model(args, model, train_loader, val_loader, num_epochs=num_epochs, ac
                     original_val_outputs = val_outputs
                     original_val_targets = val_targets
 
-                # Compute metrics on original scale
                 if len(original_val_outputs) > 1 and np.std(original_val_outputs) > 1e-6 and np.std(original_val_targets) > 1e-6:
                     corr_matrix = np.corrcoef(original_val_outputs.flatten(), original_val_targets.flatten())
                     correlation = corr_matrix[0, 1] if not np.isnan(corr_matrix[0, 1]) else 0.0
@@ -276,7 +256,7 @@ def train_model(args, model, train_loader, val_loader, num_epochs=num_epochs, ac
             val_loss = float('nan')
             val_outputs = np.array([])
             val_targets_list = np.array([])
-            r_squared = 1.0
+            r_squared = float('nan')  # Changed from 1.0 to avoid misleading values
             rmse = float('nan')
             mae = float('nan')
             rpiq = float('nan')
@@ -296,15 +276,18 @@ def train_model(args, model, train_loader, val_loader, num_epochs=num_epochs, ac
             wandb.log(log_dict)
             epoch_metrics.append(log_dict)
 
-            if use_validation and r_squared > best_r2 and r_squared >= min_r2:
+            if use_validation and r_squared > best_r2:
                 best_r2 = r_squared
-                best_model_state = accelerator.unwrap_model(model).state_dict()
                 best_metrics = {'r_squared': r_squared, 'rmse': rmse, 'mae': mae, 'rpiq': rpiq}
+                if r_squared >= min_r2:  # Only save model if threshold is met
+                    best_model_state = accelerator.unwrap_model(model).state_dict()
                 wandb.run.summary['best_r2'] = best_r2
             elif not use_validation and epoch == num_epochs - 1:
-                best_r2 = 1.0
+                # Optionally compute metrics from training data if no validation
+                best_r2 = float('nan')
+                best_metrics = {'r_squared': float('nan'), 'rmse': float('nan'), 'mae': float('nan'), 'rpiq': float('nan')}
+                # Consider computing training metrics here if desired
                 best_model_state = accelerator.unwrap_model(model).state_dict()
-                best_metrics = {'r_squared': r_squared, 'rmse': rmse, 'mae': mae, 'rpiq': rpiq}
                 wandb.run.summary['best_r2'] = best_r2
 
         accelerator.print(f'Epoch {epoch+1}:')
@@ -356,20 +339,17 @@ def compute_min_distance_stats(min_distance_stats_all):
         avg_stats[f'std_{key}'] = np.std(stats[key]) if stats[key] else float('nan')
     
     return avg_stats
-
 def save_metrics_to_file(args, wandb_runs_info, avg_metrics, min_distance_stats, all_best_metrics, filename='training_metrics.txt'):
     with open(filename, 'w') as f:
         f.write("Training Metrics and Configuration\n")
         f.write("=" * 50 + "\n\n")
         
-        # Write args
         f.write("Command Line Arguments:\n")
         f.write("-" * 30 + "\n")
         for arg, value in vars(args).items():
             f.write(f"{arg}: {value}\n")
         f.write("\n")
         
-        # Write wandb runs info
         f.write("Wandb Runs Information:\n")
         f.write("-" * 30 + "\n")
         for run_idx, run_info in enumerate(wandb_runs_info, 1):
@@ -379,32 +359,32 @@ def save_metrics_to_file(args, wandb_runs_info, avg_metrics, min_distance_stats,
             f.write(f"  Run ID: {run_info['id']}\n")
             f.write("\n")
         
-        # Write average metrics
         f.write("Average Metrics Across Runs:\n")
         f.write("-" * 30 + "\n")
         for metric, value in avg_metrics.items():
             f.write(f"{metric}: {value:.4f}\n")
         f.write("\n")
         
-        # Write min distance stats
         f.write("Average Min Distance Statistics:\n")
         f.write("-" * 30 + "\n")
         for stat, value in min_distance_stats.items():
             f.write(f"{stat}: {value:.4f}\n")
         f.write("\n")
         
-        # Write best metrics
         f.write("Best Metrics Across Runs:\n")
         f.write("-" * 30 + "\n")
         for metric in ['r_squared', 'rmse', 'mae', 'rpiq']:
-            values = [m[metric] for m in all_best_metrics if not np.isnan(m[metric])]
+            values = [m[metric] for m in all_best_metrics if np.isfinite(m[metric])]
             if values:
                 f.write(f"{metric}:\n")
                 f.write(f"  Mean: {np.mean(values):.4f}\n")
                 f.write(f"  Std: {np.std(values):.4f}\n")
                 f.write(f"  Values: {[f'{v:.4f}' for v in values]}\n")
                 f.write("\n")
-
+            else:
+                f.write(f"{metric}:\n")
+                f.write("  No finite values available\n\n")
+                
 if __name__ == "__main__":
     args = parse_args()
     accelerator = Accelerator()  # Automatically handles DDP
@@ -572,7 +552,7 @@ if __name__ == "__main__":
                 print(f"{metric} - Mean: {np.mean(values):.4f}, Std: {np.std(values):.4f}")
         
         # Save all metrics to file
-        output_file = os.path.join(args.output_dir, f'training_metrics_tft_{uuid.uuid4().hex[:8]}.txt')
+        output_file = os.path.join(args.output_dir, f'training_metrics_2dcnn_{uuid.uuid4().hex[:8]}.txt')
         save_metrics_to_file(args, wandb_runs_info, avg_metrics, min_distance_stats, all_best_metrics, filename=output_file)
         print(f"\nMetrics saved to: {output_file}")
         
