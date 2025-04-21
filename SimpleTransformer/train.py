@@ -17,6 +17,7 @@ from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,
                    MatrixCoordinates_1mil_Seasonally, DataSeasonally, window_size,
                    file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC, time_before)
 from modelSimpleTransformer import SimpleTransformer
+from modelSimpleTransformerNew import SimpleTransformerV2
 import argparse
 from balancedDataset import create_validation_train_sets
 import uuid
@@ -502,7 +503,7 @@ if __name__ == "__main__":
             print(f"Run {run + 1} Size of the first batch: {first_batch_size}")
 
         # Initialize model
-        model = SimpleTransformer(
+        model = SimpleTransformerV2(
             input_channels=len(bands_list_order),
             input_height=window_size,
             input_width=window_size,

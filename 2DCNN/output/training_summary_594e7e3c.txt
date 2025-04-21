@@ -1,0 +1,84 @@
+Training Summary Report
+==================================================
+
+Configuration Arguments:
+------------------------------
+lr: 0.0002
+epochs: 200
+loss_alpha: 0.8
+no_validation: False
+loss_type: mse
+target_transform: none
+num_bins: 128
+output_dir: output
+target_val_ratio: 0.08
+no_gpu: False
+distance_threshold: 1.4
+target_fraction: 0.75
+num_runs: 5
+project_name: socmapping-2DCNN
+use_validation: True
+use_gpu: True
+
+Wandb Runs Information:
+------------------------------
+Run 1:
+  Project: socmapping-2dcnn
+  Name: run_1_c184
+  ID: 3zqtwlg3
+  Best Val R²: N/A
+
+Run 2:
+  Project: socmapping-2dcnn
+  Name: run_2_9ed4
+  ID: kgccyllf
+  Best Val R²: N/A
+
+Run 3:
+  Project: socmapping-2dcnn
+  Name: run_3_ebf8
+  ID: 8bnqqs4q
+  Best Val R²: N/A
+
+Run 4:
+  Project: socmapping-2dcnn
+  Name: run_4_330c
+  ID: xrl6bk46
+  Best Val R²: N/A
+
+Run 5:
+  Project: socmapping-2dcnn
+  Name: run_5_21cb
+  ID: jgn5x40u
+  Best Val R²: N/A
+
+Average Metrics (Across Best Epochs of Runs):
+------------------------------
+train_loss_avg: 253.8041
+val_loss_avg: 102.6134
+val_r_squared: 0.2173
+val_rpiq: 0.6476
+
+Average Min Distance Statistics (Validation Sets):
+------------------------------
+avg_mean: 4.8890
+std_mean: 0.1459
+avg_median: 4.3088
+std_median: 0.1964
+avg_min: 0.3245
+std_min: 0.1283
+avg_max: 22.1431
+std_max: 4.5092
+avg_std: 2.9448
+std_std: 0.1947
+
+Best Validation Metrics Aggregated Across Runs:
+------------------------------
+val_r_squared: No finite values available.
+
+val_rmse: No finite values available.
+
+val_mae: No finite values available.
+
+val_rpiq: No finite values available.
+

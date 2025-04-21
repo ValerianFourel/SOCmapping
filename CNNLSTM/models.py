@@ -127,6 +127,9 @@ class RefittedCovLSTM(nn.Module):
             return super().cuda(device)
         return self
 
+    def count_parameters(self):
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
 # Example usage
 if __name__ == "__main__":
     # Example initialization

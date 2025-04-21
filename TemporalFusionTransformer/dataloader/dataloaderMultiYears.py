@@ -171,7 +171,7 @@ class MultiRasterDatasetMultiYears(Dataset):
 
         # Check if any subfolder contains a season name
         is_seasonal = any(
-            any(season in subfolder.lower() for season in seasons)
+            any(season in str(subfolder).lower() for season in seasons)
             for subfolder in data_array_subfolders
         )
 

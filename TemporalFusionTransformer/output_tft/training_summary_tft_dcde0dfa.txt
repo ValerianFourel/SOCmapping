@@ -1,0 +1,111 @@
+Training Summary Report - SimpleTFT
+==================================================
+
+Configuration Arguments:
+------------------------------
+distance_threshold: 1.4
+dropout_rate: 0.3
+epochs: 200
+hidden_size: 128
+loss_alpha: 0.5
+loss_type: mse
+lr: 0.0002
+no_gpu: False
+no_validation: False
+num_bins: 128
+num_heads: 8
+num_runs: 5
+output_dir: output_tft
+project_name: socmapping-SimpleTFT
+target_fraction: 0.75
+target_transform: normalize
+target_val_ratio: 0.08
+use_gpu: True
+use_validation: True
+
+Wandb Runs Information:
+------------------------------
+Run 1:
+  Project: socmapping-SimpleTFT
+  Name: run_1_3081
+  ID: c4jeg07b
+  Best Val R²: N/A (or run failed)
+  Error: Traceback (most recent call last):
+  File "train.py", line 787, in <module>
+    model, _, _, best_model_state, best_r2_run, run_final_best_metrics, epoch_metrics_run = train_model(
+ValueError: Training loader empty or failed to gather targets for normalization.
+
+
+Run 2:
+  Project: socmapping-SimpleTFT
+  Name: run_2_4094
+  ID: utrbrp75
+  Best Val R²: N/A (or run failed)
+  Error: Traceback (most recent call last):
+  File "train.py", line 787, in <module>
+    model, _, _, best_model_state, best_r2_run, run_final_best_metrics, epoch_metrics_run = train_model(
+ValueError: Training loader empty or failed to gather targets for normalization.
+
+
+Run 3:
+  Project: socmapping-SimpleTFT
+  Name: run_3_964d
+  ID: hlt6uwey
+  Best Val R²: N/A (or run failed)
+  Error: Traceback (most recent call last):
+  File "train.py", line 787, in <module>
+    model, _, _, best_model_state, best_r2_run, run_final_best_metrics, epoch_metrics_run = train_model(
+ValueError: Training loader empty or failed to gather targets for normalization.
+
+
+Run 4:
+  Project: socmapping-SimpleTFT
+  Name: run_4_134c
+  ID: 24n0zlus
+  Best Val R²: N/A (or run failed)
+  Error: Traceback (most recent call last):
+  File "train.py", line 787, in <module>
+ValueError: Training loader empty or failed to gather targets for normalization.
+
+
+Run 5:
+  Project: socmapping-SimpleTFT
+  Name: run_5_5365
+  ID: l5mlllk0
+  Best Val R²: N/A (or run failed)
+  Error: Traceback (most recent call last):
+  File "train.py", line 787, in <module>
+ValueError: Training loader empty or failed to gather targets for normalization.
+
+
+Average Metrics (Across Final Epochs of Runs):
+------------------------------
+No average final epoch metrics available.
+
+Average Min Distance Statistics (Validation Sets):
+------------------------------
+avg_max: 20.6483
+avg_mean: 4.9032
+avg_median: 4.2820
+avg_min: 0.2560
+avg_std: 3.0070
+std_max: 3.6797
+std_mean: 0.2897
+std_median: 0.1732
+std_min: 0.1800
+std_std: 0.3100
+
+Best Validation Metrics Aggregated Across Runs:
+------------------------------
+r_squared: No finite values available across runs.
+
+rmse: No finite values available across runs.
+
+mae: No finite values available across runs.
+
+rpiq: No finite values available across runs.
+
+correlation: No finite values available across runs.
+
+No valid best metrics recorded across runs.
+

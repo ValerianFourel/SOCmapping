@@ -15,7 +15,7 @@ class SimpleTransformer(nn.Module):
 
         # Transformer encoder layers
         encoder_layers = nn.TransformerEncoderLayer(d_model=self.d_model, nhead=num_heads, dropout=dropout_rate, dim_feedforward=32)  # Reduced feedforward dimension)
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layers, num_layers=1)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layers, num_layers=num_layers)
 
         # Fully connected layers
         self.fc1 = nn.Linear(self.d_model * input_time, 16)
@@ -53,3 +53,18 @@ class SimpleTransformer(nn.Module):
 
     def count_parameters(self):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+if __name__ == "__main__":
+    NUM_LAYERS = 1
+    NUM_HEADS = 8 
+    model = SimpleTransformer(
+                input_channels=6,
+                input_height=5,
+                input_width=5,
+                input_time=5,
+                num_heads=NUM_HEADS,
+                num_layers=NUM_LAYERS,
+                dropout_rate=0.3
+            )
+
+    print('The current model has that many parameters:  ',model.count_parameters())

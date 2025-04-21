@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class SimpleTFT(nn.Module):
-    def __init__(self, input_channels=6, height=33, width=33, time_steps=5, d_model=128, num_heads=4, dropout=0.3):
+    def __init__(self, input_channels=6, height=5, width=5, time_steps=5, d_model=128, num_heads=2, dropout=0.3):
         super(SimpleTFT, self).__init__()
 
         self.time_steps = time_steps
@@ -18,7 +18,7 @@ class SimpleTFT(nn.Module):
         )
 
         # Calculate flattened feature dimension
-        self.feature_dim = 32 * 4 * 4
+        self.feature_dim = 32 * 4 * 4  # 512
 
         # Gated residual network (simplified GRN block)
         self.grn = nn.Sequential(
@@ -31,6 +31,8 @@ class SimpleTFT(nn.Module):
             nn.Linear(self.feature_dim, d_model),
             nn.Sigmoid()
         )
+        # Add a projection layer to match dimensions of x to d_model for residual connection
+        self.residual_proj = nn.Linear(self.feature_dim, d_model)
         self.layernorm = nn.LayerNorm(d_model)
 
         # Positional encoding for temporal dynamics
@@ -58,9 +60,11 @@ class SimpleTFT(nn.Module):
         x = x.view(B, T, -1)  # (B, T, feature_dim)
 
         # Apply Gated Residual Network
-        grn_out = self.grn(x)
-        gate = self.gate(x)
-        x = self.layernorm(gate * grn_out + x)  # (B, T, d_model)
+        grn_out = self.grn(x)  # (B, T, d_model)
+        gate = self.gate(x)  # (B, T, d_model)
+        # Project original input to match d_model dimension for residual connection
+        x_proj = self.residual_proj(x)  # (B, T, d_model)
+        x = self.layernorm(gate * grn_out + x_proj)  # (B, T, d_model)
 
         # Add positional embeddings
         x = x + self.pos_embedding  # (B, T, d_model)

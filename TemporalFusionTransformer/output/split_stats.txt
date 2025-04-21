@@ -1,20 +1,20 @@
 Validation and Training Set Split Statistics
-Timestamp: 2025-04-19 03:15:13
-Validation set size: 1556 (9.42%)
-Training set size: 14958 (90.58%)
+Timestamp: 2025-04-21 11:22:00
+Validation set size: 1468 (8.89%)
+Training set size: 15046 (91.11%)
 Minimum Distance Statistics (km):
-  Mean: 65.1202
-  Median: 4.1364
-  Min: 0.4578
-  Max: 601.2913
-  Std: 102.0797
+  Mean: 65.7367
+  Median: 4.0944
+  Min: 0.2243
+  Max: 835.9450
+  Std: 113.8981
 OC Distribution Statistics:
-  Validation Mean: 16.9154
-  Validation Std: 7.9736
-  Training Mean: 23.1105
-  Training Std: 20.4162
+  Validation Mean: 16.6606
+  Validation Std: 7.7304
+  Training Mean: 23.0991
+  Training Std: 20.3725
 Kolmogorov-Smirnov Test:
-  KS Statistic: 0.2010
+  KS Statistic: 0.2212
   P-value: 0.0000
 Distribution Fit: Inverse Gamma
 Distribution Parameters: {'a': 3.5093212085018015, 'loc': -0.2207140712018134, 'scale': 55.73445932737795}

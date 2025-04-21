@@ -1,0 +1,114 @@
+Training Summary Report - SimpleTFT
+==================================================
+
+Configuration Arguments:
+------------------------------
+distance_threshold: 1.4
+dropout_rate: 0.3
+epochs: 200
+hidden_size: 512
+loss_alpha: 0.8
+loss_type: mse
+lr: 0.0002
+no_gpu: False
+no_validation: False
+num_bins: 128
+num_heads: 8
+num_layers: 2
+num_runs: 5
+output_dir: output_tft
+project_name: socmapping-SimpleTFT
+target_fraction: 0.75
+target_transform: normalize
+target_val_ratio: 0.08
+use_gpu: True
+use_validation: True
+
+Wandb Runs Information:
+------------------------------
+Run 1:
+  Project: socmapping-SimpleTFT
+  Name: run_1_4774
+  ID: kquujgfy
+  Best Val R²: N/A (or run failed)
+  Error: Traceback (most recent call last):
+  File "train.py", line 776, in <module>
+    model = SimpleTFT(
+TypeError: __init__() got an unexpected keyword argument 'nhead'
+
+
+Run 2:
+  Project: socmapping-SimpleTFT
+  Name: run_2_b820
+  ID: acufkh8r
+  Best Val R²: N/A (or run failed)
+  Error: Traceback (most recent call last):
+  File "train.py", line 776, in <module>
+    model = SimpleTFT(
+TypeError: __init__() got an unexpected keyword argument 'nhead'
+
+
+Run 3:
+  Project: socmapping-SimpleTFT
+  Name: run_3_066c
+  ID: e0rk8qrr
+  Best Val R²: N/A (or run failed)
+  Error: Traceback (most recent call last):
+  File "train.py", line 776, in <module>
+    input_channels=len(bands_list_order), height=window_size, width=window_size,
+TypeError: __init__() got an unexpected keyword argument 'nhead'
+
+
+Run 4:
+  Project: socmapping-SimpleTFT
+  Name: run_4_32d6
+  ID: mngbttms
+  Best Val R²: N/A (or run failed)
+  Error: Traceback (most recent call last):
+  File "train.py", line 776, in <module>
+    input_channels=len(bands_list_order), height=window_size, width=window_size,
+TypeError: __init__() got an unexpected keyword argument 'nhead'
+
+
+Run 5:
+  Project: socmapping-SimpleTFT
+  Name: run_5_f7c1
+  ID: z1137gch
+  Best Val R²: N/A (or run failed)
+  Error: Traceback (most recent call last):
+  File "train.py", line 776, in <module>
+    input_channels=len(bands_list_order), height=window_size, width=window_size,
+TypeError: __init__() got an unexpected keyword argument 'nhead'
+
+
+Average Metrics (Across Final Epochs of Runs):
+------------------------------
+No average final epoch metrics available.
+
+Average Min Distance Statistics (Validation Sets):
+------------------------------
+avg_max: 22.1026
+avg_mean: 4.7561
+avg_median: 4.1791
+avg_min: 0.1952
+avg_std: 2.9304
+std_max: 3.9474
+std_mean: 0.1735
+std_median: 0.1532
+std_min: 0.1646
+std_std: 0.1923
+
+Best Validation Metrics Aggregated Across Runs:
+------------------------------
+r_squared: No finite values available across runs.
+
+rmse: No finite values available across runs.
+
+mae: No finite values available across runs.
+
+rpiq: No finite values available across runs.
+
+correlation: No finite values available across runs.
+
+No valid best metrics recorded across runs.
+
