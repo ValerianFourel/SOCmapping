@@ -111,7 +111,7 @@ def parse_args():
     parser.add_argument('--lr', type=float, default=0.0002, help='Learning rate')
     parser.add_argument('--num_heads', type=int, default=NUM_HEADS, help='Number of attention heads')
     parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of transformer layers')
-    parser.add_argument('--loss_type', type=str, default='composite_l1', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
+    parser.add_argument('--loss_type', type=str, default='composite_l2', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
     parser.add_argument('--loss_alpha', type=float, default=0.5, help='Weight for L1 loss in composite loss (if used)')
     parser.add_argument('--target_transform', type=str, default='log', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
     parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')
@@ -397,6 +397,9 @@ def save_metrics_to_file(args, wandb_runs_info, avg_metrics, min_distance_stats,
 
 if __name__ == "__main__":
     args = parse_args()
+    # Set num_runs to 1 if use_validation is False
+    if not args.use_validation:
+        args.num_runs = 1
     accelerator = Accelerator()
 
     # Initialize lists to store metrics and best metrics across runs
@@ -461,7 +464,9 @@ if __name__ == "__main__":
 
         samples_coordinates_array_path = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path)))
         data_array_path = list(dict.fromkeys(flatten_paths(data_array_path)))
-
+        
+        train_df_std_means, _ = create_balanced_dataset(df, use_validation=False)
+        train_dataset_std_means = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df_std_means)
         # Create train/validation split
         if args.use_validation:
             val_df, train_df, min_distance_stats = create_validation_train_sets(
@@ -472,24 +477,27 @@ if __name__ == "__main__":
                 distance_threshold=args.distance_threshold
             )
             min_distance_stats_all.append(min_distance_stats)
-        else:
-            train_df, val_df = create_balanced_dataset(df, args.use_validation)
+
 
         # Create datasets
         if args.use_validation:
             train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
             val_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df)
+            val_dataset.set_feature_means(train_dataset_std_means.get_feature_means())
+            val_dataset.set_feature_stds(train_dataset_std_means.get_feature_stds())
+            train_dataset.set_feature_means(train_dataset_std_means.get_feature_means())
+            train_dataset.set_feature_stds(train_dataset_std_means.get_feature_stds())
             if accelerator.is_main_process:
                 print(f"Run {run + 1} Length of train_dataset: {len(train_dataset)}")
                 print(f"Run {run + 1} Length of val_dataset: {len(val_dataset)}")
             train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
             val_loader = DataLoader(val_dataset, batch_size=256, shuffle=False)
         else:
-            train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
             if accelerator.is_main_process:
-                print(f"Run {run + 1} Length of train_dataset: {len(train_dataset)}")
-            train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
+                print(f"Run {run + 1} Length of train_dataset: {len(train_dataset_std_means)}")
+            train_loader = DataLoader(train_dataset_std_means, batch_size=256, shuffle=True)
             val_loader = None
+
 
         if accelerator.is_main_process:
             wandb_run.summary["train_size"] = len(train_df)

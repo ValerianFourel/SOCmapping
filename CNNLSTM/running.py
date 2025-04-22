@@ -21,7 +21,7 @@ from accelerate import Accelerator
 
 
 # Load CNN-LSTM model with Accelerator
-def load_cnn_model(model_path="/home/vfourel/SOCProject/SOCmapping/CNNLSTM/cnnlstm_model_MAX_OC_160_TIME_BEGINNING_2007_TIME_END_2023.pth"):
+def load_cnn_model(model_path="/home/vfourel/SOCProject/SOCmapping/CNNLSTM/3dcnn_model_run_1_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1.0000_TRANSFORM_none_LOSS_composite_l2.pth"):
     accelerator = Accelerator()  # Initialize Accelerator
     device = accelerator.device  # Get the device (GPU or CPU) assigned to this process
     
@@ -162,7 +162,7 @@ def main():
     inference_dataset = MultiRasterDataset1MilMultiYears(
         samples_coordinates_array_subfolders=samples_coordinates_array_path_1mil,
         data_array_subfolders=data_array_path_1mil,
-        dataframe=df_full,
+        dataframe=df_full[:300000],
         time_before=time_before
     )
 

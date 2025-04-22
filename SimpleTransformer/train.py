@@ -16,8 +16,8 @@ from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,
                    DataYearly, SamplesCoordinates_Seasonally, bands_list_order,
                    MatrixCoordinates_1mil_Seasonally, DataSeasonally, window_size,
                    file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC, time_before)
-from modelSimpleTransformer import SimpleTransformer
-from modelSimpleTransformerNew import SimpleTransformerV2
+from modelSimpleTransformer import SimpleTransformer as SimpleTransformerV2
+# from modelSimpleTransformerNew import SimpleTransformerV2
 import argparse
 from balancedDataset import create_validation_train_sets
 import uuid
@@ -112,10 +112,10 @@ def parse_args():
     parser.add_argument('--lr', type=float, default=0.0002, help='Learning rate')
     parser.add_argument('--num_heads', type=int, default=NUM_HEADS, help='Number of attention heads')
     parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of transformer layers')
-    parser.add_argument('--loss_type', type=str, default='composite_l1', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
+    parser.add_argument('--loss_type', type=str, default='composite_l2', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
     parser.add_argument('--loss_alpha', type=float, default=0.5, help='Weight for L1 loss in composite loss (if used)')
     parser.add_argument('--target_transform', type=str, default='log', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
-    parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')
+    parser.add_argument('--use_validation', action='store_true', default=False, help='Whether to use validation set')
     parser.add_argument('--output-dir', type=str, default='output', help='Output directory')
     parser.add_argument('--target-val-ratio', type=float, default=0.08, help='Target validation ratio')
     parser.add_argument('--use-gpu', action='store_true', default=True, help='Use GPU')
@@ -396,8 +396,11 @@ def save_metrics_to_file(args, wandb_runs_info, avg_metrics, min_distance_stats,
 
 if __name__ == "__main__":
     args = parse_args()
+    # Set num_runs to 1 if use_validation is False
+    if not args.use_validation:
+        args.num_runs = 1
     accelerator = Accelerator()
-    
+
     # Initialize lists to store metrics and best metrics across runs
     all_runs_metrics = []
     all_best_metrics = {
@@ -408,12 +411,12 @@ if __name__ == "__main__":
     }
     min_distance_stats_all = []
     wandb_runs_info = []
-    
+
     # Loop through the specified number of runs
     for run in range(args.num_runs):
         if accelerator.is_main_process:
             print(f"\nStarting Run {run + 1}/{args.num_runs}")
-        
+
         # Initialize wandb for this run
         if accelerator.is_main_process:
             wandb_run = wandb.init(
@@ -444,7 +447,7 @@ if __name__ == "__main__":
                 'name': wandb_run.name,
                 'id': wandb_run.id
             })
-        
+
         # Data preparation
         df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
         samples_coordinates_array_path, data_array_path = separate_and_add_data()
@@ -472,7 +475,7 @@ if __name__ == "__main__":
             )
             min_distance_stats_all.append(min_distance_stats)
         else:
-            train_df, val_df = create_balanced_dataset(df, args.use_validation)
+            train_df, val_df = create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=False)
 
         # Create datasets
         if args.use_validation:
@@ -512,7 +515,7 @@ if __name__ == "__main__":
             num_layers=args.num_layers,
             dropout_rate=0.3
         )
-        
+
         if accelerator.is_main_process:
             wandb_run.summary["model_parameters"] = model.count_parameters()
 
@@ -533,7 +536,7 @@ if __name__ == "__main__":
 
         # Store metrics
         all_runs_metrics.append(epoch_metrics)
-        
+
         # Find best metrics for this run
         best_metrics = {'r_squared': -float('inf'), 'rmse': float('inf'), 'mae': float('inf'), 'rpiq': -float('inf')}
         for epoch_metric in epoch_metrics:
@@ -542,20 +545,23 @@ if __name__ == "__main__":
                 best_metrics['rmse'] = epoch_metric['rmse']
                 best_metrics['mae'] = epoch_metric['mae']
                 best_metrics['rpiq'] = epoch_metric['rpiq']
-        
+
         # Store best metrics
         for metric in all_best_metrics:
             if not np.isnan(best_metrics[metric]):
                 all_best_metrics[metric].append(best_metrics[metric])
 
-        # Save model
+        # Save model during the run (optional, based on original logic)
         if accelerator.is_main_process and best_model_state is not None:
-            final_model_path = (f'3dcnn_model_run_{run+1}_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
+            if args.use_validation:
+                temp_model_path = os.path.join(args.output_dir, f'temp_3dcnn_model_run_{run+1}_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
                                f'TIME_END_{TIME_END}_R2_{best_r2:.4f}_TRANSFORM_{args.target_transform}_'
                                f'LOSS_{args.loss_type}.pth')
-            accelerator.save(best_model_state, final_model_path)
-            wandb_run.save(final_model_path)
-            print(f"Run {run + 1} Model with best R² ({best_r2:.4f}) saved at: {final_model_path}")
+            else:
+                temp_model_path = f'temp_3dcnn_model_run_{run+1}_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}_R2_{best_r2:.4f}_TRANSFORM_{args.target_transform}_LOSS_{args.loss_type}.pth'
+            accelerator.save(best_model_state, temp_model_path)
+            wandb_run.save(temp_model_path)
+            print(f"Run {run + 1} Temporary model with best R² ({best_r2:.4f}) saved at: {temp_model_path}")
         elif accelerator.is_main_process:
             print(f"Run {run + 1} No model saved - R² threshold not met")
 
@@ -566,24 +572,27 @@ if __name__ == "__main__":
     if accelerator.is_main_process:
         avg_metrics = compute_average_metrics(all_runs_metrics)
         min_distance_stats = compute_min_distance_stats(min_distance_stats_all)
-        
+
         print("\nAverage Metrics Across Runs:")
         for metric, value in avg_metrics.items():
             print(f"{metric}: {value:.4f}")
-        
+
         print("\nAverage Min Distance Statistics:")
         for stat, value in min_distance_stats.items():
             print(f"{stat}: {value:.4f}")
-        
+
         print("\nBest Metrics Across Runs:")
         for metric, values in all_best_metrics.items():
             print(f"{metric} - Mean: {np.mean(values):.4f}, Std: {np.std(values):.4f}")
-        
-        # Save all metrics to file
-        output_file = os.path.join(args.output_dir, f'training_metrics_transformer_{uuid.uuid4().hex[:8]}.txt')
+
+        # Save all metrics to file - Use current directory if use_validation is False
+        if args.use_validation:
+            output_file = os.path.join(args.output_dir, f'training_metrics_transformer_{uuid.uuid4().hex[:8]}.txt')
+        else:
+            output_file = f'training_metrics_transformer_{uuid.uuid4().hex[:8]}.txt'
         save_metrics_to_file(args, wandb_runs_info, avg_metrics, min_distance_stats, all_best_metrics, filename=output_file)
         print(f"\nMetrics saved to: {output_file}")
-        
+
         # Log average metrics to a new wandb run
         wandb_run = wandb.init(project="socmapping-SimpleTransformer", name="average_metrics")
         wandb_runs_info.append({
@@ -596,6 +605,14 @@ if __name__ == "__main__":
             wandb_run.summary[f"avg_{metric}"] = np.mean(values)
             wandb_run.summary[f"std_{metric}"] = np.std(values)
         wandb_run.finish()
+
+        # Save the final model in the current folder after all runs
+        if best_model_state is not None:
+            final_model_path = f'final_3dcnn_model_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}_R2_{best_r2:.4f}_TRANSFORM_{args.target_transform}_LOSS_{args.loss_type}.pth'
+            accelerator.save(best_model_state, final_model_path)
+            print(f"Final model with best R² ({best_r2:.4f}) saved in current folder at: {final_model_path}")
+        else:
+            print("No final model saved - R² threshold not met for any run")
 
     accelerator.print("All runs completed, average metrics and min distance statistics computed and saved!")
 

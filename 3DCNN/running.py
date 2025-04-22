@@ -4,35 +4,22 @@ from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 from functools import lru_cache
 from config import (
-    bands_list_order, time_before, window_size, INFERENCE_TIME, 
+    bands_list_order, time_before, window_size, INFERENCE_TIME, TIME_BEGINNING, TIME_END, MAX_OC,
     save_path_predictions_plots, file_path_coordinates_Bavaria_1mil
 )
-from dataloader.dataframe_loader import separate_and_add_data_1mil_inference
-from dataloader.dataloaderMapping import MultiRasterDataset1MilMultiYears
+from dataloader.dataframe_loader import separate_and_add_data_1mil_inference,create_balanced_dataset
+from dataloader.dataloaderMapping import OptimizedMultiRasterDataset, NormalizedMultiRasterDataset1MilMultiYears
+from dataloader.dataloaderMultiYears import NormalizedMultiRasterDatasetMultiYears
 from mapping import create_prediction_visualizations
 from modelCNNMultiYear import Small3DCNN
 from tqdm import tqdm
 from accelerate import Accelerator
 import torch.cuda.amp
 
-
-class OptimizedMultiRasterDataset(MultiRasterDataset1MilMultiYears):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # Pre-load coordinates to memory for faster access
-        self.coordinates_cache = {}
-
-    @lru_cache(maxsize=32)  # Cache recently used data arrays
-    def _load_data_array(self, path):
-        return np.load(path)
-
-    def __getitem__(self, idx):
-        # Optimized version of the original __getitem__ method
-        longitude, latitude, tensor = super().__getitem__(idx)
-        return longitude, latitude, tensor
+from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data
 
 
-def load_cnn_model(model_path="/home/vfourel/SOCProject/SOCmapping/3DCNN/cnn_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023.pth"):
+def load_cnn_model(model_path="/home/vfourel/SOCProject/SOCmapping/3DCNN/cnn_model_run_1_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_TRANSFORM_normalize_LOSS_mse_BEST_R2_1.0000.pth"):
     accelerator = Accelerator()
     device = accelerator.device
 
@@ -43,8 +30,17 @@ def load_cnn_model(model_path="/home/vfourel/SOCProject/SOCmapping/3DCNN/cnn_mod
         input_time=time_before
     )
 
-    # Load model weights directly to the device
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    # Load model weights
+    state_dict = torch.load(model_path, map_location=device, weights_only=True)
+    
+    # Strip "module." prefix from state dictionary keys if present
+    new_state_dict = {}
+    for key, value in state_dict.items():
+        new_key = key.replace("module.", "") if key.startswith("module.") else key
+        new_state_dict[new_key] = value
+    
+    # Load the modified state dictionary
+    model.load_state_dict(new_state_dict)
     model.eval()
 
     # Enable torch script for faster inference
@@ -65,6 +61,39 @@ def flatten_paths(path_list):
         else:
             flattened.append(item)
     return flattened
+
+
+
+
+
+def inverse_transform_target(outputs: np.ndarray, transform_type: str, mean: float = None, std: float = None) -> np.ndarray:
+    if transform_type == 'log':
+        outputs_clipped = np.clip(outputs, -50, 50)
+        return np.exp(outputs_clipped)
+    elif transform_type == 'normalize':
+        if mean is None or std is None:
+            raise ValueError("Mean and std must be provided for inverse normalization.")
+        return outputs * std + mean
+    elif transform_type == 'none':
+        return outputs
+    else:
+        raise ValueError(f"Unknown target transformation: {transform_type}")
+def compute_training_statistics_oc():
+    df_train = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
+    train_coords, train_data = separate_and_add_data()
+    train_coords = list(dict.fromkeys(flatten_paths(train_coords)))
+    train_data = list(dict.fromkeys(flatten_paths(train_data)))
+    train_df,_ = create_balanced_dataset(df_train, n_bins=128,
+                    min_ratio=0.75,
+                    use_validation=False)
+                
+    
+        # Calculate target statistics from balanced dataset
+    target_mean = train_df['OC'].mean()
+    target_std = train_df['OC'].std()
+
+    
+    return target_mean, target_std
 
 
 def run_inference(model, dataloader, accelerator):
@@ -100,27 +129,49 @@ def run_inference(model, dataloader, accelerator):
     return all_coordinates, all_predictions
 
 
-def main():
+def main(normalized):
     # Initialize Accelerator with mixed precision
     accelerator = Accelerator(mixed_precision='fp16')
-
+    target_mean, target_std = compute_training_statistics_oc()
     # Load dataframe on all processes
-    df_full = pd.read_csv(file_path_coordinates_Bavaria_1mil)
-    if accelerator.is_local_main_process:
-        print(f"Loaded inference dataframe with {len(df_full)} rows")
-
-    # Prepare data paths more efficiently
+        # Prepare data paths more efficiently
     samples_coordinates_array_path_1mil, data_array_path_1mil = separate_and_add_data_1mil_inference()
     samples_coordinates_array_path_1mil = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path_1mil)))
     data_array_path_1mil = list(dict.fromkeys(flatten_paths(data_array_path_1mil)))
+
+    df_full = pd.read_csv(file_path_coordinates_Bavaria_1mil)
+    if accelerator.is_local_main_process:
+        print(f"Loaded inference dataframe with {len(df_full)} rows")
+    feature_means, feature_stds = None,None
+    if normalized:
+        df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
+        samples_coordinates_array_path, data_array_path = separate_and_add_data()
+        
+        train_df, _ = create_balanced_dataset(df, use_validation=False)
+        samples_coordinates_array_path = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path)))
+        data_array_path = list(dict.fromkeys(flatten_paths(data_array_path)))
+            # Create datasets
+        train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
+        feature_means, feature_stds = train_dataset.getStatistics()
 
     # Initialize optimized dataset
     inference_dataset = OptimizedMultiRasterDataset(
         samples_coordinates_array_subfolders=samples_coordinates_array_path_1mil,
         data_array_subfolders=data_array_path_1mil,
-        dataframe=df_full,
+        dataframe=df_full[:300000],
         time_before=time_before
     )
+
+    if normalized:
+                # Initialize optimized dataset
+        inference_dataset = NormalizedMultiRasterDataset1MilMultiYears(
+            samples_coordinates_array_path=samples_coordinates_array_path_1mil,
+            data_array_path=data_array_path_1mil,
+            df=df_full[:300000],
+            time_before=time_before,
+            feature_means=feature_means, feature_stds = feature_stds 
+        )
+
 
     # Create optimized DataLoader with appropriate batch size for distributed processing
     # Calculate per-process batch size
@@ -146,7 +197,13 @@ def main():
 
     # Run inference
     coordinates, predictions = run_inference(cnn_model, inference_loader, accelerator)
-
+    # Apply inverse transformation to predictions
+    predictions = inverse_transform_target(
+        predictions,
+        transform_type='normalize',
+        mean=target_mean,
+        std=target_std
+    )
     # Save results only on main process
     if accelerator.is_local_main_process:
         np.save("coordinates_1mil.npy", coordinates)
@@ -168,5 +225,5 @@ if __name__ == "__main__":
     import os
     os.environ["OMP_NUM_THREADS"] = "4"  # Limit OpenMP threads
     os.environ["MKL_NUM_THREADS"] = "4"  # Limit MKL threads
-
-    main()
+    normalized = True
+    main(normalized)

@@ -1,0 +1,73 @@
+Training Metrics and Configuration
+==================================================
+
+Command Line Arguments:
+------------------------------
+lr: 0.0001
+loss_type: mse
+loss_alpha: 0.5
+target_transform: normalize
+use_validation: True
+num_bins: 128
+output_dir: output
+target_val_ratio: 0.08
+use_gpu: True
+distance_threshold: 1.2
+target_fraction: 0.75
+num_runs: 1
+
+Wandb Runs Information:
+------------------------------
+Run 1:
+  Project: socmapping-3dcnn
+  Run Name: run_1
+  Run ID: dkreehzi
+
+Average Metrics Across Runs:
+------------------------------
+train_loss: 5.8070
+val_loss: 1.8080
+correlation: 0.4044
+r_squared: 0.1651
+mse: 109.6080
+rmse: 10.4644
+mae: 9.4227
+rpiq: 0.4878
+output_std: 2.8558
+target_std: 7.6244
+
+Average Min Distance Statistics:
+------------------------------
+avg_mean: 60.8634
+std_mean: 0.0000
+avg_median: 3.7089
+std_median: 0.0000
+avg_min: 0.9954
+std_min: 0.0000
+avg_max: 917.1429
+std_max: 0.0000
+avg_std: 119.0602
+std_std: 0.0000
+
+Best Metrics Across Runs:
+------------------------------
+r_squared:
+  Mean: 0.1763
+  Std: 0.0000
+  Values: ['0.1763']
+
+mae:
+  Mean: 9.2331
+  Std: 0.0000
+  Values: ['9.2331']
+
+rmse:
+  Mean: 10.3380
+  Std: 0.0000
+  Values: ['10.3380']
+
+rpiq:
+  Mean: 0.4933
+  Std: 0.0000
+  Values: ['0.4933']
+

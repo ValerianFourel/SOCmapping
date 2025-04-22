@@ -4,7 +4,8 @@ import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
 from dataloader.dataloaderMultiYears import MultiRasterDatasetMultiYears , NormalizedMultiRasterDatasetMultiYears
-from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data
+from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data, create_balanced_dataset
+
 import pandas as pd
 from tqdm import tqdm
 from pathlib import Path
@@ -49,49 +50,6 @@ def composite_l2_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
     scale_factor = l2_loss / chi2_loss
     chi2_scaled = scale_factor * chi2_loss
     return alpha * l2_loss + (1 - alpha) * chi2_scaled
-
-def create_balanced_dataset(df, use_validation=True, n_bins=128, min_ratio=3/4):
-    bins = pd.qcut(df['OC'], q=n_bins, labels=False, duplicates='drop')
-    df['bin'] = bins
-    bin_counts = df['bin'].value_counts()
-    max_samples = bin_counts.max()
-    min_samples = max(int(max_samples * min_ratio), 5)
-    training_dfs = []
-    if use_validation:
-        validation_indices = []
-        for bin_idx in range(len(bin_counts)):
-            bin_data = df[df['bin'] == bin_idx]
-            if len(bin_data) >= 4:
-                val_samples = bin_data.sample(n=min(13, len(bin_data)))
-                validation_indices.extend(val_samples.index)
-                train_samples = bin_data.drop(val_samples.index)
-                if len(train_samples) > 0:
-                    if len(train_samples) < min_samples:
-                        resampled = train_samples.sample(n=min_samples, replace=True)
-                        training_dfs.append(resampled)
-                    else:
-                        training_dfs.append(train_samples)
-        if not training_dfs or not validation_indices:
-            raise ValueError("No training or validation data available after binning")
-        training_df = pd.concat(training_dfs).drop('bin', axis=1)
-        validation_df = df.loc[validation_indices].drop('bin', axis=1)
-        print('Size of the training set:   ', len(training_df))
-        print('Size of the validation set:   ', len(validation_df))
-        return training_df, validation_df
-    else:
-        for bin_idx in range(len(bin_counts)):
-            bin_data = df[df['bin'] == bin_idx]
-            if len(bin_data) > 0:
-                if len(bin_data) < min_samples:
-                    resampled = bin_data.sample(n=min_samples, replace=True)
-                    training_dfs.append(resampled)
-                else:
-                    training_dfs.append(bin_data)
-        if not training_dfs:
-            raise ValueError("No training data available after binning")
-        training_df = pd.concat(training_dfs).drop('bin', axis=1)
-        return training_df, None  # Return None for validation_df when no validation
-
 
 def train_model(args, model, train_loader, val_loader, num_epochs=100, target_transform="none", loss_type="L2"):
     if loss_type == 'composite_l1':
@@ -317,7 +275,7 @@ def parse_args():
     parser.add_argument('--lr', type=float, default=0.0001, help='Learning rate')
     parser.add_argument('--loss_type', type=str, default='composite_l2', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
     parser.add_argument('--loss_alpha', type=float, default=0.5, help='Weight for L1 loss in composite loss (if used)')
-    parser.add_argument('--target_transform', type=str, default='none', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
+    parser.add_argument('--target_transform', type=str, default='normalize', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
     parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')
     parser.add_argument('--num-bins', type=int, default=128, help='Number of bins for OC resampling')
     parser.add_argument('--output-dir', type=str, default='output', help='Output directory')
@@ -325,7 +283,7 @@ def parse_args():
     parser.add_argument('--use-gpu', action='store_true', default=True, help='Use GPU')
     parser.add_argument('--distance-threshold', type=float, default=1.2, help='Minimum distance threshold for validation points')
     parser.add_argument('--target-fraction', type=float, default=0.75, help='Fraction of max bin count for resampling')
-    parser.add_argument('--num-runs', type=int, default=5, help='Number of times to run the process')
+    parser.add_argument('--num-runs', type=int, default=1, help='Number of times to run the process')
     return parser.parse_args()
 
 def compute_average_metrics(all_runs_metrics):
@@ -418,6 +376,9 @@ def save_metrics_to_file(args, wandb_runs_info, avg_metrics, min_distance_stats,
 
 if __name__ == "__main__":
     args = parse_args()
+    # Set num_runs to 1 if use_validation is False
+    if not args.use_validation:
+        args.num_runs = 1
     accelerator = Accelerator()
     
     # Initialize lists to store metrics and best metrics across runs
@@ -467,7 +428,8 @@ if __name__ == "__main__":
         # Data preparation
         df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
         samples_coordinates_array_path, data_array_path = separate_and_add_data()
-
+        def getStatistics(self):
+         return self.feature_means, self.feature_stds
         def flatten_paths(path_list):
             flattened = []
             for item in path_list:
@@ -479,7 +441,8 @@ if __name__ == "__main__":
 
         samples_coordinates_array_path = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path)))
         data_array_path = list(dict.fromkeys(flatten_paths(data_array_path)))
-
+        train_df_std_means, _ = create_balanced_dataset(df, use_validation=False)
+        train_dataset_std_means = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df_std_means)
         # Create train/validation split
         if args.use_validation:
             val_df, train_df, min_distance_stats = create_validation_train_sets(
@@ -490,13 +453,16 @@ if __name__ == "__main__":
                 distance_threshold=args.distance_threshold
             )
             min_distance_stats_all.append(min_distance_stats)
-        else:
-            train_df, val_df = create_balanced_dataset(df, args.use_validation)
+
+            
 
         # Create datasets
         train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
         val_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df) if val_df is not None else None
-
+        val_dataset.set_feature_means(train_dataset_std_means.get_feature_means())
+        val_dataset.set_feature_stds(train_dataset_std_means.get_feature_stds())
+        train_dataset.set_feature_means(train_dataset_std_means.get_feature_means())
+        train_dataset.set_feature_stds(train_dataset_std_means.get_feature_stds())
         train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True, num_workers=4, pin_memory=True)
         val_loader = DataLoader(val_dataset, batch_size=256, shuffle=False, num_workers=4, pin_memory=True) if val_dataset is not None else None
 

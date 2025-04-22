@@ -1,0 +1,54 @@
+Training Metrics and Configuration
+==================================================
+
+Command Line Arguments:
+------------------------------
+lr: 0.0001
+loss_type: mse
+loss_alpha: 0.5
+target_transform: normalize
+use_validation: False
+num_bins: 128
+output_dir: output
+target_val_ratio: 0.08
+use_gpu: True
+distance_threshold: 1.2
+target_fraction: 0.75
+num_runs: 1
+
+Wandb Runs Information:
+------------------------------
+Run 1:
+  Project: socmapping-3dcnn
+  Run Name: run_1
+  Run ID: 876juxp6
+
+Average Metrics Across Runs:
+------------------------------
+train_loss: 0.7339
+
+Average Min Distance Statistics:
+------------------------------
+
+Best Metrics Across Runs:
+------------------------------
+r_squared:
+  Mean: nan
+  Std: nan
+  Values: []
+
+mae:
+  Mean: nan
+  Std: nan
+  Values: []
+
+rmse:
+  Mean: nan
+  Std: nan
+  Values: []
+
+rpiq:
+  Mean: nan
+  Std: nan
+  Values: []
+

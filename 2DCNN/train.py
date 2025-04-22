@@ -29,7 +29,7 @@ from config import (
     MatrixCoordinates_1mil_Seasonally, DataSeasonally, window_size,
     file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC, time_before
 )
-from dataloader.dataloaderMultiYears import NormalizedMultiRasterDatasetMultiYears # Assuming this is the primary one used
+from dataloader.dataloaderMultiYears import MultiRasterDatasetMultiYears,NormalizedMultiRasterDatasetMultiYears # Assuming this is the primary one used
 from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data
 from model2DCNN import ResNet2DCNN
 from balancedDataset import create_validation_train_sets, create_balanced_dataset # Import both balancing functions
@@ -110,9 +110,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--loss-alpha', type=float, default=0.8, help='Weight for the primary loss term (L1 or L2) in composite losses.')
     parser.add_argument('--no-validation', action='store_true', help='Disable validation set creation and evaluation.')
     # Removed --use-validation flag, using --no-validation instead for clarity (default is to use validation)
-    parser.add_argument('--loss-type', type=str, default='composite_l2', choices=['composite_l1', 'l1', 'mse', 'composite_l2'],
+    parser.add_argument('--loss-type', type=str, default='mse', choices=['composite_l1', 'l1', 'mse', 'composite_l2'],
                         help='Type of loss function: composite_l1, composite_l2, l1 (MAE), or mse (L2).')
-    parser.add_argument('--target-transform', type=str, default='normalize', choices=['none', 'log', 'normalize'],
+    parser.add_argument('--target-transform', type=str, default='none', choices=['none', 'log', 'normalize'],
                         help='Transformation to apply to target values: none, log (log(1+x)), or normalize (z-score).')
     # Removed --apply-log as it's covered by --target-transform
     parser.add_argument('--num-bins', type=int, default=128, help='Number of bins for target value resampling/balancing.')
@@ -518,6 +518,9 @@ def save_summary_to_file(
 
 if __name__ == "__main__":
     args = parse_args()
+            # Set num_runs to 1 if use_validation is False
+    if not args.use_validation:
+        args.num_runs = 1
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -586,6 +589,14 @@ if __name__ == "__main__":
             val_df: Optional[pd.DataFrame] = None
             min_distance_stats: Optional[Dict[str, float]] = None
 
+            train_df, _ = create_balanced_dataset(
+                    df,
+                    n_bins=args.num_bins,
+                    min_ratio=args.target_fraction,
+                    use_validation=False
+                )
+            train_dataset_means_std = NormalizedMultiRasterDatasetMultiYears(samples_coords_paths_flat, data_paths_flat, train_df)
+
             if args.use_validation:
                 if accelerator.is_main_process:
                     print("Creating validation/train split using distance-based method...")
@@ -602,15 +613,7 @@ if __name__ == "__main__":
                     all_min_distance_stats.append(min_distance_stats)
                 if val_df.empty or train_df.empty:
                     raise ValueError("Validation or Training DataFrame is empty after distance-based split.")
-            else:
-                if accelerator.is_main_process:
-                    print("Creating balanced training set (no validation)...")
-                train_df, _ = create_balanced_dataset(
-                    df,
-                    n_bins=args.num_bins,
-                    min_ratio=args.target_fraction,
-                    use_validation=False
-                )
+
                 if train_df.empty:
                     raise ValueError("Training DataFrame is empty after balancing.")
 
@@ -627,11 +630,15 @@ if __name__ == "__main__":
             if accelerator.is_main_process:
                 print("Creating Datasets and DataLoaders...")
             train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coords_paths_flat, data_paths_flat, train_df)
+            train_dataset.set_feature_means(train_dataset_means_std.get_feature_means())
+            train_dataset.set_feature_stds(train_dataset_means_std.get_feature_stds())
             train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS, pin_memory=True, drop_last=False)
 
             val_loader = None
             if args.use_validation and val_df is not None:
                 val_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coords_paths_flat, data_paths_flat, val_df)
+                val_dataset.set_feature_means(train_dataset_means_std.get_feature_means())
+                val_dataset.set_feature_stds(train_dataset_means_std.get_feature_stds())
                 val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True)
 
             if accelerator.is_main_process:

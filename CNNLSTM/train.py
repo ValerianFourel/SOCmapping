@@ -109,14 +109,14 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=True):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Train SimpleTransformer model with customizable parameters')
+    parser = argparse.ArgumentParser(description='Train CNNLSTM model with customizable parameters')
     parser.add_argument('--lr', type=float, default=0.0002, help='Learning rate')
     #parser.add_argument('--num_heads', type=int, default=NUM_HEADS, help='Number of attention heads')
     #parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of transformer layers')
-    parser.add_argument('--loss_type', type=str, default='composite_l1', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
+    parser.add_argument('--loss_type', type=str, default='composite_l2', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
     parser.add_argument('--loss_alpha', type=float, default=0.5, help='Weight for L1 loss in composite loss (if used)')
-    parser.add_argument('--target_transform', type=str, default='log', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
-    parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')
+    parser.add_argument('--target_transform', type=str, default='none', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
+    parser.add_argument('--use_validation', action='store_true', default=False, help='Whether to use validation set')
     parser.add_argument('--output-dir', type=str, default='output', help='Output directory')
     parser.add_argument('--target-val-ratio', type=float, default=0.08, help='Target validation ratio')
     parser.add_argument('--use-gpu', action='store_true', default=True, help='Use GPU')
@@ -397,6 +397,9 @@ def save_metrics_to_file(args, wandb_runs_info, avg_metrics, min_distance_stats,
 
 if __name__ == "__main__":
     args = parse_args()
+        # Set num_runs to 1 if use_validation is False
+    if not args.use_validation:
+        args.num_runs = 1
     accelerator = Accelerator()
     
     # Initialize lists to store metrics and best metrics across runs
@@ -418,7 +421,7 @@ if __name__ == "__main__":
         # Initialize wandb for this run
         if accelerator.is_main_process:
             wandb_run = wandb.init(
-                project="socmapping-SimpleTransformer",
+                project="socmapping-CNNLSTM",
                 name=f"run_{run+1}",
                 config={
                     "run_number": run + 1,
@@ -473,7 +476,7 @@ if __name__ == "__main__":
             )
             min_distance_stats_all.append(min_distance_stats)
         else:
-            train_df, val_df = create_balanced_dataset(df, args.use_validation)
+            train_df, val_df = create_balanced_dataset(df, use_validation=False)
 
         # Create datasets
         if args.use_validation:
@@ -584,7 +587,7 @@ if __name__ == "__main__":
         print(f"\nMetrics saved to: {output_file}")
         
         # Log average metrics to a new wandb run
-        wandb_run = wandb.init(project="socmapping-SimpleTransformer", name="average_metrics")
+        wandb_run = wandb.init(project="socmapping-CNNLSTM", name="average_metrics")
         wandb_runs_info.append({
             'project': wandb_run.project,
             'name': wandb_run.name,

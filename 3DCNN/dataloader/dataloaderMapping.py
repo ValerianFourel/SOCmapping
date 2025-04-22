@@ -5,6 +5,7 @@ import os
 import glob
 from config import bands_list_order, time_before, window_size
 import re
+from functools import lru_cache
 
 class RasterTensorDataset1Mil(Dataset):
     def __init__(self, base_path):
@@ -152,3 +153,36 @@ class MultiRasterDataset1MilMultiYears(Dataset):
     def get_tensor_by_location(self, subfolder, id_num, x, y):
         return self.datasets[subfolder].get_tensor_by_location(id_num, x, y)
 
+class OptimizedMultiRasterDataset(MultiRasterDataset1MilMultiYears):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Pre-load coordinates to memory for faster access
+        self.coordinates_cache = {}
+
+    @lru_cache(maxsize=32)  # Cache recently used data arrays
+    def _load_data_array(self, path):
+        return np.load(path)
+
+    def __getitem__(self, idx):
+        # Optimized version of the original __getitem__ method
+        longitude, latitude, tensor = super().__getitem__(idx)
+        return longitude, latitude, tensor
+    
+
+
+class NormalizedMultiRasterDataset1MilMultiYears(MultiRasterDataset1MilMultiYears):
+     """Wrapper around MultiRasterDataset1MilMultiYears that adds feature normalization"""
+     def __init__(self, samples_coordinates_array_path, data_array_path, df,time_before,feature_means , feature_stds):
+         super().__init__(samples_coordinates_array_path, data_array_path, df,time_before)
+             
+         self.feature_means = feature_means 
+         self.feature_stds = feature_stds
+         self.feature_stds = torch.clamp(self.feature_stds, min=1e-8)
+         
+     def __getitem__(self, idx):
+         longitude, latitude, features = super().__getitem__(idx)
+         features = (features - self.feature_means[:, None, None]) / self.feature_stds[:, None, None]
+         return longitude, latitude, features
+     
+     def getStatistics(self):
+         return self.feature_means, self.feature_stds
