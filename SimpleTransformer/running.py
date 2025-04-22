@@ -70,7 +70,7 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=True):
         training_df = pd.concat(training_dfs).drop('bin', axis=1)
         return training_df
 
-def load_SimpleTransformer_model(model_path="/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/transformer_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1_0000.pth", accelerator=None):
+def load_SimpleTransformer_model(model_path="/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/final_transformer_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1_000_TRANSFORM_log_LOSS_composite_l2.pth", accelerator=None):
     device = accelerator.device if accelerator else torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = SimpleTransformer(
         input_channels=len(bands_list_order),
@@ -105,6 +105,16 @@ def flatten_paths(path_list):
             flattened.append(item)
     return flattened
 
+
+def getStatsforOC(train_loader):
+    all_targets = []
+    for _, _, _, targets in train_loader:
+        all_targets.append(targets)
+    all_targets = torch.cat(all_targets)
+    target_mean = all_targets.mean().item()
+    target_std = all_targets.std().item()
+    return target_mean,target_std
+
 def compute_training_statistics():
     df_train = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
     train_coords, train_data = separate_and_add_data()
@@ -116,15 +126,22 @@ def compute_training_statistics():
         raise TypeError(f"Expected train_df to be a pandas DataFrame, got {type(train_df)}")
     
     train_dataset = NormalizedMultiRasterDatasetMultiYears(train_coords, train_data, train_df)
-    feature_means, feature_stds = train_dataset.getStatistics()
-    
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=256,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True
+    )
+    feature_means, feature_stds = train_dataset.get_statistics()
+    target_mean, target_std = getStatsforOC(train_loader)
     print(f"Computed training statistics - Means: {feature_means}, Stds: {feature_stds}")
     
     expected_channels = len(bands_list_order)
     if feature_means.shape[0] != expected_channels:
         raise ValueError(f"Training feature_means has {feature_means.shape[0]} channels, but expected {expected_channels}")
     
-    return feature_means, feature_stds
+    return target_mean, target_std , feature_means, feature_stds
 
 def run_inference(model, dataloader, accelerator):
     model.eval()
@@ -155,9 +172,34 @@ def run_inference(model, dataloader, accelerator):
 
     return all_coordinates, all_predictions
 
-def main():
+def apply_inverse_transform(predictions, target_transform, target_mean=None, target_std=None):
+    """
+    Apply inverse transformation to convert predictions and targets back to the original scale.
+
+    Args:
+        predictions (np.array): Model predictions in transformed scale.
+        target_transform (str): Type of transformation applied ('log', 'normalize', or None).
+        target_mean (float, optional): Mean used for normalization. Required if target_transform is 'normalize'.
+        target_std (float, optional): Standard deviation used for normalization. Required if target_transform is 'normalize'.
+
+    Returns:
+        tuple: (original_val_outputs, ) - Predictions in original scale.
+    """
+    if target_transform == 'log':
+        original_val_outputs = np.exp(predictions)
+    elif target_transform == 'normalize':
+        original_val_outputs = predictions * target_std + target_mean
+    else:
+        original_val_outputs = predictions
+
+    return original_val_outputs
+
+
+
+
+def main(target_transform):
     print(' 2nd Third  ')
-    feature_means, feature_stds = compute_training_statistics()
+    target_mean, target_std ,feature_means, feature_stds = compute_training_statistics()
     accelerator = Accelerator()
 
     parser = argparse.ArgumentParser(description="Accelerated inference script with multi-GPU support")
@@ -203,13 +245,13 @@ def main():
         pin_memory=True
     )
     inference_loader = accelerator.prepare(inference_loader)
-
-    model, device, accelerator = load_SimpleTransformer_model(args.model_path, accelerator)
+    model_path = "/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/final_transformer_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1_000_TRANSFORM_log_LOSS_composite_l2.pth"
+    model, device, accelerator = load_SimpleTransformer_model(model_path, accelerator)
     if accelerator.is_local_main_process:
         print(f"Loaded SimpleTransformer model on {device}")
 
     coordinates, predictions = run_inference(model, inference_loader, accelerator)
-
+    apply_inverse_transform(predictions, target_transform, target_mean=target_mean, target_std=target_std)
     np.save("coordinates_1mil_2ndThird.npy", coordinates)
     np.save("predictions_1mil_2ndThird.npy", predictions)
     # Only the main process handles printing and visualization
@@ -225,4 +267,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    target_transform = "log"
+    main(target_transform)

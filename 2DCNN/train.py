@@ -100,40 +100,6 @@ def composite_l2_chi2_loss(outputs: torch.Tensor, targets: torch.Tensor, sigma: 
     return alpha * l2_loss + (1 - alpha) * chi2_scaled
 
 
-# --- Argument Parsing ---
-
-def parse_args() -> argparse.Namespace:
-    """Parses command-line arguments."""
-    parser = argparse.ArgumentParser(description='Train ResNet2DCNN model with customizable parameters')
-    parser.add_argument('--lr', type=float, default=0.0002, help='Learning rate for Adam optimizer.')
-    parser.add_argument('--epochs', type=int, default=num_epochs, help='Number of training epochs.') # Use imported default
-    parser.add_argument('--loss-alpha', type=float, default=0.8, help='Weight for the primary loss term (L1 or L2) in composite losses.')
-    parser.add_argument('--no-validation', action='store_true', help='Disable validation set creation and evaluation.')
-    # Removed --use-validation flag, using --no-validation instead for clarity (default is to use validation)
-    parser.add_argument('--loss-type', type=str, default='mse', choices=['composite_l1', 'l1', 'mse', 'composite_l2'],
-                        help='Type of loss function: composite_l1, composite_l2, l1 (MAE), or mse (L2).')
-    parser.add_argument('--target-transform', type=str, default='none', choices=['none', 'log', 'normalize'],
-                        help='Transformation to apply to target values: none, log (log(1+x)), or normalize (z-score).')
-    # Removed --apply-log as it's covered by --target-transform
-    parser.add_argument('--num-bins', type=int, default=128, help='Number of bins for target value resampling/balancing.')
-    parser.add_argument('--output-dir', type=str, default='output', help='Directory to save models and metrics.')
-    parser.add_argument('--target-val-ratio', type=float, default=0.08, help='Target fraction of data for the validation set (used by create_validation_train_sets).')
-    parser.add_argument('--no-gpu', action='store_true', help='Disable GPU usage (uses CPU).') # Changed from --use-gpu
-    parser.add_argument('--distance-threshold', type=float, default=1.4, help='Minimum distance threshold for validation points (used by create_validation_train_sets).')
-    parser.add_argument('--target-fraction', type=float, default=0.75, help='Fraction of max bin count for resampling (used by create_balanced_dataset).')
-    parser.add_argument('--num-runs', type=int, default=5, help='Number of independent training runs to perform.')
-    parser.add_argument('--project-name', type=str, default='socmapping-2DCNN', help='WandB project name.')
-
-    args = parser.parse_args()
-    # Post-processing args
-    args.use_validation = not args.no_validation
-    args.use_gpu = not args.no_gpu
-    if args.target_transform == 'log':
-         print("Warning: Applying log transformation to target 'OC' values.")
-
-    return args
-
-
 # --- Metric Calculation ---
 
 def calculate_metrics(predictions: np.ndarray, targets: np.ndarray) -> Dict[str, float]:
@@ -514,11 +480,44 @@ def save_summary_to_file(
     print(f"Summary report saved to: {output_file}")
 
 
+
+# --- Argument Parsing ---
+
+def parse_args() -> argparse.Namespace:
+    """Parses command-line arguments."""
+    parser = argparse.ArgumentParser(description='Train ResNet2DCNN model with customizable parameters')
+    parser.add_argument('--lr', type=float, default=0.0002, help='Learning rate for Adam optimizer.')
+    parser.add_argument('--epochs', type=int, default=num_epochs, help='Number of training epochs.')
+    parser.add_argument('--loss-alpha', type=float, default=0.8, help='Weight for the primary loss term (L1 or L2) in composite losses.')
+    parser.add_argument('--no-validation', action='store_true', help='Disable validation set creation and evaluation.')
+    parser.add_argument('--loss-type', type=str, default='mse', choices=['composite_l1', 'l1', 'mse', 'composite_l2'],
+                        help='Type of loss function: composite_l1, composite_l2, l1 (MAE), or mse (L2).')
+    parser.add_argument('--target-transform', type=str, default='log', choices=['none', 'log', 'normalize'],
+                        help='Transformation to apply to target values: none, log (log(1+x)), or normalize (z-score).')
+    parser.add_argument('--num-bins', type=int, default=128, help='Number of bins for target value resampling/balancing.')
+    parser.add_argument('--output-dir', type=str, default='output', help='Directory to save models and metrics.')
+    parser.add_argument('--target-val-ratio', type=float, default=0.08, help='Target fraction of data for the validation set (used by create_validation_train_sets).')
+    parser.add_argument('--no-gpu', action='store_true', help='Disable GPU usage (uses CPU).')
+    parser.add_argument('--distance-threshold', type=float, default=1.4, help='Minimum distance threshold for validation points (used by create_validation_train_sets).')
+    parser.add_argument('--target-fraction', type=float, default=0.75, help='Fraction of max bin count for resampling (used by create_balanced_dataset).')
+    parser.add_argument('--num-runs', type=int, default=5, help='Number of independent training runs to perform.')
+    parser.add_argument('--project-name', type=str, default='socmapping-2DCNN', help='WandB project name.')
+    parser.add_argument('--no-save', action='store_true', help='Do not save the model state after training.')
+
+    args = parser.parse_args()
+    # Post-processing args
+    args.use_validation = not args.no_validation
+    args.use_gpu = not args.no_gpu
+    if args.target_transform == 'log':
+         print("Warning: Applying log transformation to target 'OC' values.")
+
+    return args
+
 # --- Main Execution ---
 
 if __name__ == "__main__":
     args = parse_args()
-            # Set num_runs to 1 if use_validation is False
+    # Set num_runs to 1 if use_validation is False
     if not args.use_validation:
         args.num_runs = 1
     output_dir = Path(args.output_dir)
@@ -672,22 +671,26 @@ if __name__ == "__main__":
             best_metrics_run_with_id['run_id'] = current_wandb_run.id if current_wandb_run else run_name
             all_runs_best_metrics.append(best_metrics_run_with_id)
 
-            if accelerator.is_main_process and best_model_state is not None:
-                r2_str = f"{best_r2:.4f}" if np.isfinite(best_r2) else "no_val"
-                transform_str = args.target_transform
-                loss_str = args.loss_type
-                model_filename = f"resnet2dcnn_OC_{MAX_OC}_T_{TIME_BEGINNING}-{TIME_END}_R2_{r2_str}_TRANS_{transform_str}_LOSS_{loss_str}_run_{run_idx+1}.pth"
-                final_model_path = output_dir / model_filename
-                accelerator.save(best_model_state, str(final_model_path))
-                accelerator.print(f"Run {run_idx+1}: Best model state saved to: {final_model_path}")
-                if current_wandb_run:
-                    try:
-                        wandb.save(str(final_model_path), base_path=str(output_dir))
-                        accelerator.print(f"Run {run_idx+1}: Model artifact saved to WandB.")
-                    except Exception as e:
-                        accelerator.print(f"Run {run_idx+1}: Error saving model artifact to WandB: {e}")
-            elif accelerator.is_main_process:
-                accelerator.print(f"Run {run_idx+1}: No best model state found or R² threshold not met. Model not saved.")
+            if accelerator.is_main_process:
+                if best_model_state is not None:
+                    if not args.no_save:
+                        r2_str = f"{best_r2:.4f}" if np.isfinite(best_r2) else "no_val"
+                        transform_str = args.target_transform
+                        loss_str = args.loss_type
+                        model_filename = f"resnet2dcnn_OC_{MAX_OC}_T_{TIME_BEGINNING}-{TIME_END}_R2_{r2_str}_TRANS_{transform_str}_LOSS_{loss_str}_run_{run_idx+1}.pth"
+                        final_model_path = output_dir / model_filename
+                        accelerator.save(best_model_state, str(final_model_path))
+                        accelerator.print(f"Run {run_idx+1}: Best model state saved to: {final_model_path}")
+                        if current_wandb_run:
+                            try:
+                                wandb.save(str(final_model_path), base_path=str(output_dir))
+                                accelerator.print(f"Run {run_idx+1}: Model artifact saved to WandB.")
+                            except Exception as e:
+                                accelerator.print(f"Run {run_idx+1}: Error saving model artifact to WandB: {e}")
+                    else:
+                        accelerator.print(f"Run {run_idx+1}: Model saving disabled via --no-save flag.")
+                else:
+                    accelerator.print(f"Run {run_idx+1}: No best model state found or R² threshold not met. Model not saved.")
 
         except Exception as e:
             accelerator.print(f"\n!!! ERROR in Run {run_idx + 1} !!!")

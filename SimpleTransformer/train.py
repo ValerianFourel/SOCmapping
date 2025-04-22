@@ -554,11 +554,11 @@ if __name__ == "__main__":
         # Save model during the run (optional, based on original logic)
         if accelerator.is_main_process and best_model_state is not None:
             if args.use_validation:
-                temp_model_path = os.path.join(args.output_dir, f'temp_3dcnn_model_run_{run+1}_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
+                temp_model_path = os.path.join(args.output_dir, f'temp_transformer_model_run_{run+1}_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
                                f'TIME_END_{TIME_END}_R2_{best_r2:.4f}_TRANSFORM_{args.target_transform}_'
                                f'LOSS_{args.loss_type}.pth')
             else:
-                temp_model_path = f'temp_3dcnn_model_run_{run+1}_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}_R2_{best_r2:.4f}_TRANSFORM_{args.target_transform}_LOSS_{args.loss_type}.pth'
+                temp_model_path = f'temp_transformer_model_run_{run+1}_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}_R2_{best_r2:.4f}_TRANSFORM_{args.target_transform}_LOSS_{args.loss_type}.pth'
             accelerator.save(best_model_state, temp_model_path)
             wandb_run.save(temp_model_path)
             print(f"Run {run + 1} Temporary model with best R² ({best_r2:.4f}) saved at: {temp_model_path}")
@@ -608,7 +608,7 @@ if __name__ == "__main__":
 
         # Save the final model in the current folder after all runs
         if best_model_state is not None:
-            final_model_path = f'final_3dcnn_model_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}_R2_{best_r2:.4f}_TRANSFORM_{args.target_transform}_LOSS_{args.loss_type}.pth'
+            final_model_path = f'final_transformer_model_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}_R2_{best_r2:.4f}_TRANSFORM_{args.target_transform}_LOSS_{args.loss_type}.pth'
             accelerator.save(best_model_state, final_model_path)
             print(f"Final model with best R² ({best_r2:.4f}) saved in current folder at: {final_model_path}")
         else:
