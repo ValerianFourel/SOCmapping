@@ -21,7 +21,7 @@ from accelerate import Accelerator
 
 
 # Load CNN-LSTM model with Accelerator
-def load_cnn_model(model_path="/home/vfourel/SOCProject/SOCmapping/CNNLSTM/3dcnn_model_run_1_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1.0000_TRANSFORM_none_LOSS_composite_l2.pth"):
+def load_cnnlstm_model(model_path="/home/vfourel/SOCProject/SOCmapping/CNNLSTM/cnnlstm_model_run_1_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1.0000_TRANSFORM_none_LOSS_composite_l2.pth"):
     accelerator = Accelerator()  # Initialize Accelerator
     device = accelerator.device  # Get the device (GPU or CPU) assigned to this process
     
@@ -171,13 +171,13 @@ def main():
         inference_dataset,
         batch_size=256,
         shuffle=False,
-        num_workers=4,
+        num_workers=16,
         pin_memory=True
     )
     inference_loader = accelerator.prepare(inference_loader)
 
     # Load the CNN-LSTM model
-    cnn_model, device, accelerator = load_cnn_model()
+    cnn_model, device, accelerator = load_cnnlstm_model()
     if accelerator.is_local_main_process:
         print("Loaded CNN-LSTM model:")
         print(cnn_model)

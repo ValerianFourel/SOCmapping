@@ -299,3 +299,45 @@ class MultiRasterDatasetMultiYears(Dataset):
         """Get tensor from specific subfolder dataset"""
         return self.datasets[subfolder].get_tensor_by_location(id_num, x, y)
 
+class NormalizedMultiRasterDatasetMultiYears(MultiRasterDatasetMultiYears):
+    """Wrapper around MultiRasterDatasetMultiYears that adds feature normalization"""
+    def __init__(self, samples_coordinates_array_path, data_array_path, df):
+        super().__init__(samples_coordinates_array_path, data_array_path, df)
+        self.compute_statistics()
+
+    def compute_statistics(self):
+        """Compute mean and std across all features for normalization"""
+        features_list = []
+        for i in range(len(self)):
+            _, _, features, _ = super().__getitem__(i)
+            features_list.append(features.numpy())
+
+        features_array = np.stack(features_list)
+        self._feature_means = torch.tensor(np.mean(features_array, axis=(0, 2, 3)), dtype=torch.float32)
+        self._feature_stds = torch.tensor(np.std(features_array, axis=(0, 2, 3)), dtype=torch.float32)
+        self._feature_stds = torch.clamp(self._feature_stds, min=1e-8)
+
+    def __getitem__(self, idx):
+        longitude, latitude, features, target = super().__getitem__(idx)
+        features = (features - self._feature_means[:, None, None]) / self._feature_stds[:, None, None]
+        return longitude, latitude, features, target
+
+    def get_statistics(self):
+        """Getter for feature means and standard deviations"""
+        return self._feature_means, self._feature_stds
+
+    def get_feature_means(self):
+        """Getter for feature means"""
+        return self._feature_means
+
+    def get_feature_stds(self):
+        """Getter for feature standard deviations"""
+        return self._feature_stds
+
+    def set_feature_means(self, means):
+        """Setter for feature means"""
+        self._feature_means = means
+
+    def set_feature_stds(self, stds):
+        """Setter for feature standard deviations"""
+        self._feature_stds = stds

@@ -8,7 +8,7 @@ from tqdm import tqdm
 from pathlib import Path
 import wandb
 from accelerate import Accelerator
-from dataloader.dataloaderMultiYears import MultiRasterDatasetMultiYears # , NormalizedMultiRasterDatasetMultiYears
+from dataloader.dataloaderMultiYears import MultiRasterDatasetMultiYears , NormalizedMultiRasterDatasetMultiYears
 from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data
 from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,
                    seasons, years_padded, num_epochs,
@@ -465,6 +465,9 @@ if __name__ == "__main__":
         samples_coordinates_array_path = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path)))
         data_array_path = list(dict.fromkeys(flatten_paths(data_array_path)))
 
+
+        train_df_std_means, _ = create_balanced_dataset(df, use_validation=False)
+        train_dataset_std_means = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df_std_means)
         # Create train/validation split
         if args.use_validation:
             val_df, train_df, min_distance_stats = create_validation_train_sets(
@@ -475,27 +478,30 @@ if __name__ == "__main__":
                 distance_threshold=args.distance_threshold
             )
             min_distance_stats_all.append(min_distance_stats)
-        else:
-            train_df, val_df = create_balanced_dataset(df, use_validation=False)
+
 
         # Create datasets
         if args.use_validation:
-            train_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
-            val_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df)
+            train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
+            val_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df)
+            val_dataset.set_feature_means(train_dataset_std_means.get_feature_means())
+            val_dataset.set_feature_stds(train_dataset_std_means.get_feature_stds())
+            train_dataset.set_feature_means(train_dataset_std_means.get_feature_means())
+            train_dataset.set_feature_stds(train_dataset_std_means.get_feature_stds())
             if accelerator.is_main_process:
                 print(f"Run {run + 1} Length of train_dataset: {len(train_dataset)}")
                 print(f"Run {run + 1} Length of val_dataset: {len(val_dataset)}")
             train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
             val_loader = DataLoader(val_dataset, batch_size=256, shuffle=False)
         else:
-            train_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
+            train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df_std_means)
             if accelerator.is_main_process:
                 print(f"Run {run + 1} Length of train_dataset: {len(train_dataset)}")
             train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
             val_loader = None
 
         if accelerator.is_main_process:
-            wandb_run.summary["train_size"] = len(train_df)
+            wandb_run.summary["train_size"] = len(train_dataset_std_means)
             wandb_run.summary["val_size"] = len(val_df) if args.use_validation else 0
 
         # Get batch size info

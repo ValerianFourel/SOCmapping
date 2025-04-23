@@ -141,7 +141,7 @@ def main(normalized):
         data_array_path = list(dict.fromkeys(flatten_paths(data_array_path)))
             # Create datasets
         train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
-        feature_means, feature_stds = train_dataset.getStatistics()
+        feature_means, feature_stds = train_dataset.get_statistics()
 
     # Initialize optimized dataset
     inference_dataset = MultiRasterDataset1MilMultiYears(

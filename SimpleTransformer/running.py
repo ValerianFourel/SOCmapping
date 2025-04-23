@@ -221,11 +221,11 @@ def main(target_transform):
     samples_coords_1mil = list(dict.fromkeys(flatten_paths(samples_coords_1mil)))
     data_1mil = list(dict.fromkeys(flatten_paths(data_1mil)))
     
-    third_size = len(df_full) // 3
+    third_size = len(df_full) // 4
     inference_dataset = NormalizedMultiRasterDataset1MilMultiYears(
         samples_coordinates_array_path=samples_coords_1mil,
         data_array_path=data_1mil,
-        df=df_full[third_size:2*third_size],
+        df=df_full[:300000],
         feature_means=feature_means,
         feature_stds=feature_stds,
         time_before=time_before
@@ -251,7 +251,7 @@ def main(target_transform):
         print(f"Loaded SimpleTransformer model on {device}")
 
     coordinates, predictions = run_inference(model, inference_loader, accelerator)
-    apply_inverse_transform(predictions, target_transform, target_mean=target_mean, target_std=target_std)
+    predictions = apply_inverse_transform(predictions, target_transform, target_mean=target_mean, target_std=target_std)
     np.save("coordinates_1mil_2ndThird.npy", coordinates)
     np.save("predictions_1mil_2ndThird.npy", predictions)
     # Only the main process handles printing and visualization

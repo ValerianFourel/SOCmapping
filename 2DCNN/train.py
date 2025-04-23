@@ -27,7 +27,7 @@ from config import (
     SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly,
     DataYearly, SamplesCoordinates_Seasonally, bands_list_order,
     MatrixCoordinates_1mil_Seasonally, DataSeasonally, window_size,
-    file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC, time_before
+    file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC, time_before, NUM_EPOCHS_RUN
 )
 from dataloader.dataloaderMultiYears import MultiRasterDatasetMultiYears,NormalizedMultiRasterDatasetMultiYears # Assuming this is the primary one used
 from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data
@@ -490,9 +490,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--epochs', type=int, default=num_epochs, help='Number of training epochs.')
     parser.add_argument('--loss-alpha', type=float, default=0.8, help='Weight for the primary loss term (L1 or L2) in composite losses.')
     parser.add_argument('--no-validation', action='store_true', help='Disable validation set creation and evaluation.')
-    parser.add_argument('--loss-type', type=str, default='mse', choices=['composite_l1', 'l1', 'mse', 'composite_l2'],
+    parser.add_argument('--loss-type', type=str, default='composite_l2', choices=['composite_l1', 'l1', 'mse', 'composite_l2'],
                         help='Type of loss function: composite_l1, composite_l2, l1 (MAE), or mse (L2).')
-    parser.add_argument('--target-transform', type=str, default='log', choices=['none', 'log', 'normalize'],
+    parser.add_argument('--target-transform', type=str, default='none', choices=['none', 'log', 'normalize'],
                         help='Transformation to apply to target values: none, log (log(1+x)), or normalize (z-score).')
     parser.add_argument('--num-bins', type=int, default=128, help='Number of bins for target value resampling/balancing.')
     parser.add_argument('--output-dir', type=str, default='output', help='Directory to save models and metrics.')

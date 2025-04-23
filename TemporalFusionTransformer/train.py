@@ -10,7 +10,7 @@ import wandb
 from accelerate import Accelerator
 from dataloader.dataloaderMultiYears import MultiRasterDatasetMultiYears, NormalizedMultiRasterDatasetMultiYears
 from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data
-from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,
+from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,NUM_EPOCHS_RUN,
                    seasons, years_padded, num_epochs, NUM_HEADS, NUM_LAYERS,
                    SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly,
                    DataYearly, SamplesCoordinates_Seasonally, bands_list_order,
@@ -114,7 +114,7 @@ def parse_args():
     parser.add_argument('--loss_type', type=str, default='composite_l2', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
     parser.add_argument('--loss_alpha', type=float, default=0.5, help='Weight for L1 loss in composite loss (if used)')
     parser.add_argument('--target_transform', type=str, default='log', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
-    parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')
+    parser.add_argument('--use_validation', action='store_true', default=False, help='Whether to use validation set')
     parser.add_argument('--output-dir', type=str, default='output', help='Output directory')
     parser.add_argument('--target-val-ratio', type=float, default=0.08, help='Target validation ratio')
     parser.add_argument('--use-gpu', action='store_true', default=True, help='Use GPU')
@@ -400,6 +400,7 @@ if __name__ == "__main__":
     # Set num_runs to 1 if use_validation is False
     if not args.use_validation:
         args.num_runs = 1
+        num_epochs = NUM_EPOCHS_RUN
     accelerator = Accelerator()
 
     # Initialize lists to store metrics and best metrics across runs
@@ -465,8 +466,8 @@ if __name__ == "__main__":
         samples_coordinates_array_path = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path)))
         data_array_path = list(dict.fromkeys(flatten_paths(data_array_path)))
         
-        train_df_std_means, _ = create_balanced_dataset(df, use_validation=False)
-        train_dataset_std_means = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df_std_means)
+        train_df, _ = create_balanced_dataset(df, use_validation=False)
+        train_dataset_std_means = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
         # Create train/validation split
         if args.use_validation:
             val_df, train_df, min_distance_stats = create_validation_train_sets(
@@ -558,7 +559,7 @@ if __name__ == "__main__":
 
         # Save model
         if accelerator.is_main_process and best_model_state is not None:
-            final_model_path = (f'3dcnn_model_run_{run+1}_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
+            final_model_path = (f'TFT_model_run_{run+1}_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
                                f'TIME_END_{TIME_END}_R2_{best_r2:.4f}_TRANSFORM_{args.target_transform}_'
                                f'LOSS_{args.loss_type}.pth')
             accelerator.save(best_model_state, final_model_path)
