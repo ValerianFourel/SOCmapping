@@ -11,14 +11,14 @@ from accelerate import Accelerator
 from dataloader.dataloaderMultiYears import MultiRasterDatasetMultiYears, NormalizedMultiRasterDatasetMultiYears
 from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data
 from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,NUM_EPOCHS_RUN,
-                   seasons, years_padded, num_epochs, NUM_HEADS, NUM_LAYERS,
+                   seasons, years_padded, num_epochs, NUM_HEADS, NUM_LAYERS,hidden_size,
                    SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly,
                    DataYearly, SamplesCoordinates_Seasonally, bands_list_order,
                    MatrixCoordinates_1mil_Seasonally, DataSeasonally, window_size,
                    file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC, time_before)
 from SimpleTFT import SimpleTFT
 import argparse
-from balancedDataset import create_validation_train_sets
+from balancedDataset import create_validation_train_sets,create_balanced_dataset
 import uuid
 import os
 
@@ -60,60 +60,14 @@ def composite_l2_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
     return alpha * l2_loss + (1 - alpha) * chi2_scaled
 
 
-# Function to create balanced dataset (unchanged)
-def create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=True):
-    bins = pd.qcut(df['OC'], q=n_bins, labels=False, duplicates='drop')
-    df['bin'] = bins
-    bin_counts = df['bin'].value_counts()
-    max_samples = bin_counts.max()
-    min_samples = max(int(max_samples * min_ratio), 5)
-
-    training_dfs = []
-    if use_validation:
-        validation_indices = []
-        for bin_idx in range(len(bin_counts)):
-            bin_data = df[df['bin'] == bin_idx]
-            if len(bin_data) >= 4:
-                val_samples = bin_data.sample(n=min(13, len(bin_data)))
-                validation_indices.extend(val_samples.index)
-                train_samples = bin_data.drop(val_samples.index)
-                if len(train_samples) > 0:
-                    if len(train_samples) < min_samples:
-                        resampled = train_samples.sample(n=min_samples, replace=True)
-                        training_dfs.append(resampled)
-                    else:
-                        training_dfs.append(train_samples)
-        if not training_dfs or not validation_indices:
-            raise ValueError("No training or validation data available after binning")
-        training_df = pd.concat(training_dfs).drop('bin', axis=1)
-        validation_df = df.loc[validation_indices].drop('bin', axis=1)
-        print('Size of the training set:   ' ,len(training_df))
-        print('Size of the validation set:   ' ,len(validation_df))
-        return training_df, validation_df
-    else:
-        for bin_idx in range(len(bin_counts)):
-            bin_data = df[df['bin'] == bin_idx]
-            if len(bin_data) > 0:
-                if len(bin_data) < min_samples:
-                    resampled = bin_data.sample(n=min_samples, replace=True)
-                    training_dfs.append(resampled)
-                else:
-                    training_dfs.append(bin_data)
-        if not training_dfs:
-            raise ValueError("No training data available after binning")
-        training_df = pd.concat(training_dfs).drop('bin', axis=1)
-        return training_df, None
-
-
-
 def parse_args():
     parser = argparse.ArgumentParser(description='Train SimpleTFT model with customizable parameters')
     parser.add_argument('--lr', type=float, default=0.0002, help='Learning rate')
     parser.add_argument('--num_heads', type=int, default=NUM_HEADS, help='Number of attention heads')
     parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of transformer layers')
-    parser.add_argument('--loss_type', type=str, default='composite_l2', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
+    parser.add_argument('--loss_type', type=str, default='l1', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
     parser.add_argument('--loss_alpha', type=float, default=0.5, help='Weight for L1 loss in composite loss (if used)')
-    parser.add_argument('--target_transform', type=str, default='log', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
+    parser.add_argument('--target_transform', type=str, default='normalize', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
     parser.add_argument('--use_validation', action='store_true', default=False, help='Whether to use validation set')
     parser.add_argument('--output-dir', type=str, default='output', help='Output directory')
     parser.add_argument('--target-val-ratio', type=float, default=0.08, help='Target validation ratio')
@@ -121,11 +75,11 @@ def parse_args():
     parser.add_argument('--distance-threshold', type=float, default=1.2, help='Minimum distance threshold for validation points')
     parser.add_argument('--target-fraction', type=float, default=0.75, help='Fraction of max bin count for resampling')
     parser.add_argument('--num-runs', type=int, default=5, help='Number of times to run the process')
-    parser.add_argument('--hidden_size', type=int, default=128, help='Hidden size for the model')
+    parser.add_argument('--hidden_size', type=int, default=hidden_size, help='Hidden size for the model')
     parser.add_argument('--dropout_rate', type=float, default=0.3, help='Dropout rate for the model')
     return parser.parse_args()
 
-def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelerator=None, lr=0.001,
+def train_model(model, train_loader, val_loader,target_mean,target_std, num_epochs=num_epochs, accelerator=None, lr=0.001,
                 loss_type='l1', loss_alpha=0.5, target_transform='none', min_r2=0.5, use_validation=True):
     # Define loss function based on loss_type
     if loss_type == 'composite_l1':
@@ -148,12 +102,7 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
 
     # Handle target normalization if selected
     if target_transform == 'normalize':
-        all_targets = []
-        for _, _, _, targets in train_loader:
-            all_targets.append(targets)
-        all_targets = torch.cat(all_targets)
-        target_mean = all_targets.mean().item()
-        target_std = all_targets.std().item()
+
         if accelerator.is_main_process:
             print(f"Target mean: {target_mean}, Target std: {target_std}")
     else:
@@ -233,6 +182,16 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
                     original_val_outputs = val_outputs_all
                     original_val_targets = val_targets_all
 
+                # Assuming original_val_outputs and original_val_targets are NumPy arrays
+                min_outputs = np.min(original_val_outputs)
+                max_outputs = np.max(original_val_outputs)
+                min_targets = np.min(original_val_targets)
+                max_targets = np.max(original_val_targets)
+                if use_validation:
+                    accelerator.print("Min of original_val_outputs:", min_outputs)
+                    accelerator.print("Max of original_val_outputs:", max_outputs)
+                    accelerator.print("Min of original_val_targets:", min_targets)
+                    accelerator.print("Max of original_val_targets:", max_targets)
                 # Compute metrics on original scale
                 if len(original_val_outputs) > 1 and np.std(original_val_outputs) > 1e-6 and np.std(original_val_targets) > 1e-6:
                     correlation = np.corrcoef(original_val_outputs, original_val_targets)[0, 1]
@@ -304,6 +263,8 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
             accelerator.print(f'RMSE: {rmse:.4f}')
             accelerator.print(f'MAE: {mae:.4f}')
             accelerator.print(f'RPIQ: {rpiq:.4f}\n')
+            # Print the results
+            
 
     return model, val_outputs, val_targets_list, best_model_state, best_r2, epoch_metrics
 
@@ -348,6 +309,15 @@ def compute_min_distance_stats(min_distance_stats_all):
         avg_stats[f'std_{key}'] = np.std(stats[key]) if stats[key] else float('nan')
 
     return avg_stats
+
+def compute_training_statistics_oc():
+    df_train = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
+        # Calculate target statistics from balanced dataset
+    target_mean = df_train['OC'].mean()
+    target_std = df_train['OC'].std()
+
+    
+    return target_mean, target_std
 
 def save_metrics_to_file(args, wandb_runs_info, avg_metrics, min_distance_stats, all_best_metrics, filename='training_metrics.txt'):
     with open(filename, 'w') as f:
@@ -466,8 +436,14 @@ if __name__ == "__main__":
         samples_coordinates_array_path = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path)))
         data_array_path = list(dict.fromkeys(flatten_paths(data_array_path)))
         
-        train_df, _ = create_balanced_dataset(df, use_validation=False)
+        
+        train_dataset_features_norm = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, df)
+        train_df, _ = create_balanced_dataset(df, min_ratio=3/4,use_validation=False)
+        #train_dataset_std_means = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
         train_dataset_std_means = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
+        train_dataset_std_means.set_feature_means(train_dataset_features_norm.get_feature_means())
+        train_dataset_std_means.set_feature_stds(train_dataset_features_norm.get_feature_stds())
+        target_mean, target_std =  compute_training_statistics_oc()
         # Create train/validation split
         if args.use_validation:
             val_df, train_df, min_distance_stats = create_validation_train_sets(
@@ -484,10 +460,12 @@ if __name__ == "__main__":
         if args.use_validation:
             train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
             val_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df)
-            val_dataset.set_feature_means(train_dataset_std_means.get_feature_means())
-            val_dataset.set_feature_stds(train_dataset_std_means.get_feature_stds())
-            train_dataset.set_feature_means(train_dataset_std_means.get_feature_means())
-            train_dataset.set_feature_stds(train_dataset_std_means.get_feature_stds())
+            val_dataset.set_feature_means(train_dataset_features_norm.get_feature_means())
+            val_dataset.set_feature_stds(train_dataset_features_norm.get_feature_stds())
+            train_dataset.set_feature_means(train_dataset_features_norm.get_feature_means())
+            train_dataset.set_feature_stds(train_dataset_features_norm.get_feature_stds())
+            #train_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
+            #val_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df)
             if accelerator.is_main_process:
                 print(f"Run {run + 1} Length of train_dataset: {len(train_dataset)}")
                 print(f"Run {run + 1} Length of val_dataset: {len(val_dataset)}")
@@ -530,6 +508,8 @@ if __name__ == "__main__":
             model,
             train_loader,
             val_loader,
+            target_mean=target_mean, 
+            target_std=target_std,
             num_epochs=num_epochs,
             accelerator=accelerator,
             lr=args.lr,
@@ -537,7 +517,8 @@ if __name__ == "__main__":
             loss_alpha=args.loss_alpha,
             target_transform=args.target_transform,
             min_r2=0.5,
-            use_validation=args.use_validation
+            use_validation=args.use_validation,
+            
         )
 
         # Store metrics

@@ -11,7 +11,7 @@ from accelerate import Accelerator
 from dataloader.dataloaderMultiYears import MultiRasterDatasetMultiYears, NormalizedMultiRasterDatasetMultiYears
 from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data
 from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,
-                   seasons, years_padded, num_epochs, NUM_HEADS, NUM_LAYERS,
+                   seasons, years_padded, num_epochs, NUM_HEADS, NUM_LAYERS,extra_tag,
                    SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly,
                    DataYearly, SamplesCoordinates_Seasonally, bands_list_order,
                    MatrixCoordinates_1mil_Seasonally, DataSeasonally, window_size,
@@ -475,7 +475,7 @@ if __name__ == "__main__":
             )
             min_distance_stats_all.append(min_distance_stats)
         else:
-            train_df, val_df = create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=False)
+            train_df, val_df = create_balanced_dataset(df, n_bins=128, min_ratio=9/10, use_validation=False)
 
         # Create datasets
         if args.use_validation:
@@ -608,7 +608,7 @@ if __name__ == "__main__":
 
         # Save the final model in the current folder after all runs
         if best_model_state is not None:
-            final_model_path = f'final_transformer_model_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}_R2_{best_r2:.4f}_TRANSFORM_{args.target_transform}_LOSS_{args.loss_type}.pth'
+            final_model_path = f'final_transformer_model_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}_R2_{best_r2:.4f}_TRANSFORM_{args.target_transform}_LOSS_{args.loss_type}_{extra_tag}.pth'
             accelerator.save(best_model_state, final_model_path)
             print(f"Final model with best R² ({best_r2:.4f}) saved in current folder at: {final_model_path}")
         else:

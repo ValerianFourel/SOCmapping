@@ -14,7 +14,7 @@ INFERENCE_TIME = '2023'
 LOADING_TIME_BEGINNING_INFERENCE = str(int(INFERENCE_TIME)-time_before)
 bands_list_order = ['Elevation','LAI','LST','MODIS_NPP','SoilEvaporation','TotalEvapotranspiration']
 MAX_OC = 150
-num_epochs = 16 # 200 for training 
+num_epochs = 250 # 200 for training 
 NUM_EPOCHS_RUN = 16
 
 save_path_predictions_plots = '/home/vfourel/SOCProject/SOCmapping/predictions_plots/Resnet2dcnn_plots'

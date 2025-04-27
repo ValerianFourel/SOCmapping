@@ -6,13 +6,14 @@ import glob
 import pandas as pd
 from config import (
     bands_list_order, time_before, LOADING_TIME_BEGINNING, window_size,
-    TIME_BEGINNING, TIME_END, INFERENCE_TIME, seasons, years_padded,
+    TIME_BEGINNING, TIME_END, INFERENCE_TIME, seasons, years_padded, MAX_OC,
     save_path_predictions_plots, SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly,
     DataYearly, file_path_coordinates_Bavaria_1mil, SamplesCoordinates_Seasonally,
     MatrixCoordinates_1mil_Seasonally, DataSeasonally, file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC
 )
-from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data, separate_and_add_data_1mil_inference
-from dataloader.dataloaderMapping import MultiRasterDataset1MilMultiYears
+from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data, separate_and_add_data_1mil_inference,create_balanced_dataset
+from dataloader.dataloaderMapping import NormalizedMultiRasterDataset1MilMultiYears
+from dataloader.dataloaderMultiYears import NormalizedMultiRasterDatasetMultiYears
 from mapping import create_prediction_visualizations, parallel_predict
 from models import RefittedCovLSTM
 from tqdm import tqdm
@@ -55,6 +56,44 @@ def load_cnnlstm_model(model_path="/home/vfourel/SOCProject/SOCmapping/CNNLSTM/c
 import os
 from pathlib import Path
 
+
+def getStatsforOC(train_loader):
+    all_targets = []
+    for _, _, _, targets in train_loader:
+        all_targets.append(targets)
+    all_targets = torch.cat(all_targets)
+    target_mean = all_targets.mean().item()
+    target_std = all_targets.std().item()
+    return target_mean,target_std
+
+def compute_training_statistics():
+    df_train = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
+    train_coords, train_data = separate_and_add_data()
+    train_coords = list(dict.fromkeys(flatten_paths(train_coords)))
+    train_data = list(dict.fromkeys(flatten_paths(train_data)))
+    train_df,_ = create_balanced_dataset(df_train, use_validation=False)
+    
+    if not isinstance(train_df, pd.DataFrame):
+        raise TypeError(f"Expected train_df to be a pandas DataFrame, got {type(train_df)}")
+    
+    train_dataset = NormalizedMultiRasterDatasetMultiYears(train_coords, train_data, train_df)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=256,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True
+    )
+    feature_means, feature_stds = train_dataset.get_statistics()
+    target_mean, target_std = getStatsforOC(train_loader)
+    print(f"Computed training statistics - Means: {feature_means}, Stds: {feature_stds}")
+    
+    expected_channels = len(bands_list_order)
+    if feature_means.shape[0] != expected_channels:
+        raise ValueError(f"Training feature_means has {feature_means.shape[0]} channels, but expected {expected_channels}")
+    
+    return target_mean, target_std , feature_means, feature_stds
+
 def run_inference(model, dataloader, accelerator, temp_dir="temp_results"):
     model.eval()
     all_coordinates = []
@@ -68,6 +107,7 @@ def run_inference(model, dataloader, accelerator, temp_dir="temp_results"):
             # Run model inference
             outputs = model(tensors)  # Assuming model outputs a single value per sample
             predictions = outputs
+            print(predictions)
             coords = torch.stack([longitudes, latitudes], dim=1)
             all_coordinates.append(coords)
             all_predictions.append(predictions)
@@ -159,11 +199,14 @@ def main():
     data_array_path_1mil = list(dict.fromkeys(data_array_path_1mil))
 # Main code
 # Initialize dataset
-    inference_dataset = MultiRasterDataset1MilMultiYears(
-        samples_coordinates_array_subfolders=samples_coordinates_array_path_1mil,
-        data_array_subfolders=data_array_path_1mil,
-        dataframe=df_full[:300000],
-        time_before=time_before
+    target_mean, target_std , feature_means, feature_stds = compute_training_statistics()
+    inference_dataset = NormalizedMultiRasterDataset1MilMultiYears(
+        samples_coordinates_array_path=samples_coordinates_array_path_1mil,
+        data_array_path=data_array_path_1mil,
+        df=df_full[:300000],
+        time_before=time_before,
+        feature_means = feature_means,
+        feature_stds = feature_stds
     )
 
     # Create DataLoader and prepare it for distributed inference

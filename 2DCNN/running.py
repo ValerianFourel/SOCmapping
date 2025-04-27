@@ -21,7 +21,7 @@ from balancedDataset import create_balanced_dataset # Import both balancing func
 
 
 
-def load_cnn_model(model_path="/home/vfourel/SOCProject/SOCmapping/2DCNN/resnet2dcnn_OC_150_T_2007-2023_R2_no_val_TRANS_none_LOSS_mse_run_1.pth"):
+def load_cnn_model(model_path="/home/vfourel/SOCProject/SOCmapping/2DCNN/resnet2dcnn_OC_150_T_2007-2023_R2_no_val_TRANS_normalize_LOSS_mse_run_1_Final.pth"):
     accelerator = Accelerator()
     device = accelerator.device
 
@@ -70,7 +70,7 @@ def run_inference(model, dataloader, accelerator):
             # Use mixed precision for inference
             with torch.cuda.amp.autocast():
                 outputs = model(tensors)
-
+            print(outputs)
             # Process in batches to reduce memory pressure
             predictions = outputs.cpu().numpy()
             coords = np.stack([longitudes.cpu().numpy(), latitudes.cpu().numpy()], axis=1)
@@ -118,7 +118,7 @@ def compute_training_statistics_oc():
     
     return target_mean, target_std
 
-def main(normalized):
+def main(transform_type):
     # Initialize Accelerator with mixed precision
     accelerator = Accelerator(mixed_precision='fp16')
     target_mean, target_std = compute_training_statistics_oc()
@@ -132,34 +132,27 @@ def main(normalized):
     if accelerator.is_local_main_process:
         print(f"Loaded inference dataframe with {len(df_full)} rows")
     feature_means, feature_stds = None,None
-    if normalized:
-        df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
-        samples_coordinates_array_path, data_array_path = separate_and_add_data()
+
+    df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
+    samples_coordinates_array_path, data_array_path = separate_and_add_data()
         
-        train_df, _ = create_balanced_dataset(df, use_validation=False)
-        samples_coordinates_array_path = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path)))
-        data_array_path = list(dict.fromkeys(flatten_paths(data_array_path)))
+    train_df, _ = create_balanced_dataset(df, use_validation=False)
+    samples_coordinates_array_path = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path)))
+    data_array_path = list(dict.fromkeys(flatten_paths(data_array_path)))
             # Create datasets
-        train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
-        feature_means, feature_stds = train_dataset.get_statistics()
+    train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
+    feature_means, feature_stds = train_dataset.get_statistics()
 
     # Initialize optimized dataset
     inference_dataset = MultiRasterDataset1MilMultiYears(
-        samples_coordinates_array_subfolders=samples_coordinates_array_path_1mil,
-        data_array_subfolders=data_array_path_1mil,
-        dataframe=df_full[:300000],
-        time_before=time_before
-    )
-
-    if normalized:
-                # Initialize optimized dataset
-        inference_dataset = NormalizedMultiRasterDataset1MilMultiYears(
-            samples_coordinates_array_path=samples_coordinates_array_path_1mil,
-            data_array_path=data_array_path_1mil,
-            df=df_full[:300000],
-            time_before=time_before,
-            feature_means=feature_means, feature_stds = feature_stds 
+            samples_coordinates_array_subfolders=samples_coordinates_array_path_1mil,
+            data_array_subfolders=data_array_path_1mil,
+            dataframe=df_full[:300000],
+            time_before=time_before
+           # feature_means=feature_means, feature_stds = feature_stds 
         )
+    
+
 
     # Create optimized DataLoader with appropriate batch size for distributed processing
     total_batch_size = 1024
@@ -169,7 +162,7 @@ def main(normalized):
         inference_dataset,
         batch_size=batch_size_per_process,
         shuffle=False,
-        num_workers=4,
+        num_workers=10,
         pin_memory=True,
         persistent_workers=True if batch_size_per_process > 1 else False,
         prefetch_factor=2
@@ -188,7 +181,7 @@ def main(normalized):
     # Apply inverse transformation to predictions
     predictions = inverse_transform_target(
         predictions,
-        transform_type='none',
+        transform_type=transform_type,
         mean=target_mean,
         std=target_std
     )
@@ -222,5 +215,5 @@ def main(normalized):
 
 if __name__ == "__main__":
     import os
-    normalized = True
-    main(normalized)
+    transform_type='normalize' 
+    main(transform_type)

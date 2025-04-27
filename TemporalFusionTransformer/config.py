@@ -18,10 +18,10 @@ NUM_EPOCHS_RUN = 250
 LOADING_TIME_BEGINNING_INFERENCE = str(int(INFERENCE_TIME)-time_before)
 NUM_LAYERS = 2
 NUM_HEADS = 8 
-save_path_predictions_plots = '/home/vfourel/SOCProject/SOCmapping/predictions_plots/simpleTransformer_plots'
+save_path_predictions_plots = '/home/vfourel/SOCProject/SOCmapping/predictions_plots/simpleTFT_plots'
 file_path_coordinates_Bavaria_1mil = "/home/vfourel/SOCProject/SOCmapping/Data/Coordinates1Mil/coordinates_Bavaria_1mil.csv"
 PICTURE_VERSION = f"{str(num_epochs)}_{str(MAX_OC)}_{INFERENCE_TIME}_version"
-
+hidden_size = 128
 
 def generate_seasonal_list():
     seasons = ['winter', 'spring', 'summer', 'autumn']  # Reordered with winter first

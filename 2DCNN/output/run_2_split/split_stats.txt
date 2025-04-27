@@ -1,5 +1,5 @@
 Validation and Training Set Split Statistics
-Timestamp: 2025-04-22 17:29:05
+Timestamp: 2025-04-25 20:04:04
 Validation set size: 1391 (8.42%)
 Training set size: 15123 (91.58%)
 Minimum Distance Statistics (km):

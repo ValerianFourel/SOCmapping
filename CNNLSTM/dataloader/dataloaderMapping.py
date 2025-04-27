@@ -153,3 +153,17 @@ class MultiRasterDataset1MilMultiYears(Dataset):
         return self.datasets[subfolder].get_tensor_by_location(id_num, x, y)
 
 
+class NormalizedMultiRasterDataset1MilMultiYears(MultiRasterDataset1MilMultiYears):
+    """Wrapper around MultiRasterDatasetMultiYears that adds feature normalization"""
+    def __init__(self, samples_coordinates_array_path, data_array_path, df,feature_means,feature_stds,time_before):
+        super().__init__(samples_coordinates_array_path, data_array_path, df,time_before)
+        self.feature_means=feature_means
+        self.feature_stds=feature_stds
+        time_before=time_before
+        
+
+    def __getitem__(self, idx):
+        longitude, latitude, features = super().__getitem__(idx)
+        features = (features - self.feature_means[:, None, None]) / self.feature_stds[:, None, None]
+        return longitude, latitude, features
+

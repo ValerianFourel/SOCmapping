@@ -1,0 +1,56 @@
+Training Metrics and Configuration
+==================================================
+
+Command Line Arguments:
+------------------------------
+lr: 0.0002
+num_heads: 8
+num_layers: 2
+loss_type: composite_l2
+loss_alpha: 0.5
+target_transform: log
+use_validation: False
+output_dir: output
+target_val_ratio: 0.08
+use_gpu: True
+distance_threshold: 1.2
+target_fraction: 0.75
+num_runs: 1
+
+Wandb Runs Information:
+------------------------------
+Run 1:
+  Project: socmapping-SimpleTransformer
+  Run Name: run_1
+  Run ID: 29irgug8
+
+Average Metrics Across Runs:
+------------------------------
+train_loss_avg: 0.3714
+r_squared: 1.0000
+
+Average Min Distance Statistics:
+------------------------------
+
+Best Metrics Across Runs:
+------------------------------
+r_squared:
+  Mean: 1.0000
+  Std: 0.0000
+  Values: ['1.0000']
+
+rmse:
+  Mean: nan
+  Std: nan
+  Values: []
+
+mae:
+  Mean: nan
+  Std: nan
+  Values: []
+
+rpiq:
+  Mean: nan
+  Std: nan
+  Values: []
+

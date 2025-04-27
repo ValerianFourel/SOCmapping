@@ -188,6 +188,23 @@ def inverse_transform_target(outputs: np.ndarray, transform_type: str, mean: Opt
         raise ValueError(f"Unknown target transformation: {transform_type}")
 
 
+def compute_training_statistics_oc():
+    df_train = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
+    train_coords, train_data = separate_and_add_data()
+    train_coords = list(dict.fromkeys(flatten_paths(train_coords)))
+    train_data = list(dict.fromkeys(flatten_paths(train_data)))
+    train_df,_ = create_balanced_dataset(df_train, n_bins=128,
+                    min_ratio=0.75,
+                    use_validation=False)
+                
+    
+        # Calculate target statistics from balanced dataset
+    target_mean = train_df['OC'].mean()
+    target_std = train_df['OC'].std()
+
+    
+    return target_mean, target_std
+
 # --- Training Function ---
 def train_model(
     args: argparse.Namespace,
@@ -203,14 +220,8 @@ def train_model(
     target_mean: Optional[float] = None
     target_std: Optional[float] = None
     if args.target_transform == 'normalize':
-        all_targets = []
-        for _, _, _, targets_batch in train_loader:
-            all_targets.append(targets_batch.cpu())
-        if not all_targets:
-            raise ValueError("Training loader is empty, cannot calculate target statistics.")
-        all_targets_tensor = torch.cat(all_targets).float()
-        target_mean = all_targets_tensor.mean().item()
-        target_std = all_targets_tensor.std().item()
+        target_mean , target_std= compute_training_statistics_oc()
+        
         if accelerator.is_main_process:
             accelerator.print(f"Target normalization stats: Mean={target_mean:.4f}, Std={target_std:.4f}")
         if target_std < 1e-8:
@@ -289,6 +300,7 @@ def train_model(
                     transformed_targets = transform_target(targets, args.target_transform, target_mean, target_std)
                     outputs = model(features)
                     outputs = outputs.float()
+                    print(outputs)
                     loss = criterion(outputs, transformed_targets)
                     gathered_outputs = accelerator.gather(outputs)
                     gathered_targets = accelerator.gather(targets)
@@ -486,13 +498,13 @@ def save_summary_to_file(
 def parse_args() -> argparse.Namespace:
     """Parses command-line arguments."""
     parser = argparse.ArgumentParser(description='Train ResNet2DCNN model with customizable parameters')
-    parser.add_argument('--lr', type=float, default=0.0002, help='Learning rate for Adam optimizer.')
+    parser.add_argument('--lr', type=float, default=0.0004, help='Learning rate for Adam optimizer.')
     parser.add_argument('--epochs', type=int, default=num_epochs, help='Number of training epochs.')
     parser.add_argument('--loss-alpha', type=float, default=0.8, help='Weight for the primary loss term (L1 or L2) in composite losses.')
     parser.add_argument('--no-validation', action='store_true', help='Disable validation set creation and evaluation.')
-    parser.add_argument('--loss-type', type=str, default='composite_l2', choices=['composite_l1', 'l1', 'mse', 'composite_l2'],
+    parser.add_argument('--loss-type', type=str, default='mse', choices=['composite_l1', 'l1', 'mse', 'composite_l2'],
                         help='Type of loss function: composite_l1, composite_l2, l1 (MAE), or mse (L2).')
-    parser.add_argument('--target-transform', type=str, default='none', choices=['none', 'log', 'normalize'],
+    parser.add_argument('--target-transform', type=str, default='normalize', choices=['none', 'log', 'normalize'],
                         help='Transformation to apply to target values: none, log (log(1+x)), or normalize (z-score).')
     parser.add_argument('--num-bins', type=int, default=128, help='Number of bins for target value resampling/balancing.')
     parser.add_argument('--output-dir', type=str, default='output', help='Directory to save models and metrics.')
@@ -500,7 +512,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--no-gpu', action='store_true', help='Disable GPU usage (uses CPU).')
     parser.add_argument('--distance-threshold', type=float, default=1.4, help='Minimum distance threshold for validation points (used by create_validation_train_sets).')
     parser.add_argument('--target-fraction', type=float, default=0.75, help='Fraction of max bin count for resampling (used by create_balanced_dataset).')
-    parser.add_argument('--num-runs', type=int, default=5, help='Number of independent training runs to perform.')
+    parser.add_argument('--num-runs', type=int, default=2, help='Number of independent training runs to perform.')
     parser.add_argument('--project-name', type=str, default='socmapping-2DCNN', help='WandB project name.')
     parser.add_argument('--no-save', action='store_true', help='Do not save the model state after training.')
 
@@ -594,7 +606,7 @@ if __name__ == "__main__":
                     min_ratio=args.target_fraction,
                     use_validation=False
                 )
-            train_dataset_means_std = NormalizedMultiRasterDatasetMultiYears(samples_coords_paths_flat, data_paths_flat, train_df)
+            train_dataset_means_std = MultiRasterDatasetMultiYears(samples_coords_paths_flat, data_paths_flat, train_df)
 
             if args.use_validation:
                 if accelerator.is_main_process:
@@ -628,16 +640,16 @@ if __name__ == "__main__":
 
             if accelerator.is_main_process:
                 print("Creating Datasets and DataLoaders...")
-            train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coords_paths_flat, data_paths_flat, train_df)
-            train_dataset.set_feature_means(train_dataset_means_std.get_feature_means())
-            train_dataset.set_feature_stds(train_dataset_means_std.get_feature_stds())
+            train_dataset = MultiRasterDatasetMultiYears(samples_coords_paths_flat, data_paths_flat, train_df)
+            #train_dataset.set_feature_means(train_dataset_means_std.get_feature_means())
+            #train_dataset.set_feature_stds(train_dataset_means_std.get_feature_stds())
             train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS, pin_memory=True, drop_last=False)
 
             val_loader = None
             if args.use_validation and val_df is not None:
-                val_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coords_paths_flat, data_paths_flat, val_df)
-                val_dataset.set_feature_means(train_dataset_means_std.get_feature_means())
-                val_dataset.set_feature_stds(train_dataset_means_std.get_feature_stds())
+                val_dataset = MultiRasterDatasetMultiYears(samples_coords_paths_flat, data_paths_flat, val_df)
+             #   val_dataset.set_feature_means(train_dataset_means_std.get_feature_means())
+             #   val_dataset.set_feature_stds(train_dataset_means_std.get_feature_stds())
                 val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True)
 
             if accelerator.is_main_process:

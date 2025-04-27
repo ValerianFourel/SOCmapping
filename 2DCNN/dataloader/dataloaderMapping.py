@@ -5,7 +5,8 @@ import os
 import glob
 from config import bands_list_order, time_before, window_size
 import re
-
+from accelerate import Accelerator
+from torch.utils.data import DataLoader
 
 class RasterTensorDataset1Mil(Dataset):
     def __init__(self, base_path):
@@ -54,26 +55,16 @@ class MultiRasterDataset1MilMultiYears(Dataset):
         self.data_array_subfolders = flatten_list(data_array_subfolders)
         self.seasonalityBased = self.check_seasonality(self.data_array_subfolders)
         self.time_before = time_before
-        self.non_elevation_bands = [band for band in bands_list_order if band != 'Elevation']
         self.samples_coordinates_array_subfolders = flatten_list(samples_coordinates_array_subfolders)
         self.dataframe = dataframe
         self.datasets = {
             self.get_last_three_folders(subfolder): RasterTensorDataset1Mil(subfolder)
             for subfolder in self.data_array_subfolders
         }
-        self.expected_channels = 26
         self.coordinates = {
             self.get_last_three_folders(subfolder): np.load(f"{subfolder}/coordinates.npy")
             for subfolder in self.samples_coordinates_array_subfolders
         }
-        self.channels_per_band = time_before  # Each non-elevation band contributes time_before channels
-        if len(self.non_elevation_bands) * self.channels_per_band + 1 != self.expected_channels:
-            raise ValueError(
-                f"Expected {self.expected_channels} channels, but got "
-                f"{len(self.non_elevation_bands) * self.channels_per_band + 1} "
-                f"(1 for Elevation + {len(self.non_elevation_bands)} bands * {self.channels_per_band} time steps)"
-            )
-
 
     def check_seasonality(self, data_array_subfolders):
         seasons = ['winter', 'spring', 'summer', 'autumn']
@@ -106,61 +97,16 @@ class MultiRasterDataset1MilMultiYears(Dataset):
             ]
         return filtered_array
 
-  #  def __getitem2__(self, index):
-  #      row = self.dataframe.iloc[index]
-  #      longitude, latitude = row["longitude"], row["latitude"]
-  #      filtered_array = self.filter_by_season_or_year(row.get('season', ''), row.get('year', ''), self.seasonalityBased)
-
-        # Initialize band tensors dictionary with None for each band
-     #   band_tensors = {band: None for band in bands_list_order}
-
-      #  for subfolder in filtered_array:
-       #     subfolder_key = self.get_last_three_folders(subfolder)
-        #    band = subfolder_key.split(os.path.sep)[-2]
-
-         #   if band == 'Elevation':
-          #      id_num, x, y = self.find_coordinates_index(subfolder_key, longitude, latitude)
-         #       elevation_tensor = self.datasets[subfolder_key].get_tensor_by_location(id_num, x, y)
-         #       if elevation_tensor is not None:
-         #           band_tensors['Elevation'] = elevation_tensor
-         #   else:
-         #       # For non-elevation bands, only use the data for the specified year/season
-         #       id_num, x, y = self.find_coordinates_index(subfolder_key, longitude, latitude)
-         #       tensor = self.datasets[subfolder_key].get_tensor_by_location(id_num, x, y)
-         #       if tensor is not None and band in band_tensors:
-         #           band_tensors[band] = tensor
-#
-        # Stack tensors for each band, filling missing ones with zeros
-   #     stacked_tensors = []
-   #     for band in bands_list_order:
-   #         if band_tensors[band] is not None:
-   #             stacked_tensors.append(band_tensors[band])
-   #         else:
-                # If no tensor is available for a band, use a zero tensor
-   #             stacked_tensors.append(torch.zeros(window_size, window_size))
-#
-        # Stack along the channel dimension to get (channels, width, height)
-    #    final_tensor = torch.stack(stacked_tensors)
-#
-     #   return longitude, latitude, final_tensor
-
     def __getitem__(self, index):
-        """
-        Retrieve tensor and target value for a given index.
-
-        Parameters:
-        index: int, index of the row in the dataframe
-
-        Returns:
-        tuple: (longitude, latitude, tensor, OC), where tensor is of shape (26, 5, 5)
-        """
         row = self.dataframe.iloc[index]
         longitude, latitude = row["longitude"], row["latitude"]
         filtered_array = self.filter_by_season_or_year(row.get('season', ''), row.get('year', ''), self.seasonalityBased)
 
+
+        
         # Initialize a list to hold tensors for all channels (26 in total)
         channel_tensors = []
-
+        self.expected_channels = 26
         # Handle Elevation (1 channel, added once)
         elevation_subfolder = next(
             (subfolder for subfolder in filtered_array if 'Elevation' in subfolder), None
@@ -175,7 +121,7 @@ class MultiRasterDataset1MilMultiYears(Dataset):
                 channel_tensors.append(torch.zeros(window_size, window_size))
         else:
             channel_tensors.append(torch.zeros(window_size, window_size))
-
+        self.non_elevation_bands = [band for band in bands_list_order if band != 'Elevation']
         # Handle non-elevation bands (each band contributes time_before channels)
         for band in self.non_elevation_bands:
             # Get subfolders for the current band and specified year/season
@@ -227,7 +173,6 @@ class MultiRasterDataset1MilMultiYears(Dataset):
         final_tensor = torch.stack(channel_tensors)
 
         return longitude, latitude, final_tensor
-
     def __len__(self):
         return len(self.dataframe)
 
@@ -240,7 +185,7 @@ class NormalizedMultiRasterDataset1MilMultiYears(MultiRasterDataset1MilMultiYear
         super().__init__(samples_coordinates_array_path, data_array_path, df,time_before)
         self.feature_means=feature_means
         self.feature_stds=feature_stds
-        self.time_before=time_before
+        time_before=time_before
         
 
     def __getitem__(self, idx):

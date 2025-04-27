@@ -71,6 +71,7 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=True):
         return training_df
 
 def load_SimpleTransformer_model(model_path="/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/final_transformer_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1_000_TRANSFORM_log_LOSS_composite_l2.pth", accelerator=None):
+    print(model_path)
     device = accelerator.device if accelerator else torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = SimpleTransformer(
         input_channels=len(bands_list_order),
@@ -204,7 +205,7 @@ def main(target_transform):
 
     parser = argparse.ArgumentParser(description="Accelerated inference script with multi-GPU support")
     parser.add_argument("--model-path", type=str, 
-                        default="/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/transformer_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1_0000.pth", 
+                        default="/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/final_transformer_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1.0000_TRANSFORM_log_LOSS_composite_l2_try_overfit_large_OC.pth", 
                         help="Path to the trained model")
     args = parser.parse_args()
 
@@ -245,7 +246,7 @@ def main(target_transform):
         pin_memory=True
     )
     inference_loader = accelerator.prepare(inference_loader)
-    model_path = "/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/final_transformer_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1_000_TRANSFORM_log_LOSS_composite_l2.pth"
+    model_path = "/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/final_transformer_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1.0000_TRANSFORM_log_LOSS_composite_l2_try_overfit_large_OC.pth"
     model, device, accelerator = load_SimpleTransformer_model(model_path, accelerator)
     if accelerator.is_local_main_process:
         print(f"Loaded SimpleTransformer model on {device}")

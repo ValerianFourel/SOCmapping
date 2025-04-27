@@ -7,7 +7,7 @@ import pandas as pd
 from config import (
     bands_list_order, time_before, LOADING_TIME_BEGINNING, window_size, MAX_OC,
     TIME_BEGINNING, TIME_END, INFERENCE_TIME, seasons, years_padded, NUM_HEADS, NUM_LAYERS,
-    save_path_predictions_plots, SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly,
+    save_path_predictions_plots, SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly,hidden_size,
     DataYearly, file_path_coordinates_Bavaria_1mil, SamplesCoordinates_Seasonally,
     MatrixCoordinates_1mil_Seasonally, DataSeasonally, file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC
 )
@@ -70,14 +70,14 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=True):
         training_df = pd.concat(training_dfs).drop('bin', axis=1)
         return training_df
 
-def load_SimpleTFT_model(model_path="/home/vfourel/SOCProject/SOCmapping/TemporalFusionTransformer/TFT_model_run_1_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1.0000_TRANSFORM_log_LOSS_composite_l2.pth", accelerator=None):
+def load_SimpleTFT_model(model_path="/home/vfourel/SOCProject/SOCmapping/TemporalFusionTransformer/TFT_model_run_1_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1.0000_TRANSFORM_normalize_LOSS_l1.pth", accelerator=None):
     device = accelerator.device if accelerator else torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = SimpleTFT(
         input_channels=len(bands_list_order),
         height=window_size,
         width=window_size,
         time_steps=time_before,
-        d_model=512  # Adjust this based on the saved model
+        d_model=hidden_size  # Adjust this based on the saved model
     )
     try:
         state_dict = torch.load(model_path, map_location=device, weights_only=True)
@@ -108,35 +108,32 @@ def flatten_paths(path_list):
         else:
             flattened.append(item)
     return flattened
-def getStatsforOC(train_loader):
-    all_targets = []
-    for _, _, _, targets in train_loader:
-        all_targets.append(targets)
-    all_targets = torch.cat(all_targets)
-    target_mean = all_targets.mean().item()
-    target_std = all_targets.std().item()
-    return target_mean,target_std
+
+def compute_training_statistics_oc():
+    df_train = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
+
+                
+    
+        # Calculate target statistics from balanced dataset
+    target_mean = df_train['OC'].mean()
+    target_std = df_train['OC'].std()
+
+    
+    return target_mean, target_std
 
 def compute_training_statistics():
     df_train = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
     train_coords, train_data = separate_and_add_data()
     train_coords = list(dict.fromkeys(flatten_paths(train_coords)))
     train_data = list(dict.fromkeys(flatten_paths(train_data)))
-    train_df = create_balanced_dataset(df_train, use_validation=False)
     
-    if not isinstance(train_df, pd.DataFrame):
-        raise TypeError(f"Expected train_df to be a pandas DataFrame, got {type(train_df)}")
+    if not isinstance(df_train, pd.DataFrame):
+        raise TypeError(f"Expected train_df to be a pandas DataFrame, got {type(df_train)}")
     
-    train_dataset = NormalizedMultiRasterDatasetMultiYears(train_coords, train_data, train_df)
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=256,
-        shuffle=False,
-        num_workers=4,
-        pin_memory=True
-    )
+    train_dataset = NormalizedMultiRasterDatasetMultiYears(train_coords, train_data, df_train)
+
     feature_means, feature_stds = train_dataset.get_statistics()
-    target_mean, target_std = getStatsforOC(train_loader)
+    target_mean, target_std = compute_training_statistics_oc()
     print(f"Computed training statistics - Means: {feature_means}, Stds: {feature_stds}")
     
     expected_channels = len(bands_list_order)
@@ -158,6 +155,7 @@ def run_inference(model, dataloader, accelerator):
             # Run model inference
             outputs = model(tensors)  # Assuming model outputs a single value per sample
             predictions = outputs.cpu().numpy()
+            accelerator.print(predictions)
 
             # Store coordinates and predictions, ensuring tensors are moved to CPU
             coords = np.stack([longitudes.cpu().numpy(), latitudes.cpu().numpy()], axis=1)
@@ -203,7 +201,7 @@ def main(target_transform):
 
     parser = argparse.ArgumentParser(description="Accelerated inference script with multi-GPU support")
     parser.add_argument("--model-path", type=str, 
-                        default="/home/vfourel/SOCProject/SOCmapping/TemporalFusionTransformer/tft_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_0.0000.pth", 
+                        default="/home/vfourel/SOCProject/SOCmapping/TemporalFusionTransformer/TFT_model_run_1_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1.0000_TRANSFORM_normalize_LOSS_l1.pth", 
                         help="Path to the trained model")
     args = parser.parse_args()
     try:
@@ -223,11 +221,12 @@ def main(target_transform):
     inference_dataset = NormalizedMultiRasterDataset1MilMultiYears(
         samples_coordinates_array_path=samples_coords_1mil,
         data_array_path=data_1mil,
-        df=df_full[:300000],
+        df=df_full[:120000],
         feature_means=feature_means,
         feature_stds=feature_stds,
         time_before=time_before
     )
+   # iference_dataset = MultiRasterDataset1MilMultiYears(samples_coordinates_array_subfolders=samples_coords_1mil, data_array_subfolders=data_1mil, dataframe=df_full[:2000])
     # Main code
     dataset_len = len(inference_dataset)
     if accelerator.is_local_main_process:
@@ -243,15 +242,15 @@ def main(target_transform):
         pin_memory=True
     )
     inference_loader = accelerator.prepare(inference_loader)
-    model_path = "/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/final_transformer_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1_000_TRANSFORM_log_LOSS_composite_l2.pth"
+    model_path = "/home/vfourel/SOCProject/SOCmapping/TemporalFusionTransformer/TFT_model_run_1_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1.0000_TRANSFORM_normalize_LOSS_l1.pth"
     model, device, accelerator = load_SimpleTFT_model(model_path, accelerator)
     if accelerator.is_local_main_process:
         print(f"Loaded SimpleTransformer model on {device}")
 
     coordinates, predictions = run_inference(model, inference_loader, accelerator)
     predictions = apply_inverse_transform(predictions, target_transform, target_mean=target_mean, target_std=target_std)
-    np.save("coordinates_1mil_2ndThird.npy", coordinates)
-    np.save("predictions_1mil_2ndThird.npy", predictions)
+    np.save("coordinates_0k_to_120k.npy", coordinates)
+    np.save("predictions_0k_to_120k.npy", predictions)
     # Only the main process handles printing and visualization
     if accelerator.is_local_main_process:
         print(f"Inference completed. Coordinates shape: {coordinates.shape}, Predictions shape: {predictions.shape}")
@@ -265,5 +264,5 @@ def main(target_transform):
 
 
 if __name__ == "__main__":
-    target_transform = "log"
+    target_transform = "normalize"
     main(target_transform)

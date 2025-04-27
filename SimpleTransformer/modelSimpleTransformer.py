@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from config import NUM_LAYERS, NUM_HEADS
 
 class SimpleTransformer(nn.Module):
     def __init__(self, input_channels=6, input_height=33, input_width=33, input_time=4, num_heads=2, num_layers=1, dropout_rate=0.3):
@@ -55,8 +56,7 @@ class SimpleTransformer(nn.Module):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
 if __name__ == "__main__":
-    NUM_LAYERS = 1
-    NUM_HEADS = 8 
+
     model = SimpleTransformer(
                 input_channels=6,
                 input_height=5,

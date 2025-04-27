@@ -3,6 +3,7 @@
 **/plots/
 **/predictions_plots/
 **/prediction_plots/
+**/results_prediction_41by41WindowSize/
 *.pth
 **/wandb/
 **/quickViz/
