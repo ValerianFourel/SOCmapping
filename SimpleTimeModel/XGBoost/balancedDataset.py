@@ -192,6 +192,46 @@ def create_validation_train_sets(df=None, output_dir='output', target_val_ratio=
         print(f"Error: {e}")
         return None, None
 
+def resample_training_df(training_df, num_bins=128, target_fraction=0.75):
+    """
+    Resample training_df's 'OC' values into num_bins, ensuring each bin has at least
+    target_fraction of the entries of the highest count.
+    """
+    oc_values = training_df['OC'].dropna()
+    bins = pd.qcut(oc_values, q=num_bins, duplicates='drop')
+    
+    bin_counts = bins.value_counts().sort_index()
+    max_count = bin_counts.max()
+    target_count = int(max_count * target_fraction)
+    
+    print(f"Max bin count: {max_count}")
+    print(f"Target count per bin (at least): {target_count}")
+    
+    resampled_dfs = []
+    
+    for bin_label in bin_counts.index:
+        bin_mask = pd.cut(training_df['OC'], bins=bins.cat.categories) == bin_label
+        bin_df = training_df[bin_mask]
+        
+        if len(bin_df) < target_count:
+            additional_samples = target_count - len(bin_df)
+            sampled_df = bin_df.sample(n=additional_samples, replace=True, random_state=42)
+            resampled_dfs.append(pd.concat([bin_df, sampled_df]))
+        else:
+            resampled_dfs.append(bin_df)
+    
+    resampled_df = pd.concat(resampled_dfs, ignore_index=True)
+    
+    new_bins = pd.qcut(resampled_df['OC'], q=num_bins, duplicates='drop')
+    new_bin_counts = new_bins.value_counts().sort_index()
+    
+    print("\nBin counts before resampling:")
+    print(bin_counts)
+    print("\nBin counts after resampling:")
+    print(new_bin_counts)
+    
+    return resampled_df
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Optimized validation set creation with exponential family distribution')
     parser.add_argument('--output-dir', type=str, default='output', help='Output directory')

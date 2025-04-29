@@ -16,6 +16,7 @@ from dataloader.dataloaderMapping import NormalizedMultiRasterDataset1MilMultiYe
 from dataloader.dataloaderMultiYears import NormalizedMultiRasterDatasetMultiYears
 from mapping import create_prediction_visualizations, parallel_predict
 from modelSimpleTransformer import SimpleTransformer
+# from modelSimpleTransformerNew import SimpleTransformerV2
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from accelerate import Accelerator
@@ -70,10 +71,11 @@ def create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=True):
         training_df = pd.concat(training_dfs).drop('bin', axis=1)
         return training_df
 
-def load_SimpleTransformer_model(model_path="/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/final_transformer_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1_000_TRANSFORM_log_LOSS_composite_l2.pth", accelerator=None):
+def load_SimpleTransformer_model(model_path="/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/final_transformer_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1.0000_TRANSFORM_none_LOSS_l1_20kParameters.pth", accelerator=None):
     print(model_path)
     device = accelerator.device if accelerator else torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = SimpleTransformer(
+    #model = SimpleTransformerV2(
         input_channels=len(bands_list_order),
         input_height=window_size,
         input_width=window_size,
@@ -205,7 +207,7 @@ def main(target_transform):
 
     parser = argparse.ArgumentParser(description="Accelerated inference script with multi-GPU support")
     parser.add_argument("--model-path", type=str, 
-                        default="/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/final_transformer_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1.0000_TRANSFORM_log_LOSS_composite_l2_try_overfit_large_OC.pth", 
+                        default="/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/final_transformer_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1.0000_TRANSFORM_none_LOSS_l1_20kParameters.pth", 
                         help="Path to the trained model")
     args = parser.parse_args()
 
@@ -246,7 +248,7 @@ def main(target_transform):
         pin_memory=True
     )
     inference_loader = accelerator.prepare(inference_loader)
-    model_path = "/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/final_transformer_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1.0000_TRANSFORM_log_LOSS_composite_l2_try_overfit_large_OC.pth"
+    model_path = "/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/final_transformer_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1.0000_TRANSFORM_none_LOSS_l1_20kParameters.pth"
     model, device, accelerator = load_SimpleTransformer_model(model_path, accelerator)
     if accelerator.is_local_main_process:
         print(f"Loaded SimpleTransformer model on {device}")
@@ -268,5 +270,5 @@ def main(target_transform):
 
 
 if __name__ == "__main__":
-    target_transform = "log"
+    target_transform = "none"
     main(target_transform)

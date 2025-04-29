@@ -7,7 +7,6 @@ from pathlib import Path
 import re
 import glob
 
-
 class RasterTensorDatasetMapping(Dataset):
     def __init__(self, base_path):
         """

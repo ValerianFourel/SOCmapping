@@ -1,0 +1,92 @@
+Training Metrics and Configuration
+==================================================
+
+Command Line Arguments:
+------------------------------
+lr: 0.0002
+num_heads: 8
+num_layers: 2
+loss_type: l1
+loss_alpha: 0.5
+target_transform: none
+use_validation: True
+output_dir: output
+target_val_ratio: 0.08
+use_gpu: True
+distance_threshold: 1.2
+target_fraction: 0.75
+num_runs: 5
+
+Wandb Runs Information:
+------------------------------
+Run 1:
+  Project: socmapping-SimpleTransformer
+  Run Name: run_1
+  Run ID: 5qfy2phf
+
+Run 2:
+  Project: socmapping-SimpleTransformer
+  Run Name: run_2
+  Run ID: y5pntaov
+
+Run 3:
+  Project: socmapping-SimpleTransformer
+  Run Name: run_3
+  Run ID: zbna7hef
+
+Run 4:
+  Project: socmapping-SimpleTransformer
+  Run Name: run_4
+  Run ID: 3jp487ne
+
+Run 5:
+  Project: socmapping-SimpleTransformer
+  Run Name: run_5
+  Run ID: 9v3sines
+
+Average Metrics Across Runs:
+------------------------------
+train_loss_avg: 7.8951
+val_loss: 5.8389
+correlation: 0.4576
+r_squared: 0.2376
+mse: 87.5983
+rmse: 9.2034
+mae: 5.8389
+rpiq: 0.5773
+
+Average Min Distance Statistics:
+------------------------------
+avg_mean: 67.2893
+std_mean: 4.6523
+avg_median: 4.9361
+std_median: 0.5741
+avg_min: 1.0230
+std_min: 0.2753
+avg_max: 747.1697
+std_max: 112.8711
+avg_std: 110.7581
+std_std: 6.2522
+
+Best Metrics Across Runs:
+------------------------------
+r_squared:
+  Mean: 0.3092
+  Std: 0.0213
+  Values: ['0.3256', '0.3309', '0.2843', '0.2824', '0.3229']
+
+rmse:
+  Mean: 9.9438
+  Std: 0.1914
+  Values: ['9.7824', '9.9486', '10.2058', '9.6875', '10.0949']
+
+mae:
+  Mean: 5.7498
+  Std: 0.1765
+  Values: ['5.7214', '5.7130', '6.0863', '5.6565', '5.5718']
+
+rpiq:
+  Mean: 0.5205
+  Std: 0.0103
+  Values: ['0.5111', '0.5327', '0.5095', '0.5161', '0.5329']
+
