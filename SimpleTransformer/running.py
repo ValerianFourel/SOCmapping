@@ -228,7 +228,7 @@ def main(target_transform):
     inference_dataset = NormalizedMultiRasterDataset1MilMultiYears(
         samples_coordinates_array_path=samples_coords_1mil,
         data_array_path=data_1mil,
-        df=df_full[:300000],
+        df=df_full[150000:300000],
         feature_means=feature_means,
         feature_stds=feature_stds,
         time_before=time_before
@@ -255,8 +255,8 @@ def main(target_transform):
 
     coordinates, predictions = run_inference(model, inference_loader, accelerator)
     predictions = apply_inverse_transform(predictions, target_transform, target_mean=target_mean, target_std=target_std)
-    np.save("coordinates_1mil_2ndThird.npy", coordinates)
-    np.save("predictions_1mil_2ndThird.npy", predictions)
+    np.save("coordinates_150k_to_300k.npy", coordinates)
+    np.save("predictions_150k_to_300k.npy", predictions)
     # Only the main process handles printing and visualization
     if accelerator.is_local_main_process:
         print(f"Inference completed. Coordinates shape: {coordinates.shape}, Predictions shape: {predictions.shape}")

@@ -15,7 +15,7 @@ from config import  (TIME_BEGINNING ,TIME_END , INFERENCE_TIME ,MAX_OC , seasons
   SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, DataSeasonally , 
   file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC ,  years_padded )
 from mapping import  create_prediction_visualizations , parallel_predict
-
+from balancedDataset import resample_training_df
 import matplotlib.pyplot as plt
 from torch.utils.data import Dataset, DataLoader
 import multiprocessing
@@ -120,7 +120,7 @@ def main():
     # Remove duplicates
     samples_coordinates_array_path = list(dict.fromkeys(samples_coordinates_array_path))
     data_array_path = list(dict.fromkeys(data_array_path))
-
+    df = resample_training_df(df)
 
     # Create dataset and dataloader
     dataset = MultiRasterDataset(samples_coordinates_array_path ,  data_array_path , df)
@@ -230,8 +230,8 @@ def main():
         batch_size=8,
         num_threads=num_cpus 
     )
-    save_path_coords = "coordinates_1mil.npy"
-    save_path_preds = "predictions_1mil.npy"
+    save_path_coords = f"coordinates_1mil_{args.model}.npy"
+    save_path_preds = f"predictions_1mil_{args.model}.npy"
 
     np.save(save_path_coords, coordinates)
     np.save(save_path_preds, predictions)
