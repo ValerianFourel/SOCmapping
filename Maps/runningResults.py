@@ -19,36 +19,36 @@ os.makedirs(output_dir, exist_ok=True)
 # Define model paths dictionary
 model_data = {
     "RandomForest": {
-        "coordinates": "/home/vfourel/SOCProject/SOCmapping/results_prediction_41by41WindowSize/RandomForest/2015Inference/coordinates_1mil.npy",
-        "predictions": "/home/vfourel/SOCProject/SOCmapping/results_prediction_41by41WindowSize/RandomForest/2015Inference/predictions_1mil.npy"
+        "coordinates": "/home/vfourel/SOCProject/SOCmapping/SimpleTimeModel/XGBoost/RandomForestFinalResults2023/coordinates_1mil_rf.npy",
+        "predictions": "/home/vfourel/SOCProject/SOCmapping/SimpleTimeModel/XGBoost/RandomForestFinalResults2023/predictions_1mil_rf.npy"
     },
     "XGBoost": {
-        "coordinates": "/home/vfourel/SOCProject/SOCmapping/results_prediction_41by41WindowSize/XGBoost/2015Inference/coordinates_1mil.npy",
-        "predictions": "/home/vfourel/SOCProject/SOCmapping/results_prediction_41by41WindowSize/XGBoost/2015Inference/predictions_1mil.npy"
+        "coordinates": "/home/vfourel/SOCProject/SOCmapping/SimpleTimeModel/XGBoost/XGBoostFinalResults2023/coordinates_1mil_xgboost.npy",
+        "predictions": "/home/vfourel/SOCProject/SOCmapping/SimpleTimeModel/XGBoost/XGBoostFinalResults2023/predictions_1mil_xgboost.npy"
     },
     "2DCNN": {
-        "coordinates": "/home/vfourel/SOCProject/SOCmapping/2DCNN/finalResult/coordinates_1mil.npy",
-        "predictions": "/home/vfourel/SOCProject/SOCmapping/2DCNN/finalResult/predictions_1mil.npy"
+        "coordinates": "/home/vfourel/SOCProject/SOCmapping/2DCNN/finalResults2023/coordinates_1mil.npy",
+        "predictions": "/home/vfourel/SOCProject/SOCmapping/2DCNN/finalResults2023/predictions_1mil.npy"
     },
     "3DCNN": {
-        "coordinates": "/home/vfourel/SOCProject/SOCmapping/3DCNN/finalResults/coordinates_1mil.npy",
-        "predictions": "/home/vfourel/SOCProject/SOCmapping/3DCNN/finalResults/predictions_1mil.npy"
+        "coordinates": "/home/vfourel/SOCProject/SOCmapping/3DCNN/finalResults2023/coordinates_1mil.npy",
+        "predictions": "/home/vfourel/SOCProject/SOCmapping/3DCNN/finalResults2023/predictions_1mil.npy"
     },
     "CNNLSTM": {
-        "coordinates": "/home/vfourel/SOCProject/SOCmapping/CNNLSTM/finalResults/coordinates_1mil.npy",
-        "predictions": "/home/vfourel/SOCProject/SOCmapping/CNNLSTM/finalResults/predictions_1mil.npy"
+        "coordinates": "/home/vfourel/SOCProject/SOCmapping/CNNLSTM/finalResults2023/coordinates_1mil.npy",
+        "predictions": "/home/vfourel/SOCProject/SOCmapping/CNNLSTM/finalResults2023/predictions_1mil.npy"
     },
     "TemporalFusionTransformer": {
-        "coordinates": "/home/vfourel/SOCProject/SOCmapping/TemporalFusionTransformer/finalResults/concatenatedResults/coordinates.npy",
-        "predictions": "/home/vfourel/SOCProject/SOCmapping/TemporalFusionTransformer/finalResults/concatenatedResults/predictions.npy"
+        "coordinates": "/home/vfourel/SOCProject/SOCmapping/TemporalFusionTransformer/finalResults2023/concatenatedResults/coordinates.npy",
+        "predictions": "/home/vfourel/SOCProject/SOCmapping/TemporalFusionTransformer/finalResults2023/concatenatedResults/predictions.npy"
     },
     "2milTransformer": {
-        "coordinates": "/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/final_transformer_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1_0000_TRANSFORM_none_LOSS_l1_2milParameters_RESULTS/coordinates_1mil_2ndThird.npy",
-        "predictions": "/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/final_transformer_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1_0000_TRANSFORM_none_LOSS_l1_2milParameters_RESULTS/predictions_1mil_2ndThird.npy"
+        "coordinates": "/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/final_transformer_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1_0000_TRANSFORM_none_LOSS_l1_2milParameters_RESULTS_2023/coordinates_1mil_2ndThird.npy",
+        "predictions": "/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/final_transformer_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1_0000_TRANSFORM_none_LOSS_l1_2milParameters_RESULTS_2023/predictions_1mil_2ndThird.npy"
     },
     "20kTransformer": {
-        "coordinates": "/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/final_transformer_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1.0000_TRANSFORM_none_LOSS_l1_20kParameters_RESULTS/concatenatedResults/coordinates.npy",
-        "predictions": "/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/final_transformer_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1.0000_TRANSFORM_none_LOSS_l1_20kParameters_RESULTS/concatenatedResults/predictions.npy"
+        "coordinates": "/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/final_transformer_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1.0000_TRANSFORM_none_LOSS_l1_20kParameters_RESULTS_2023/concatenatedResults/coordinates.npy",
+        "predictions": "/home/vfourel/SOCProject/SOCmapping/SimpleTransformer/final_transformer_model_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1.0000_TRANSFORM_none_LOSS_l1_20kParameters_RESULTS_2023/concatenatedResults/predictions.npy"
     },
     "FoundationModel": {
         "coordinates": "/home/vfourel/SOCProject/SOCmapping/results_prediction_41by41WindowSize/FoundationalModels/L1Loss_ZeroCenteredTarget/run2015_MAXOC150_v1/coordinates_1mil_2ndQuarter.npy",
@@ -97,11 +97,16 @@ def create_model_comparison_maps():
             # Interpolate values
             grid_z = griddata(coordinates, predictions, (grid_x, grid_y), method='linear')
 
-            # Create figure
-            fig, ax = plt.subplots(figsize=(12, 10), dpi=300)
+            # Create figure with adjusted layout to make room for the colorbar
+            fig = plt.figure(figsize=(14, 10), dpi=300)
+
+            # Create subplot for the map with adjusted size to make room for colorbar
+            ax = fig.add_axes([0.1, 0.1, 0.65, 0.8])  # [left, bottom, width, height]
+
+            # Create the contour plot
             contour = ax.contourf(grid_x, grid_y, grid_z,
                                 levels=50,
-                                cmap='terrain',  # Using terrain colormap as requested
+                                cmap='terrain',  # Using original terrain colormap as requested
                                 alpha=0.8,
                                 vmin=global_min,
                                 vmax=global_max)
@@ -115,8 +120,15 @@ def create_model_comparison_maps():
             ax.set_ylabel('Latitude')
             ax.grid(True)
 
-            # Add colorbar
-            plt.colorbar(contour, ax=ax, label='SOC (g/kg)')
+            # Add a more prominent colorbar on the right side with fixed full range
+            cax = fig.add_axes([0.8, 0.1, 0.05, 0.8])  # [left, bottom, width, height]
+            cbar = fig.colorbar(plt.cm.ScalarMappable(norm=plt.Normalize(global_min, global_max), cmap='terrain'), 
+                               cax=cax)
+            cbar.set_label('SOC (g/kg)', fontsize=12)
+            cbar.ax.tick_params(labelsize=10)
+
+            # Add ticks at regular intervals to ensure full scale visibility
+            cbar.set_ticks(np.linspace(global_min, global_max, 11))
 
             # Save figure
             filename = f"{PICTURE_VERSION}_{model_name}_MAX_OC_{MAX_OC}_Beginning_{TIME_BEGINNING}_End_{TIME_END}_InferenceTime{INFERENCE_TIME}_{timestamp}.png"
@@ -145,3 +157,4 @@ def create_model_comparison_maps():
 if __name__ == "__main__":
     create_model_comparison_maps()
     print(f"All maps saved to {output_dir}")
+
