@@ -4,17 +4,25 @@ import xgboost as xgb
 from sklearn.ensemble import RandomForestRegressor
 from pathlib import Path
 from sklearn.metrics import mean_absolute_error, mean_squared_error
-from dataloader.dataloaderMulti import MultiRasterDatasetMultiYears,  filter_dataframe, separate_and_add_data
+from dataloader.dataloaderMulti import MultiRasterDatasetMultiYears, filter_dataframe, separate_and_add_data
 # from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data
 from torch.utils.data import DataLoader
 import argparse
-from config import (
+# from config import (
+#    TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC, seasons,
+#    SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, DataYearly,
+#    SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, DataSeasonally,
+#    file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC, years_padded
+#)
+from balancedDataset import create_validation_train_sets,resample_training_df
+
+from configElevationOnlyExperiment import  (
     TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC, seasons,
     SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, DataYearly,
     SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, DataSeasonally,
     file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC, years_padded
 )
-from balancedDataset import create_validation_train_sets,resample_training_df
+
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description='Train XGBoost and Random Forest models with correlation-based R², MAE, RMSE, and RPIQ evaluation')

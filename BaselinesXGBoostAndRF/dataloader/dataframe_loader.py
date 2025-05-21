@@ -1,6 +1,7 @@
 
-from config import  TIME_BEGINNING ,TIME_END , seasons, years_padded, INFERENCE_TIME  , LOADING_TIME_BEGINNING_INFERENCE, SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, DataYearly, SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, DataSeasonally ,file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC 
+#from config import  TIME_BEGINNING ,TIME_END , LOADING_TIME_BEGINNING, seasons, years_padded, INFERENCE_TIME  , LOADING_TIME_BEGINNING_INFERENCE, SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, DataYearly, SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, DataSeasonally ,file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC 
 import pandas as pd
+from configElevationOnlyExperiment import  TIME_BEGINNING ,TIME_END , LOADING_TIME_BEGINNING, seasons, years_padded, INFERENCE_TIME  , LOADING_TIME_BEGINNING_INFERENCE, SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, DataYearly, SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, DataSeasonally ,file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC 
 
 
 
@@ -81,6 +82,7 @@ def filter_dataframe(time_beginning, time_end, max_oc=150):
     return filtered_df
 
 
+
 def separate_and_add_data_1mil_inference(LOADING_TIME_BEGINNING=LOADING_TIME_BEGINNING_INFERENCE, TIME_END=INFERENCE_TIME, seasons=seasons, years_padded=years_padded, 
                          SamplesCoordinates_Yearly=MatrixCoordinates_1mil_Yearly, DataYearly=DataYearly,
                          SamplesCoordinates_Seasonally=MatrixCoordinates_1mil_Seasonally, DataSeasonally=DataSeasonally):
@@ -108,8 +110,8 @@ def separate_and_add_data_1mil_inference(LOADING_TIME_BEGINNING=LOADING_TIME_BEG
         start_idx = years_padded.index(LOADING_TIME_BEGINNING)
         end_idx = years_padded.index(TIME_END)
         selected_years = years_padded[start_idx:end_idx + 1]
+        print(create_path_arrays_yearly(SamplesCoordinates_Yearly, DataYearly, selected_years))
         return create_path_arrays_yearly(SamplesCoordinates_Yearly, DataYearly, selected_years)
-
 
 def get_time_range(TIME_BEGINNING= TIME_BEGINNING, TIME_END=TIME_END, seasons=seasons, years_padded=years_padded):
     # Define seasons list for matching
@@ -137,6 +139,14 @@ def get_time_range(TIME_BEGINNING= TIME_BEGINNING, TIME_END=TIME_END, seasons=se
 
 
 def process_paths_yearly(path, year, seen_years):
+    # Check if the path already contains a year at the end
+    path_parts = path.split('/')
+    if path_parts and path_parts[-1].isdigit():
+        # Path already ends with a year, don't add another one
+        base_path = '/'.join(path_parts[:-1])
+    else:
+        base_path = path
+
     if 'Elevation' in path:
         return path
     elif 'MODIS_NPP' in path:
@@ -144,15 +154,16 @@ def process_paths_yearly(path, year, seen_years):
         # Add current year
         if year not in seen_years:
             seen_years.add(year)
-            paths.append(f"{path}/{year}")
+            paths.append(f"{base_path}/{year}")
         # Add previous year
         prev_year = str(int(year) - 1)
         if prev_year not in seen_years:
             seen_years.add(prev_year)
-            paths.append(f"{path}/{prev_year}")
+            paths.append(f"{base_path}/{prev_year}")
         return paths
     else:
-        return f"{path}/{year}"
+        return f"{base_path}/{year}"
+
 
 def create_path_arrays_yearly(SamplesCoordinates_Yearly, DataYearly, selected_years):
     seen_years_samples = set()
@@ -220,7 +231,7 @@ def create_path_arrays(SamplesCoordinates_Seasonally, DataSeasonally, selected_s
 
 
 
-def separate_and_add_data(TIME_BEGINNING=TIME_BEGINNING, TIME_END=TIME_END, seasons=seasons, years_padded=years_padded, 
+def separate_and_add_data(TIME_BEGINNING=LOADING_TIME_BEGINNING, TIME_END=TIME_END, seasons=seasons, years_padded=years_padded, 
                          SamplesCoordinates_Yearly=SamplesCoordinates_Yearly, DataYearly=DataYearly,
                          SamplesCoordinates_Seasonally=SamplesCoordinates_Seasonally, DataSeasonally=DataSeasonally):
 

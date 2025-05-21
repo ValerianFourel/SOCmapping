@@ -201,7 +201,7 @@ def main(target_transform):
 
     parser = argparse.ArgumentParser(description="Accelerated inference script with multi-GPU support")
     parser.add_argument("--model-path", type=str, 
-                        default="/home/vfourel/SOCProject/SOCmapping/TemporalFusionTransformer/TFT_model_run_1_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1.0000_TRANSFORM_normalize_LOSS_l1.pth", 
+                        default="/home/vfourel/SOCProject/SOCmapping/TemporalFusionTransformer/TFT_model_run_4_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_0.5223_TRANSFORM_normalize_LOSS_l1.pth", 
                         help="Path to the trained model")
     args = parser.parse_args()
     try:
@@ -242,7 +242,7 @@ def main(target_transform):
         pin_memory=True
     )
     inference_loader = accelerator.prepare(inference_loader)
-    model_path = "/home/vfourel/SOCProject/SOCmapping/TemporalFusionTransformer/TFT_model_run_1_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1.0000_TRANSFORM_normalize_LOSS_l1.pth"
+    model_path = "/home/vfourel/SOCProject/SOCmapping/TemporalFusionTransformer/TFT_model_run_4_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_0.5223_TRANSFORM_normalize_LOSS_l1.pth"
     model, device, accelerator = load_SimpleTFT_model(model_path, accelerator)
     if accelerator.is_local_main_process:
         print(f"Loaded SimpleTransformer model on {device}")

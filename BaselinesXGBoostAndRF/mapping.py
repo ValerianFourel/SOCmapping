@@ -9,6 +9,7 @@ from config import (base_path_data , file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC ,
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataloader.dataloaderMapping import MultiRasterDatasetMapping
+from dataloader.dataframe_loader import separate_and_add_data_1mil_inference
 from sklearn.utils import shuffle
 import copy
 from torch.utils.data import DataLoader, Subset
@@ -158,29 +159,41 @@ def create_prediction_visualizations(year,coordinates, predictions, save_path):
 # create_prediction_map(bavaria, coordinates, predictions, save_path='output/maps')
 
 
+def flatten_paths(path_list):
+    flattened = []
+    for item in path_list:
+        if isinstance(item, list):
+            flattened.extend(flatten_paths(item))
+        else:
+            flattened.append(item)
+    return flattened
 
-
-# Define the worker function
-def process_batch(df_chunk, model_copy, bands_yearly, batch_size):
+def process_batch(samples_coords_1mil, data_1mil, df_chunk, model_copy, batch_size):
     # Create dataset and dataloader for this chunk
-    chunk_dataset = MultiRasterDatasetMapping(bands_yearly, df_chunk)
+    samples_coords_1mil = list(dict.fromkeys(flatten_paths(samples_coords_1mil)))
+    data_1mil = list(dict.fromkeys(flatten_paths(data_1mil)))
+    chunk_dataset = MultiRasterDatasetMapping(samples_coords_1mil, data_1mil, df_chunk)
     chunk_dataloader = DataLoader(chunk_dataset, batch_size=batch_size, shuffle=True)
 
     chunk_coordinates = []
     chunk_features = []
 
-    for longitudes, latitudes, batch_features in chunk_dataloader:
+    for longitudes, latitudes, features in chunk_dataloader:
         # Store coordinates for plotting
         chunk_coordinates.append(np.column_stack((longitudes.numpy(), latitudes.numpy())))
 
-        # Concatenate all values in the batch_features dictionary
-        concatenated_features = np.concatenate([value.numpy() for value in batch_features.values()], axis=1)
-        # Flatten the features
-        flattened_features = concatenated_features.reshape(concatenated_features.shape[0], -1)
-        chunk_features.extend(flattened_features)
+        # features is a tensor of shape (batch_size, num_bands, window_size, window_size, time_steps)
+        # Convert to NumPy array
+        features_np = features.numpy()
+
+        # Flatten each sample's feature tensor
+        # From (batch_size, num_bands, window_size, window_size, time_steps)
+        # to (batch_size, num_bands * window_size * window_size * time_steps)
+        flattened_features = features_np.reshape(features_np.shape[0], -1)
+        chunk_features.append(flattened_features)
 
     # Convert to arrays
-    chunk_features = np.array(chunk_features)
+    chunk_features = np.vstack(chunk_features)
     chunk_coordinates = np.vstack(chunk_coordinates)
 
     # Make predictions using the model copy
@@ -188,8 +201,10 @@ def process_batch(df_chunk, model_copy, bands_yearly, batch_size):
 
     return chunk_coordinates, chunk_predictions
 
-def parallel_predict(df_full, model, bands_yearly, batch_size=4, num_threads=4):
+
+def parallel_predict(df_full, model, batch_size=4, num_threads=4):
     # Shuffle the DataFrame
+    samples_coords_1mil, data_1mil = separate_and_add_data_1mil_inference()
     df_shuffled = df_full.sample(frac=1, random_state=42).reset_index(drop=True)
 
     # Split DataFrame into chunks for each thread
@@ -207,10 +222,10 @@ def parallel_predict(df_full, model, bands_yearly, batch_size=4, num_threads=4):
     with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
         futures = [
             executor.submit(
-                process_batch, 
+                process_batch, samples_coords_1mil, data_1mil,
                 chunk, 
                 copy.deepcopy(model),
-                bands_yearly,
+                
                 batch_size
             ) for chunk in df_chunks
         ]

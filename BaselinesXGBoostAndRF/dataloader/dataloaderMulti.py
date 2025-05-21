@@ -8,7 +8,8 @@ from pathlib import Path
 import re
 import glob
 import pandas as pd
-from config import bands_list_order , time_before, LOADING_TIME_BEGINNING , window_size , LOADING_TIME_BEGINNING, TIME_BEGINNING ,TIME_END , INFERENCE_TIME, LOADING_TIME_BEGINNING_INFERENCE, seasons, years_padded  , SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, DataYearly, SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, DataSeasonally ,file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC 
+#from config import bands_list_order , time_before, LOADING_TIME_BEGINNING , window_size , LOADING_TIME_BEGINNING, TIME_BEGINNING ,TIME_END , INFERENCE_TIME, LOADING_TIME_BEGINNING_INFERENCE, seasons, years_padded  , SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, DataYearly, SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, DataSeasonally ,file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC 
+from configElevationOnlyExperiment import bands_list_order , time_before, LOADING_TIME_BEGINNING , window_size , LOADING_TIME_BEGINNING, TIME_BEGINNING ,TIME_END , INFERENCE_TIME, LOADING_TIME_BEGINNING_INFERENCE, seasons, years_padded  , SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, DataYearly, SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, DataSeasonally ,file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC 
 
 import pandas as pd
 import numpy as np
@@ -359,6 +360,7 @@ def get_available_ids(self):
     return list(self.id_to_file.keys())
 
 
+
 class RasterTensorDataset(Dataset):
     def __init__(self, base_path):
         """
@@ -495,7 +497,7 @@ class MultiRasterDatasetMultiYears(Dataset):
 
         # Check if any subfolder contains a season name
         is_seasonal = any(
-            any(season in subfolder.lower() for season in seasons)
+            any(season in str(subfolder).lower() for season in seasons)
             for subfolder in data_array_subfolders
         )
 
@@ -623,3 +625,45 @@ class MultiRasterDatasetMultiYears(Dataset):
         """Get tensor from specific subfolder dataset"""
         return self.datasets[subfolder].get_tensor_by_location(id_num, x, y)
 
+class NormalizedMultiRasterDatasetMultiYears(MultiRasterDatasetMultiYears):
+    """Wrapper around MultiRasterDatasetMultiYears that adds feature normalization"""
+    def __init__(self, samples_coordinates_array_path, data_array_path, df):
+        super().__init__(samples_coordinates_array_path, data_array_path, df)
+        self.compute_statistics()
+
+    def compute_statistics(self):
+        """Compute mean and std across all features for normalization"""
+        features_list = []
+        for i in range(len(self)):
+            _, _, features, _ = super().__getitem__(i)
+            features_list.append(features.numpy())
+
+        features_array = np.stack(features_list)
+        self._feature_means = torch.tensor(np.mean(features_array, axis=(0, 2, 3)), dtype=torch.float32)
+        self._feature_stds = torch.tensor(np.std(features_array, axis=(0, 2, 3)), dtype=torch.float32)
+        self._feature_stds = torch.clamp(self._feature_stds, min=1e-8)
+
+    def __getitem__(self, idx):
+        longitude, latitude, features, target = super().__getitem__(idx)
+        features = (features - self._feature_means[:, None, None]) / self._feature_stds[:, None, None]
+        return longitude, latitude, features, target
+
+    def get_statistics(self):
+        """Getter for feature means and standard deviations"""
+        return self._feature_means, self._feature_stds
+
+    def get_feature_means(self):
+        """Getter for feature means"""
+        return self._feature_means
+
+    def get_feature_stds(self):
+        """Getter for feature standard deviations"""
+        return self._feature_stds
+
+    def set_feature_means(self, means):
+        """Setter for feature means"""
+        self._feature_means = means
+
+    def set_feature_stds(self, stds):
+        """Setter for feature standard deviations"""
+        self._feature_stds = stds
