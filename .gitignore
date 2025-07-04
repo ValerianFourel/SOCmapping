@@ -11,7 +11,7 @@ __pycache__/
 *.parquet
 *.json
 *.tif
-*.png
+# *.png
 
 # Text and log files
 *.txt
