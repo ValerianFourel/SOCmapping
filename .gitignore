@@ -7,6 +7,8 @@
 **/*.json
 **/*.tif
 **/__pycache__
+!.assets/*
+
 **/Archive/
 **/Data/
 **/plots/
