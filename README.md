@@ -99,18 +99,31 @@ The goal of this project is to achieve state-of-the-art performance in Digital S
 
 ### Running the Training Script
 The main training script (`train.py`) is configured to use the parameters specified in `config.py`. To execute the training on a cluster with multiple GPUs, use the following commands:
+## System Environment
 
-#### Cluster Submission with Condor
+**Hardware:**
+- **Node:** g057
+- **GPUs:** 8x NVIDIA Quadro RTX 6000
+- **GPU Memory:** 24 GB per GPU (192 GB total)
+- **Architecture:** Multi-GPU setup for distributed training
+
+**Software Stack:**
+- **OS:** Ubuntu 22.04 LTS
+- **NVIDIA Driver:** 570.124.06
+- **CUDA:** 11.8 (Custom installation at `/is/software/nvidia/cuda-11.8/`)
+- **cuDNN:** Available for CUDA 11.8
+- **Python Environment:** `socmapping` (Conda)
+
+**CUDA Configuration:**
 ```bash
-condor_submit_bid 1000 -i \
-  -append request_memory=481920 \
-  -append request_cpus=100 \
-  -append request_disk=200G \
-  -append request_gpus=3 \
-  -append 'requirements = CUDADeviceName == "NVIDIA A100-SXM4-80GB"' \
-  train.sub
+# CUDA 11.8 Environment Setup
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/is/software/nvidia/cuda-11.8/lib64/
+export PATH=/is/software/nvidia/cuda-11.8/bin${PATH:+:${PATH}}
+export C_INCLUDE_PATH=/is/software/nvidia/cudnn-VERSION-cu11.8/include
+export LIBRARY_PATH=/is/software/nvidia/cudnn-VERSION-cu11.8/lib64
+export CPLUS_INCLUDE_PATH=$C_INCLUDE_PATH
+export LD_LIBRARY_PATH=$LIBRARY_PATH:$LD_LIBRARY_PATH
 ```
-Ensure `train.sub` is configured to call `accelerate launch` as below.
 
 #### Multi-GPU Training
 ```bash
@@ -119,16 +132,15 @@ accelerate launch --multi_gpu train.py --save_train_and_val True
 - `--save_train_and_val True`: Saves training and validation datasets for reproducibility.
 
 ### Configuration Parameters
-The `config.py` file defines key parameters used in the main run:
+The `config.py` files define key parameters used in the main run:
 ```python
 bands_list_order = ['Elevation', 'LAI', 'LST', 'MODIS_NPP', 'SoilEvaporation', 'TotalEvapotranspiration']
 MAX_OC = 160  # Maximum SOC value (g/kg)
 time_before = 5  # Years of historical data before prediction
-window_size = 33  # Spatial window size
+window_size = 5  # Spatial window size
 TIME_BEGINNING = '2007'  # Start of data period
 TIME_END = '2023'  # End of data period
-INFERENCE_TIME = '2015'  # Year for inference
-num_epochs = 20  # Number of training epochs
+INFERENCE_TIME = '2023'  # Year for inference
 ```
 
 ---
