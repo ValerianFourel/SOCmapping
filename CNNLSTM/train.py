@@ -16,8 +16,6 @@ from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,
                    DataYearly, SamplesCoordinates_Seasonally, bands_list_order,
                    MatrixCoordinates_1mil_Seasonally, DataSeasonally, window_size,
                    file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC, time_before)
-#from modelSimpleTransformer import SimpleTransformer
-#from modelSimpleTransformerNew import SimpleTransformerV2
 from models import RefittedCovLSTM
 import argparse
 from balancedDataset import create_validation_train_sets
@@ -73,13 +71,14 @@ def parse_args():
     parser.add_argument('--loss_type', type=str, default='composite_l2', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
     parser.add_argument('--loss_alpha', type=float, default=0.5, help='Weight for L1 loss in composite loss (if used)')
     parser.add_argument('--target_transform', type=str, default='none', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
-    parser.add_argument('--use_validation', action='store_true', default=False, help='Whether to use validation set')
+    parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')
     parser.add_argument('--output-dir', type=str, default='output', help='Output directory')
     parser.add_argument('--target-val-ratio', type=float, default=0.08, help='Target validation ratio')
     parser.add_argument('--use-gpu', action='store_true', default=True, help='Use GPU')
     parser.add_argument('--distance-threshold', type=float, default=1.2, help='Minimum distance threshold for validation points')
     parser.add_argument('--target-fraction', type=float, default=0.75, help='Fraction of max bin count for resampling')
     parser.add_argument('--num-runs', type=int, default=5, help='Number of times to run the process')
+    parser.add_argument('--save_train_and_val', type=bool, default=False, help='Dropout rate for the model')
     return parser.parse_args()
 
 def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelerator=None, lr=0.001,
@@ -352,13 +351,14 @@ def save_metrics_to_file(args, wandb_runs_info, avg_metrics, min_distance_stats,
             f.write(f"  Values: {[f'{v:.4f}' for v in values]}\n")
             f.write("\n")
 
+
 if __name__ == "__main__":
     args = parse_args()
-        # Set num_runs to 1 if use_validation is False
+    # Set num_runs to 1 if use_validation is False
     if not args.use_validation:
         args.num_runs = 1
     accelerator = Accelerator()
-    
+
     # Initialize lists to store metrics and best metrics across runs
     all_runs_metrics = []
     all_best_metrics = {
@@ -369,12 +369,18 @@ if __name__ == "__main__":
     }
     min_distance_stats_all = []
     wandb_runs_info = []
-    
+
+    # **Add these variables to track the best model across all runs**
+    best_overall_model_state = None
+    best_overall_r_squared = -float('inf')
+    best_overall_run_number = None
+    best_overall_metrics = {}
+
     # Loop through the specified number of runs
     for run in range(args.num_runs):
         if accelerator.is_main_process:
             print(f"\nStarting Run {run + 1}/{args.num_runs}")
-        
+
         # Initialize wandb for this run
         if accelerator.is_main_process:
             wandb_run = wandb.init(
@@ -391,8 +397,6 @@ if __name__ == "__main__":
                     "epochs": num_epochs,
                     "batch_size": 256,
                     "learning_rate": args.lr,
-#                    "num_heads": args.num_heads,
-#                    "num_layers": args.num_layers,
                     "dropout_rate": 0.3,
                     "loss_type": args.loss_type,
                     "loss_alpha": args.loss_alpha,
@@ -405,7 +409,7 @@ if __name__ == "__main__":
                 'name': wandb_run.name,
                 'id': wandb_run.id
             })
-        
+
         # Data preparation
         df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
         samples_coordinates_array_path, data_array_path = separate_and_add_data()
@@ -422,9 +426,9 @@ if __name__ == "__main__":
         samples_coordinates_array_path = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path)))
         data_array_path = list(dict.fromkeys(flatten_paths(data_array_path)))
 
-
         train_df_std_means, _ = create_balanced_dataset(df, use_validation=False)
         train_dataset_std_means = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df_std_means)
+
         # Create train/validation split
         if args.use_validation:
             val_df, train_df, min_distance_stats = create_validation_train_sets(
@@ -435,7 +439,6 @@ if __name__ == "__main__":
                 distance_threshold=args.distance_threshold
             )
             min_distance_stats_all.append(min_distance_stats)
-
 
         # Create datasets
         if args.use_validation:
@@ -477,9 +480,62 @@ if __name__ == "__main__":
             num_layers=2,
             dropout=0.25
         )
-        
+
         if accelerator.is_main_process:
             wandb_run.summary["model_parameters"] = model.count_parameters()
+
+        if args.save_train_and_val:
+            # Create a descriptive filename based on run context
+            parquet_filename = (f'train_val_data_run_{run+1}_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
+                            f'TIME_END_{TIME_END}_TRANSFORM_{args.target_transform}_'
+                            f'LOSS_{args.loss_type}.parquet')
+
+            # **Fix: Initialize all_targets list**
+            all_targets = []
+            for _, _, _, targets in train_loader:
+                all_targets.append(targets)
+            all_targets = torch.cat(all_targets)
+            target_mean = all_targets.mean().item()
+            target_std = all_targets.std().item()
+
+            # **Fix: Use the correct dataframe based on whether validation is used**
+            if args.use_validation:
+                # Add a column to identify train vs validation rows
+                train_df['dataset_type'] = 'train'
+                val_df['dataset_type'] = 'val'
+                combined_df = pd.concat([train_df, val_df], ignore_index=True)
+            else:
+                # Use train_df_std_means when validation is not used
+                train_df_std_means['dataset_type'] = 'train'
+                combined_df = train_df_std_means
+
+            # Fix the POINTID column by converting it to string type
+            if 'POINTID' in combined_df.columns:
+                combined_df['POINTID'] = combined_df['POINTID'].astype(str)
+
+            # Save to parquet file
+            combined_df.to_parquet(parquet_filename)
+
+
+            # Save normalization statistics to a separate file
+            stats_filename = (f'normalization_stats_run_{run+1}_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
+                            f'TIME_END_{TIME_END}_TRANSFORM_{args.target_transform}_'
+                            f'LOSS_{args.loss_type}.pkl')
+
+            normalization_stats = {
+                'feature_means': train_dataset_std_means.get_feature_means(),
+                'feature_stds': train_dataset_std_means.get_feature_stds(),
+                'target_mean': target_mean,
+                'target_std': target_std
+            }
+
+            import pickle
+            with open(stats_filename, 'wb') as f:
+                pickle.dump(normalization_stats, f)
+
+            if accelerator.is_main_process:
+                print(f"Train and validation data saved to: {parquet_filename}")
+                print(f"Normalization statistics saved to: {stats_filename}")
 
         # Train model
         model, val_outputs, val_targets, best_model_state, best_r2, epoch_metrics = train_model(
@@ -492,13 +548,13 @@ if __name__ == "__main__":
             loss_type=args.loss_type,
             loss_alpha=args.loss_alpha,
             target_transform=args.target_transform,
-            min_r2=0.5,
+            min_r2=0.2,
             use_validation=args.use_validation
         )
 
         # Store metrics
         all_runs_metrics.append(epoch_metrics)
-        
+
         # Find best metrics for this run
         best_metrics = {'r_squared': -float('inf'), 'rmse': float('inf'), 'mae': float('inf'), 'rpiq': -float('inf')}
         for epoch_metric in epoch_metrics:
@@ -507,20 +563,28 @@ if __name__ == "__main__":
                 best_metrics['rmse'] = epoch_metric['rmse']
                 best_metrics['mae'] = epoch_metric['mae']
                 best_metrics['rpiq'] = epoch_metric['rpiq']
-        
+
         # Store best metrics
         for metric in all_best_metrics:
             if not np.isnan(best_metrics[metric]):
                 all_best_metrics[metric].append(best_metrics[metric])
 
-        # Save model
+        # **Check if this run has the best overall performance**
+        if not np.isnan(best_metrics['r_squared']) and best_metrics['r_squared'] > best_overall_r_squared:
+            best_overall_r_squared = best_metrics['r_squared']
+            best_overall_model_state = best_model_state
+            best_overall_run_number = run + 1
+            best_overall_metrics = best_metrics.copy()
+
+        # Save model for this run
         if accelerator.is_main_process and best_model_state is not None:
-            final_model_path = (f'3dcnn_model_run_{run+1}_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
+            final_model_path = (f'cnnlstm_model_run_{run+1}_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
                                f'TIME_END_{TIME_END}_R2_{best_r2:.4f}_TRANSFORM_{args.target_transform}_'
                                f'LOSS_{args.loss_type}.pth')
             accelerator.save(best_model_state, final_model_path)
             wandb_run.save(final_model_path)
             print(f"Run {run + 1} Model with best R² ({best_r2:.4f}) saved at: {final_model_path}")
+            print(f"Run {run + 1} - Best metrics: R²: {best_metrics['r_squared']:.4f}, MAE: {best_metrics['mae']:.4f}, RMSE: {best_metrics['rmse']:.4f}, RPIQ: {best_metrics['rpiq']:.4f}")
         elif accelerator.is_main_process:
             print(f"Run {run + 1} No model saved - R² threshold not met")
 
@@ -531,24 +595,24 @@ if __name__ == "__main__":
     if accelerator.is_main_process:
         avg_metrics = compute_average_metrics(all_runs_metrics)
         min_distance_stats = compute_min_distance_stats(min_distance_stats_all)
-        
+
         print("\nAverage Metrics Across Runs:")
         for metric, value in avg_metrics.items():
             print(f"{metric}: {value:.4f}")
-        
+
         print("\nAverage Min Distance Statistics:")
         for stat, value in min_distance_stats.items():
             print(f"{stat}: {value:.4f}")
-        
+
         print("\nBest Metrics Across Runs:")
         for metric, values in all_best_metrics.items():
             print(f"{metric} - Mean: {np.mean(values):.4f}, Std: {np.std(values):.4f}")
-        
+
         # Save all metrics to file
-        output_file = os.path.join(args.output_dir, f'training_metrics_transformer_{uuid.uuid4().hex[:8]}.txt')
+        output_file = os.path.join(args.output_dir, f'training_metrics_cnnlstm_{uuid.uuid4().hex[:8]}.txt')
         save_metrics_to_file(args, wandb_runs_info, avg_metrics, min_distance_stats, all_best_metrics, filename=output_file)
         print(f"\nMetrics saved to: {output_file}")
-        
+
         # Log average metrics to a new wandb run
         wandb_run = wandb.init(project="socmapping-CNNLSTM", name="average_metrics")
         wandb_runs_info.append({
@@ -560,8 +624,48 @@ if __name__ == "__main__":
         for metric, values in all_best_metrics.items():
             wandb_run.summary[f"avg_{metric}"] = np.mean(values)
             wandb_run.summary[f"std_{metric}"] = np.std(values)
+
+        # **Save the best model from all runs with run number information**
+        if best_overall_model_state is not None:
+            # Include run number in the filename and save additional metadata
+            best_model_path = (f'cnnlstm_model_BEST_OVERALL_from_run_{best_overall_run_number}_'
+                              f'MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
+                              f'TIME_END_{TIME_END}_TRANSFORM_{args.target_transform}_'
+                              f'LOSS_{args.loss_type}_R2_{best_overall_r_squared:.4f}.pth')
+
+            # Save model state with metadata
+            model_with_metadata = {
+                'model_state_dict': best_overall_model_state,
+                'best_run_number': best_overall_run_number,
+                'best_metrics': best_overall_metrics,
+                'average_metrics': {
+                    'avg_r_squared': np.mean(all_best_metrics['r_squared']) if all_best_metrics['r_squared'] else 0,
+                    'avg_mae': np.mean(all_best_metrics['mae']) if all_best_metrics['mae'] else 0,
+                    'avg_rmse': np.mean(all_best_metrics['rmse']) if all_best_metrics['rmse'] else 0,
+                    'avg_rpiq': np.mean(all_best_metrics['rpiq']) if all_best_metrics['rpiq'] else 0
+                },
+                'total_runs': args.num_runs,
+                'model_config': {
+                    'num_channels': len(bands_list_order),
+                    'lstm_input_size': 128,
+                    'lstm_hidden_size': 128,
+                    'num_layers': 2,
+                    'dropout': 0.25
+                }
+            }
+
+            accelerator.save(model_with_metadata, best_model_path)
+            wandb_run.save(best_model_path)
+
+            print(f"\n**Best overall model from run {best_overall_run_number} saved**")
+            print(f"Best R²: {best_overall_r_squared:.4f}")
+            print(f"Best MAE: {best_overall_metrics['mae']:.4f}")
+            print(f"Best RMSE: {best_overall_metrics['rmse']:.4f}")
+            print(f"Best RPIQ: {best_overall_metrics['rpiq']:.4f}")
+            print(f"Average R² across all runs: {np.mean(all_best_metrics['r_squared']) if all_best_metrics['r_squared'] else 0:.4f}")
+        else:
+            print("No final model saved - R² threshold not met for any run")
+
         wandb_run.finish()
 
     accelerator.print("All runs completed, average metrics and min distance statistics computed and saved!")
-
-# BEST "composite_l2" / log

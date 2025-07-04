@@ -1,7 +1,7 @@
 
-#from config import  TIME_BEGINNING ,TIME_END , LOADING_TIME_BEGINNING, seasons, years_padded, INFERENCE_TIME  , LOADING_TIME_BEGINNING_INFERENCE, SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, DataYearly, SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, DataSeasonally ,file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC 
+from config import  TIME_BEGINNING ,TIME_END , LOADING_TIME_BEGINNING, seasons, years_padded, INFERENCE_TIME  , LOADING_TIME_BEGINNING_INFERENCE, SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, DataYearly, SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, DataSeasonally ,file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC 
 import pandas as pd
-from configElevationOnlyExperiment import  TIME_BEGINNING ,TIME_END , LOADING_TIME_BEGINNING, seasons, years_padded, INFERENCE_TIME  , LOADING_TIME_BEGINNING_INFERENCE, SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, DataYearly, SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, DataSeasonally ,file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC 
+#from configElevationOnlyExperiment import  TIME_BEGINNING ,TIME_END , LOADING_TIME_BEGINNING, seasons, years_padded, INFERENCE_TIME  , LOADING_TIME_BEGINNING_INFERENCE, SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, DataYearly, SamplesCoordinates_Seasonally, MatrixCoordinates_1mil_Seasonally, DataSeasonally ,file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC 
 
 
 

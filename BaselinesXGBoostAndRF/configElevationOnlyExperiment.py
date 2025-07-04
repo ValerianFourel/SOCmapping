@@ -8,7 +8,7 @@ file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC = f"{base_path_data}/LUCAS_LFU_Lfl_00t
 
 
 time_before  = 1 # 5
-window_size = 81 # 41
+window_size = 21 # 41
 TIME_BEGINNING = '2007'
 LOADING_TIME_BEGINNING = str(int(TIME_BEGINNING)-time_before)
 TIME_END = '2023'

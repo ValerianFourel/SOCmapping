@@ -16,12 +16,21 @@ from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,
                    DataYearly, SamplesCoordinates_Seasonally, bands_list_order,
                    MatrixCoordinates_1mil_Seasonally, DataSeasonally, window_size,
                    file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC, time_before)
-from modelSimpleTransformer import SimpleTransformer as SimpleTransformerV2
-# from modelSimpleTransformerNew import SimpleTransformerV2
+# from modelSimpleTransformer import SimpleTransformer as SimpleTransformerV2
+from modelSimpleTransformerNew import SimpleTransformerV2
 import argparse
-from balancedDataset import create_validation_train_sets
+from balancedDataset import create_validation_train_sets, create_balanced_dataset
 import uuid
 import os
+
+def compute_training_statistics_oc():
+    df_train = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
+        # Calculate target statistics from balanced dataset
+    target_mean = df_train['OC'].mean()
+    target_std = df_train['OC'].std()
+
+    
+    return target_mean, target_std
 
 # Uncomment and use this composite loss function if desired
 def composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
@@ -61,49 +70,6 @@ def composite_l2_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
     return alpha * l2_loss + (1 - alpha) * chi2_scaled
 
 
-# Function to create balanced dataset (unchanged)
-def create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=True):
-    bins = pd.qcut(df['OC'], q=n_bins, labels=False, duplicates='drop')
-    df['bin'] = bins
-    bin_counts = df['bin'].value_counts()
-    max_samples = bin_counts.max()
-    min_samples = max(int(max_samples * min_ratio), 5)
-
-    training_dfs = []
-    if use_validation:
-        validation_indices = []
-        for bin_idx in range(len(bin_counts)):
-            bin_data = df[df['bin'] == bin_idx]
-            if len(bin_data) >= 4:
-                val_samples = bin_data.sample(n=min(13, len(bin_data)))
-                validation_indices.extend(val_samples.index)
-                train_samples = bin_data.drop(val_samples.index)
-                if len(train_samples) > 0:
-                    if len(train_samples) < min_samples:
-                        resampled = train_samples.sample(n=min_samples, replace=True)
-                        training_dfs.append(resampled)
-                    else:
-                        training_dfs.append(train_samples)
-        if not training_dfs or not validation_indices:
-            raise ValueError("No training or validation data available after binning")
-        training_df = pd.concat(training_dfs).drop('bin', axis=1)
-        validation_df = df.loc[validation_indices].drop('bin', axis=1)
-        print('Size of the training set:   ' ,len(training_df))
-        print('Size of the validation set:   ' ,len(validation_df))
-        return training_df, validation_df
-    else:
-        for bin_idx in range(len(bin_counts)):
-            bin_data = df[df['bin'] == bin_idx]
-            if len(bin_data) > 0:
-                if len(bin_data) < min_samples:
-                    resampled = bin_data.sample(n=min_samples, replace=True)
-                    training_dfs.append(resampled)
-                else:
-                    training_dfs.append(bin_data)
-        if not training_dfs:
-            raise ValueError("No training data available after binning")
-        training_df = pd.concat(training_dfs).drop('bin', axis=1)
-        return training_df, None
 
 
 
@@ -112,16 +78,17 @@ def parse_args():
     parser.add_argument('--lr', type=float, default=0.0002, help='Learning rate')
     parser.add_argument('--num_heads', type=int, default=NUM_HEADS, help='Number of attention heads')
     parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of transformer layers')
-    parser.add_argument('--loss_type', type=str, default='l1', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
+    parser.add_argument('--loss_type', type=str, default='composite_l2', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
     parser.add_argument('--loss_alpha', type=float, default=0.5, help='Weight for L1 loss in composite loss (if used)')
     parser.add_argument('--target_transform', type=str, default='none', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
-    parser.add_argument('--use_validation', action='store_true', default=False, help='Whether to use validation set')
+    parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')
     parser.add_argument('--output-dir', type=str, default='output', help='Output directory')
     parser.add_argument('--target-val-ratio', type=float, default=0.08, help='Target validation ratio')
     parser.add_argument('--use-gpu', action='store_true', default=True, help='Use GPU')
     parser.add_argument('--distance-threshold', type=float, default=1.2, help='Minimum distance threshold for validation points')
     parser.add_argument('--target-fraction', type=float, default=0.75, help='Fraction of max bin count for resampling')
-    parser.add_argument('--num-runs', type=int, default=5, help='Number of times to run the process')
+    parser.add_argument('--num-runs', type=int, default=4, help='Number of times to run the process')
+    parser.add_argument('--save_train_and_val', type=bool, default=False, help='Save The inforamtions for the residuals study')
     return parser.parse_args()
 
 def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelerator=None, lr=0.001,
@@ -393,7 +360,6 @@ def save_metrics_to_file(args, wandb_runs_info, avg_metrics, min_distance_stats,
             f.write(f"  Std: {np.std(values):.4f}\n")
             f.write(f"  Values: {[f'{v:.4f}' for v in values]}\n")
             f.write("\n")
-
 if __name__ == "__main__":
     args = parse_args()
     # Set num_runs to 1 if use_validation is False
@@ -411,6 +377,12 @@ if __name__ == "__main__":
     }
     min_distance_stats_all = []
     wandb_runs_info = []
+
+    # **Add these variables to track the best model across all runs**
+    best_overall_model_state = None
+    best_overall_r_squared = -float('inf')
+    best_overall_run_number = None
+    best_overall_metrics = {}
 
     # Loop through the specified number of runs
     for run in range(args.num_runs):
@@ -464,6 +436,15 @@ if __name__ == "__main__":
         samples_coordinates_array_path = list(dict.fromkeys(flatten_paths(samples_coordinates_array_path)))
         data_array_path = list(dict.fromkeys(flatten_paths(data_array_path)))
 
+        train_dataset_features_norm = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, df)
+        train_df, _ = create_balanced_dataset(df, min_ratio=3/4,use_validation=False)
+        train_dataset_std_means = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
+        train_dataset_std_means.set_feature_means(train_dataset_features_norm.get_feature_means())
+        train_dataset_std_means.set_feature_stds(train_dataset_features_norm.get_feature_stds())
+        feature_means = train_dataset_features_norm.get_feature_means()
+        feature_stds = train_dataset_features_norm.get_feature_stds()
+        target_mean, target_std = compute_training_statistics_oc()
+
         # Create train/validation split
         if args.use_validation:
             val_df, train_df, min_distance_stats = create_validation_train_sets(
@@ -474,23 +455,64 @@ if __name__ == "__main__":
                 distance_threshold=args.distance_threshold
             )
             min_distance_stats_all.append(min_distance_stats)
-        else:
-            train_df, val_df = create_balanced_dataset(df, n_bins=128, min_ratio=9/10, use_validation=False)
+
+        if args.save_train_and_val:
+            # Create a descriptive filename based on run context
+            parquet_filename = (f'train_val_data_run_{run+1}_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
+                            f'TIME_END_{TIME_END}_TRANSFORM_{args.target_transform}_'
+                            f'LOSS_{args.loss_type}.parquet')
+
+            # Combine train and val dataframes if validation is used
+            if args.use_validation:
+                # Add a column to identify train vs validation rows
+                train_df['dataset_type'] = 'train'
+                val_df['dataset_type'] = 'val'
+                combined_df = pd.concat([train_df, val_df], ignore_index=True)
+            else:
+                # Just use train_df and mark all as train
+                train_df['dataset_type'] = 'train'
+                combined_df = train_df
+
+            # Save to parquet file
+            combined_df.to_parquet(parquet_filename)
+
+            # Save normalization statistics to a separate file
+            stats_filename = (f'normalization_stats_run_{run+1}_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
+                            f'TIME_END_{TIME_END}_TRANSFORM_{args.target_transform}_'
+                            f'LOSS_{args.loss_type}.pkl')
+
+            normalization_stats = {
+                'feature_means': feature_means,
+                'feature_stds': feature_stds,
+                'target_mean': target_mean,
+                'target_std': target_std
+            }
+
+            import pickle
+            with open(stats_filename, 'wb') as f:
+                pickle.dump(normalization_stats, f)
+
+            if accelerator.is_main_process:
+                print(f"Train and validation data saved to: {parquet_filename}")
+                print(f"Normalization statistics saved to: {stats_filename}")
 
         # Create datasets
         if args.use_validation:
             train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
             val_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df)
+            val_dataset.set_feature_means(train_dataset_features_norm.get_feature_means())
+            val_dataset.set_feature_stds(train_dataset_features_norm.get_feature_stds())
+            train_dataset.set_feature_means(train_dataset_features_norm.get_feature_means())
+            train_dataset.set_feature_stds(train_dataset_features_norm.get_feature_stds())
             if accelerator.is_main_process:
                 print(f"Run {run + 1} Length of train_dataset: {len(train_dataset)}")
                 print(f"Run {run + 1} Length of val_dataset: {len(val_dataset)}")
             train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
             val_loader = DataLoader(val_dataset, batch_size=256, shuffle=False)
         else:
-            train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
             if accelerator.is_main_process:
-                print(f"Run {run + 1} Length of train_dataset: {len(train_dataset)}")
-            train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
+                print(f"Run {run + 1} Length of train_dataset: {len(train_dataset_std_means)}")
+            train_loader = DataLoader(train_dataset_std_means, batch_size=256, shuffle=True)
             val_loader = None
 
         if accelerator.is_main_process:
@@ -530,7 +552,7 @@ if __name__ == "__main__":
             loss_type=args.loss_type,
             loss_alpha=args.loss_alpha,
             target_transform=args.target_transform,
-            min_r2=0.5,
+            min_r2=0.2,
             use_validation=args.use_validation
         )
 
@@ -551,17 +573,25 @@ if __name__ == "__main__":
             if not np.isnan(best_metrics[metric]):
                 all_best_metrics[metric].append(best_metrics[metric])
 
-        # Save model during the run (optional, based on original logic)
+        # **Check if this run has the best overall performance**
+        if not np.isnan(best_metrics['r_squared']) and best_metrics['r_squared'] > best_overall_r_squared:
+            best_overall_r_squared = best_metrics['r_squared']
+            best_overall_model_state = best_model_state
+            best_overall_run_number = run + 1
+            best_overall_metrics = best_metrics.copy()
+
+        # Save model for this run
         if accelerator.is_main_process and best_model_state is not None:
             if args.use_validation:
-                temp_model_path = os.path.join(args.output_dir, f'temp_transformer_model_run_{run+1}_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
+                run_model_path = os.path.join(args.output_dir, f'transformer_model_run_{run+1}_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
                                f'TIME_END_{TIME_END}_R2_{best_r2:.4f}_TRANSFORM_{args.target_transform}_'
-                               f'LOSS_{args.loss_type}_2milParameters.pth')
+                               f'LOSS_{args.loss_type}.pth')
             else:
-                temp_model_path = f'temp_transformer_model_run_{run+1}_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}_R2_{best_r2:.4f}_TRANSFORM_{args.target_transform}_LOSS_{args.loss_type}.pth'
-            accelerator.save(best_model_state, temp_model_path)
-            wandb_run.save(temp_model_path)
-            print(f"Run {run + 1} Temporary model with best R² ({best_r2:.4f}) saved at: {temp_model_path}")
+                run_model_path = f'transformer_model_run_{run+1}_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}_R2_{best_r2:.4f}_TRANSFORM_{args.target_transform}_LOSS_{args.loss_type}.pth'
+            accelerator.save(best_model_state, run_model_path)
+            wandb_run.save(run_model_path)
+            print(f"Run {run + 1} Model with best R² ({best_r2:.4f}) saved at: {run_model_path}")
+            print(f"Run {run + 1} - Best metrics: R²: {best_metrics['r_squared']:.4f}, MAE: {best_metrics['mae']:.4f}, RMSE: {best_metrics['rmse']:.4f}, RPIQ: {best_metrics['rpiq']:.4f}")
         elif accelerator.is_main_process:
             print(f"Run {run + 1} No model saved - R² threshold not met")
 
@@ -585,7 +615,7 @@ if __name__ == "__main__":
         for metric, values in all_best_metrics.items():
             print(f"{metric} - Mean: {np.mean(values):.4f}, Std: {np.std(values):.4f}")
 
-        # Save all metrics to file - Use current directory if use_validation is False
+        # Save all metrics to file
         if args.use_validation:
             output_file = os.path.join(args.output_dir, f'training_metrics_transformer_{uuid.uuid4().hex[:8]}.txt')
         else:
@@ -604,15 +634,51 @@ if __name__ == "__main__":
         for metric, values in all_best_metrics.items():
             wandb_run.summary[f"avg_{metric}"] = np.mean(values)
             wandb_run.summary[f"std_{metric}"] = np.std(values)
-        wandb_run.finish()
 
-        # Save the final model in the current folder after all runs
-        if best_model_state is not None:
-            final_model_path = f'final_transformer_model_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_TIME_END_{TIME_END}_R2_{best_r2:.4f}_TRANSFORM_{args.target_transform}_LOSS_{args.loss_type}_{extra_tag}.pth'
-            accelerator.save(best_model_state, final_model_path)
-            print(f"Final model with best R² ({best_r2:.4f}) saved in current folder at: {final_model_path}")
+        # **Save the best model from all runs with run number information**
+        if best_overall_model_state is not None:
+            # Include run number in the filename and save additional metadata
+            final_model_path = (f'transformer_model_BEST_OVERALL_from_run_{best_overall_run_number}_'
+                               f'MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
+                               f'TIME_END_{TIME_END}_TRANSFORM_{args.target_transform}_'
+                               f'LOSS_{args.loss_type}_R2_{best_overall_r_squared:.4f}.pth')
+
+            # Save model state with metadata
+            model_with_metadata = {
+                'model_state_dict': best_overall_model_state,
+                'best_run_number': best_overall_run_number,
+                'best_metrics': best_overall_metrics,
+                'average_metrics': {
+                    'avg_r_squared': np.mean(all_best_metrics['r_squared']) if all_best_metrics['r_squared'] else 0,
+                    'avg_mae': np.mean(all_best_metrics['mae']) if all_best_metrics['mae'] else 0,
+                    'avg_rmse': np.mean(all_best_metrics['rmse']) if all_best_metrics['rmse'] else 0,
+                    'avg_rpiq': np.mean(all_best_metrics['rpiq']) if all_best_metrics['rpiq'] else 0
+                },
+                'total_runs': args.num_runs,
+                'model_config': {
+                    'input_channels': len(bands_list_order),
+                    'input_height': window_size,
+                    'input_width': window_size,
+                    'input_time': time_before,
+                    'num_heads': args.num_heads,
+                    'num_layers': args.num_layers,
+                    'dropout_rate': 0.3
+                }
+            }
+
+            accelerator.save(model_with_metadata, final_model_path)
+            wandb_run.save(final_model_path)
+
+            print(f"\n**Best overall model from run {best_overall_run_number} saved**")
+            print(f"Best R²: {best_overall_r_squared:.4f}")
+            print(f"Best MAE: {best_overall_metrics['mae']:.4f}")
+            print(f"Best RMSE: {best_overall_metrics['rmse']:.4f}")
+            print(f"Best RPIQ: {best_overall_metrics['rpiq']:.4f}")
+            print(f"Average R² across all runs: {np.mean(all_best_metrics['r_squared']) if all_best_metrics['r_squared'] else 0:.4f}")
         else:
             print("No final model saved - R² threshold not met for any run")
+
+        wandb_run.finish()
 
     accelerator.print("All runs completed, average metrics and min distance statistics computed and saved!")
 

@@ -4,10 +4,11 @@ from torch.utils.data import Dataset, DataLoader
 import os
 import glob
 import pandas as pd
+import pickle
 from config import (
     bands_list_order, time_before, LOADING_TIME_BEGINNING, window_size, MAX_OC,
     TIME_BEGINNING, TIME_END, INFERENCE_TIME, seasons, years_padded, NUM_HEADS, NUM_LAYERS,
-    save_path_predictions_plots, SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly,hidden_size,
+    save_path_predictions_plots, SamplesCoordinates_Yearly, MatrixCoordinates_1mil_Yearly, hidden_size,
     DataYearly, file_path_coordinates_Bavaria_1mil, SamplesCoordinates_Seasonally,
     MatrixCoordinates_1mil_Seasonally, DataSeasonally, file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC
 )
@@ -15,7 +16,7 @@ from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data,
 from dataloader.dataloaderMapping import NormalizedMultiRasterDataset1MilMultiYears, RasterTensorDataset1Mil, MultiRasterDataset1MilMultiYears
 from dataloader.dataloaderMultiYears import NormalizedMultiRasterDatasetMultiYears
 from mapping import create_prediction_visualizations, parallel_predict
-from SimpleTFT import SimpleTFT
+from EnhancedTFT import EnhancedTFT as SimpleTFT
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from accelerate import Accelerator
@@ -23,82 +24,108 @@ import json
 from datetime import datetime
 import argparse
 
-def create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=True):
-    bins = pd.qcut(df['OC'], q=n_bins, labels=False, duplicates='drop')
-    df['bin'] = bins
-    bin_counts = df['bin'].value_counts()
-    max_samples = bin_counts.max()
-    min_samples = max(int(max_samples * min_ratio), 5)
-    
-    training_dfs = []
-    
-    if use_validation:
-        validation_indices = []
-        for bin_idx in range(len(bin_counts)):
-            bin_data = df[df['bin'] == bin_idx]
-            if len(bin_data) >= 4:
-                val_samples = bin_data.sample(n=min(8, len(bin_data)))
-                validation_indices.extend(val_samples.index)
-                train_samples = bin_data.drop(val_samples.index)
-                if len(train_samples) > 0:
-                    if len(train_samples) < min_samples:
-                        resampled = train_samples.sample(n=min_samples, replace=True)
-                        training_dfs.append(resampled)
-                    else:
-                        training_dfs.append(train_samples)
-        
-        if not training_dfs or not validation_indices:
-            raise ValueError("No training or validation data available after binning")
-        
-        training_df = pd.concat(training_dfs).drop('bin', axis=1)
-        validation_df = df.loc[validation_indices].drop('bin', axis=1)
-        return training_df, validation_df
-    
-    else:
-        for bin_idx in range(len(bin_counts)):
-            bin_data = df[df['bin'] == bin_idx]
-            if len(bin_data) > 0:
-                if len(bin_data) < min_samples:
-                    resampled = bin_data.sample(n=min_samples, replace=True)
-                    training_dfs.append(resampled)
-                else:
-                    training_dfs.append(bin_data)
-        
-        if not training_dfs:
-            raise ValueError("No training data available after binning")
-        
-        training_df = pd.concat(training_dfs).drop('bin', axis=1)
-        return training_df
+def load_experiment_config(experiment_dir):
+    """Load experiment configuration from JSON file."""
+    config_file = os.path.join(experiment_dir, "experiment_config.json")
+    if os.path.exists(config_file):
+        with open(config_file, 'r') as f:
+            return json.load(f)
+    return None
 
-def load_SimpleTFT_model(model_path="/home/vfourel/SOCProject/SOCmapping/TemporalFusionTransformer/TFT_model_run_1_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_1.0000_TRANSFORM_normalize_LOSS_l1.pth", accelerator=None):
+def load_normalization_stats_from_experiment(experiment_dir):
+    """Load normalization statistics from experiment data folder."""
+    data_dir = os.path.join(experiment_dir, "data")
+    if os.path.exists(data_dir):
+        # Look for normalization stats files
+        stats_files = glob.glob(os.path.join(data_dir, "normalization_stats_run_*.pkl"))
+        if stats_files:
+            # Use the first available stats file (they should be consistent across runs)
+            with open(stats_files[0], 'rb') as f:
+                return pickle.load(f)
+    return None
+
+def load_model_with_metadata(model_path, accelerator=None):
+    """Load model and extract metadata including normalization statistics."""
     device = accelerator.device if accelerator else torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = SimpleTFT(
-        input_channels=len(bands_list_order),
-        height=window_size,
-        width=window_size,
-        time_steps=time_before,
-        d_model=hidden_size  # Adjust this based on the saved model
-    )
+
     try:
-        state_dict = torch.load(model_path, map_location=device, weights_only=True)
-        if any(k.startswith('module.') for k in state_dict.keys()):
-            state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-        
-        model_state_dict = model.state_dict()
-        filtered_state_dict = {k: v for k, v in state_dict.items() if k in model_state_dict and v.shape == model_state_dict[k].shape}
-        model_state_dict.update(filtered_state_dict)
+        # Load the saved checkpoint
+        checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+
+        # Check if it's a model with metadata (from your training script)
+        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+            model_state_dict = checkpoint['model_state_dict']
+            metadata = {
+                'best_run_number': checkpoint.get('best_run_number'),
+                'best_metrics': checkpoint.get('best_metrics'),
+                'model_config': checkpoint.get('model_config'),
+                'normalization_stats': checkpoint.get('normalization_stats'),
+                'experiment_info': checkpoint.get('experiment_info'),
+                'training_config': checkpoint.get('training_config'),
+                'training_args': checkpoint.get('training_args')
+            }
+            if accelerator and accelerator.is_local_main_process:
+                run_num = metadata.get('best_run_number', metadata.get('run_number', 'unknown'))
+                if metadata.get('best_metrics'):
+                    r2 = metadata['best_metrics'].get('r_squared', 'unknown')
+                    print(f"Loaded model from run {run_num} with R²: {r2:.4f}")
+                else:
+                    print(f"Loaded model from run {run_num}")
+        else:
+            # Fallback: assume it's just a state dict
+            model_state_dict = checkpoint
+            metadata = None
+            if accelerator and accelerator.is_local_main_process:
+                print("Loaded model state dict without metadata")
+
+        # Initialize model with config from metadata or defaults
+        if metadata and metadata.get('model_config'):
+            config = metadata['model_config']
+            model = SimpleTFT(
+                input_channels=config['input_channels'],
+                height=config['height'],
+                width=config['width'],
+                time_steps=config['time_steps'],
+                d_model=config['d_model']
+            )
+        else:
+            model = SimpleTFT(
+                input_channels=len(bands_list_order),
+                height=window_size,
+                width=window_size,
+                time_steps=time_before,
+                d_model=hidden_size
+            )
+
+        # Load state dict - handle both wrapped and unwrapped models
+        if any(k.startswith('module.') for k in model_state_dict.keys()):
+            model_state_dict = {k.replace('module.', ''): v for k, v in model_state_dict.items()}
+
         model.load_state_dict(model_state_dict)
-        
-        if accelerator.is_local_main_process:
-            print(f"Loaded {len(filtered_state_dict)}/{len(state_dict)} parameters from {model_path}")
+        model.eval()
+
+        if accelerator:
+            model = accelerator.prepare(model)
+
+        return model, metadata, device
+
     except Exception as e:
-        if accelerator.is_local_main_process:
-            print(f"Error loading model weights: {e}")
+        if accelerator and accelerator.is_local_main_process:
+            print(f"Error loading model: {e}")
         raise
-    model.eval()
-    if accelerator:
-        model = accelerator.prepare(model)
-    return model, device, accelerator
+
+def extract_transform_from_path(model_path):
+    """Extract target transform type from model or experiment path."""
+    path_str = str(model_path)
+    if 'transform_log' in path_str:
+        return 'log'
+    elif 'transform_normalize' in path_str:
+        return 'normalize'
+    elif 'transform_none' in path_str:
+        return 'none'
+    else:
+        print(f"Warning: Could not determine transform from path: {path_str}")
+        return 'none'
 
 def flatten_paths(path_list):
     flattened = []
@@ -110,37 +137,11 @@ def flatten_paths(path_list):
     return flattened
 
 def compute_training_statistics_oc():
+    """Fallback function to compute training statistics if not available."""
     df_train = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
-
-                
-    
-        # Calculate target statistics from balanced dataset
     target_mean = df_train['OC'].mean()
     target_std = df_train['OC'].std()
-
-    
     return target_mean, target_std
-
-def compute_training_statistics():
-    df_train = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
-    train_coords, train_data = separate_and_add_data()
-    train_coords = list(dict.fromkeys(flatten_paths(train_coords)))
-    train_data = list(dict.fromkeys(flatten_paths(train_data)))
-    
-    if not isinstance(df_train, pd.DataFrame):
-        raise TypeError(f"Expected train_df to be a pandas DataFrame, got {type(df_train)}")
-    
-    train_dataset = NormalizedMultiRasterDatasetMultiYears(train_coords, train_data, df_train)
-
-    feature_means, feature_stds = train_dataset.get_statistics()
-    target_mean, target_std = compute_training_statistics_oc()
-    print(f"Computed training statistics - Means: {feature_means}, Stds: {feature_stds}")
-    
-    expected_channels = len(bands_list_order)
-    if feature_means.shape[0] != expected_channels:
-        raise ValueError(f"Training feature_means has {feature_means.shape[0]} channels, but expected {expected_channels}")
-    
-    return target_mean, target_std , feature_means, feature_stds
 
 def run_inference(model, dataloader, accelerator):
     model.eval()
@@ -150,14 +151,11 @@ def run_inference(model, dataloader, accelerator):
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Running Inference", disable=not accelerator.is_local_main_process):
             longitudes, latitudes, tensors = batch
-            tensors = tensors.to(accelerator.device)  # Move to the assigned device
+            tensors = tensors.to(accelerator.device)
 
-            # Run model inference
-            outputs = model(tensors)  # Assuming model outputs a single value per sample
-            predictions = outputs.cpu().numpy()
-            accelerator.print(predictions)
+            outputs = model(tensors)
+            predictions = outputs.cpu().numpy().squeeze()  # Remove extra dimensions
 
-            # Store coordinates and predictions, ensuring tensors are moved to CPU
             coords = np.stack([longitudes.cpu().numpy(), latitudes.cpu().numpy()], axis=1)
             all_coordinates.append(coords)
             all_predictions.append(predictions)
@@ -167,43 +165,133 @@ def run_inference(model, dataloader, accelerator):
     all_predictions = np.concatenate(all_predictions, axis=0) if all_predictions else np.array([])
 
     # Gather results from all GPUs
-    all_coordinates = accelerator.gather(torch.tensor(all_coordinates, device=accelerator.device)).cpu().numpy()
-    all_predictions = accelerator.gather(torch.tensor(all_predictions, device=accelerator.device)).cpu().numpy()
+    if len(all_coordinates) > 0:
+        all_coordinates = accelerator.gather(torch.tensor(all_coordinates, device=accelerator.device)).cpu().numpy()
+        all_predictions = accelerator.gather(torch.tensor(all_predictions, device=accelerator.device)).cpu().numpy()
 
     return all_coordinates, all_predictions
 
-def apply_inverse_transform(predictions, target_transform, target_mean=None, target_std=None):
-    """
-    Apply inverse transformation to convert predictions and targets back to the original scale.
-
-    Args:
-        predictions (np.array): Model predictions in transformed scale.
-        target_transform (str): Type of transformation applied ('log', 'normalize', or None).
-        target_mean (float, optional): Mean used for normalization. Required if target_transform is 'normalize'.
-        target_std (float, optional): Standard deviation used for normalization. Required if target_transform is 'normalize'.
-
-    Returns:
-        tuple: (original_val_outputs, ) - Predictions in original scale.
-    """
+def apply_inverse_transform(predictions, target_transform, accelerator, target_mean=None, target_std=None):
+    """Apply inverse transformation to convert predictions back to original scale."""
     if target_transform == 'log':
-        original_val_outputs = np.exp(predictions)
+        original_predictions = np.exp(predictions)
     elif target_transform == 'normalize':
-        original_val_outputs = predictions * target_std + target_mean
-    else:
-        original_val_outputs = predictions
+        if target_mean is None or target_std is None:
+            raise ValueError("target_mean and target_std required for 'normalize' transform")
+        original_predictions = predictions * target_std + target_mean
+    else:  # 'none'
+        original_predictions = predictions
 
-    return original_val_outputs
+    if accelerator.is_local_main_process:
+        print(f"Applied inverse transform '{target_transform}'")
+        print(f"Prediction stats - Min: {np.min(original_predictions):.4f}, Max: {np.max(original_predictions):.4f}, Mean: {np.mean(original_predictions):.4f}")
 
-def main(target_transform):
-    print(' FULL DATASET  ')
-    target_mean, target_std ,feature_means, feature_stds = compute_training_statistics()
+    return original_predictions
+
+def main():
     accelerator = Accelerator()
 
-    parser = argparse.ArgumentParser(description="Accelerated inference script with multi-GPU support")
-    parser.add_argument("--model-path", type=str, 
-                        default="/home/vfourel/SOCProject/SOCmapping/TemporalFusionTransformer/TFT_model_run_4_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_0.5223_TRANSFORM_normalize_LOSS_l1.pth", 
-                        help="Path to the trained model")
+    parser = argparse.ArgumentParser(description="Inference script with automatic model configuration")
+    parser.add_argument("--model-path", type=str, required=True, help="Path to the trained model")
+    parser.add_argument("--experiment-dir", type=str, default=None, help="Path to experiment directory (auto-detected if not provided)")
+    parser.add_argument("--start-idx", type=int, default=480000, help="Start index for inference dataset")
+    parser.add_argument("--end-idx", type=int, default=500000, help="End index for inference dataset")
+    parser.add_argument("--batch-size", type=int, default=256, help="Batch size for inference")
+    parser.add_argument("--output-dir", type=str, default="./inference_output", help="Output directory for results")
     args = parser.parse_args()
+
+    # Auto-detect experiment directory if not provided
+    if args.experiment_dir is None:
+        model_dir = os.path.dirname(args.model_path)
+        if os.path.basename(model_dir) == "models":
+            args.experiment_dir = os.path.dirname(model_dir)
+        else:
+            args.experiment_dir = model_dir
+
+    # Create output directory
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    if accelerator.is_local_main_process:
+        print(f"Experiment directory: {args.experiment_dir}")
+        print(f"Model path: {args.model_path}")
+        print(f"Output directory: {args.output_dir}")
+
+    # Load experiment configuration
+    experiment_config = load_experiment_config(args.experiment_dir)
+    if accelerator.is_local_main_process:
+        if experiment_config:
+            print("Loaded experiment configuration")
+        else:
+            print("No experiment configuration found, using defaults")
+
+    # Load model and metadata
+    model, metadata, device = load_model_with_metadata(args.model_path, accelerator)
+    if accelerator.is_local_main_process:
+        print(f"Model loaded on {device}")
+
+    # Determine target transform
+    target_transform = 'normalize'  # Default from your experiment name
+
+    if metadata and metadata.get('training_config'):
+        target_transform = metadata['training_config'].get('target_transform', target_transform)
+    elif experiment_config and experiment_config.get('args'):
+        target_transform = experiment_config['args'].get('target_transform', target_transform)
+    else:
+        target_transform = extract_transform_from_path(args.model_path)
+
+    if accelerator.is_local_main_process:
+        print(f"Using target transform: {target_transform}")
+
+    # Load normalization statistics
+    target_mean, target_std, feature_means, feature_stds = None, None, None, None
+
+    if metadata and metadata.get('normalization_stats'):
+        norm_stats = metadata['normalization_stats']
+        target_mean = norm_stats.get('target_mean')
+        target_std = norm_stats.get('target_std')
+        feature_means = norm_stats.get('feature_means')
+        feature_stds = norm_stats.get('feature_stds')
+        if accelerator.is_local_main_process:
+            print("Using normalization stats from model metadata")
+
+    if target_mean is None:
+        norm_stats = load_normalization_stats_from_experiment(args.experiment_dir)
+        if norm_stats:
+            target_mean = norm_stats.get('target_mean')
+            target_std = norm_stats.get('target_std')
+            feature_means = norm_stats.get('feature_means')
+            feature_stds = norm_stats.get('feature_stds')
+            if accelerator.is_local_main_process:
+                print("Using normalization stats from experiment data folder")
+
+    if target_mean is None:
+        if accelerator.is_local_main_process:
+            print("Computing normalization stats from training data...")
+        target_mean, target_std = compute_training_statistics_oc()
+
+        df_train = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
+        train_coords, train_data = separate_and_add_data()
+        train_coords = list(dict.fromkeys(flatten_paths(train_coords)))
+        train_data = list(dict.fromkeys(flatten_paths(train_data)))
+        temp_dataset = NormalizedMultiRasterDatasetMultiYears(train_coords, train_data, df_train)
+        feature_means = temp_dataset.get_feature_means()
+        feature_stds = temp_dataset.get_feature_stds()
+
+    if accelerator.is_local_main_process:
+        print(f"Normalization stats - Target mean: {target_mean:.4f}, Target std: {target_std:.4f}")
+
+    # **Fix: Ensure feature_means and feature_stds are on CPU**
+    if isinstance(feature_means, torch.Tensor):
+        feature_means = feature_means.cpu()
+    else:
+        feature_means = torch.tensor(feature_means).float().cpu()
+
+    if isinstance(feature_stds, torch.Tensor):
+        feature_stds = feature_stds.cpu()
+    else:
+        feature_stds = torch.tensor(feature_stds).float().cpu()
+
+    # Load inference data
     try:
         df_full = pd.read_csv(file_path_coordinates_Bavaria_1mil)
         if accelerator.is_local_main_process:
@@ -213,56 +301,93 @@ def main(target_transform):
             print(f"Error loading inference dataframe: {e}")
         return
 
+    # Prepare dataset
     samples_coords_1mil, data_1mil = separate_and_add_data_1mil_inference()
     samples_coords_1mil = list(dict.fromkeys(flatten_paths(samples_coords_1mil)))
     data_1mil = list(dict.fromkeys(flatten_paths(data_1mil)))
-    
-    third_size = len(df_full) // 4
+
+    inference_subset = df_full[args.start_idx:args.end_idx]
     inference_dataset = NormalizedMultiRasterDataset1MilMultiYears(
         samples_coordinates_array_path=samples_coords_1mil,
         data_array_path=data_1mil,
-        df=df_full[300000:360000],
+        df=inference_subset,
         feature_means=feature_means,
         feature_stds=feature_stds,
         time_before=time_before
     )
-   # iference_dataset = MultiRasterDataset1MilMultiYears(samples_coordinates_array_subfolders=samples_coords_1mil, data_array_subfolders=data_1mil, dataframe=df_full[:2000])
-    # Main code
-    dataset_len = len(inference_dataset)
+
     if accelerator.is_local_main_process:
-        print(f"Dataset length: {dataset_len}")
-        if dataset_len != 2000:
-            print(f"Warning: Dataset length is {dataset_len}, expected 2000. Check NormalizedMultiRasterDataset1MilMultiYears implementation.")
+        print(f"Inference dataset size: {len(inference_dataset)}")
 
     inference_loader = DataLoader(
         inference_dataset,
-        batch_size=256,
+        batch_size=args.batch_size,
         shuffle=False,
         num_workers=4,
         pin_memory=True
     )
     inference_loader = accelerator.prepare(inference_loader)
-    model_path = "/home/vfourel/SOCProject/SOCmapping/TemporalFusionTransformer/TFT_model_run_4_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_R2_0.5223_TRANSFORM_normalize_LOSS_l1.pth"
-    model, device, accelerator = load_SimpleTFT_model(model_path, accelerator)
+
+    # Run inference
     if accelerator.is_local_main_process:
-        print(f"Loaded SimpleTransformer model on {device}")
+        print("Starting inference...")
 
     coordinates, predictions = run_inference(model, inference_loader, accelerator)
-    predictions = apply_inverse_transform(predictions, target_transform, target_mean=target_mean, target_std=target_std)
-    np.save("coordinates_300k_to_360k.npy", coordinates)
-    np.save("predictions_300k_to_360k.npy", predictions)
-    # Only the main process handles printing and visualization
-    if accelerator.is_local_main_process:
-        print(f"Inference completed. Coordinates shape: {coordinates.shape}, Predictions shape: {predictions.shape}")
-        create_prediction_visualizations(
-            INFERENCE_TIME,
-            coordinates,
-            predictions,
-            save_path_predictions_plots
-        )
-        print(f"Visualizations saved to {save_path_predictions_plots}")
 
+    # Apply inverse transform
+    original_predictions = apply_inverse_transform(
+        predictions, target_transform, accelerator, target_mean, target_std
+    )
+
+    # Save results
+    if accelerator.is_local_main_process:
+        output_coords_file = os.path.join(args.output_dir, f"coordinates_{args.start_idx}_to_{args.end_idx}.npy")
+        output_preds_file = os.path.join(args.output_dir, f"predictions_{args.start_idx}_to_{args.end_idx}.npy")
+
+        np.save(output_coords_file, coordinates)
+        np.save(output_preds_file, original_predictions)
+
+        print(f"Results saved:")
+        print(f"  Coordinates: {output_coords_file} (shape: {coordinates.shape})")
+        print(f"  Predictions: {output_preds_file} (shape: {original_predictions.shape})")
+
+        # Save metadata
+        metadata_file = os.path.join(args.output_dir, f"inference_metadata_{args.start_idx}_to_{args.end_idx}.json")
+        inference_metadata = {
+            "model_path": args.model_path,
+            "experiment_dir": args.experiment_dir,
+            "start_idx": args.start_idx,
+            "end_idx": args.end_idx,
+            "batch_size": args.batch_size,
+            "target_transform": target_transform,
+            "normalization_stats": {
+                "target_mean": float(target_mean),
+                "target_std": float(target_std)
+            },
+            "prediction_stats": {
+                "min": float(np.min(original_predictions)),
+                "max": float(np.max(original_predictions)),
+                "mean": float(np.mean(original_predictions)),
+                "std": float(np.std(original_predictions))
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+
+        with open(metadata_file, 'w') as f:
+            json.dump(inference_metadata, f, indent=2)
+        print(f"  Metadata: {metadata_file}")
+
+        # Create visualizations
+        try:
+            create_prediction_visualizations(
+                INFERENCE_TIME,
+                coordinates,
+                original_predictions,
+                args.output_dir
+            )
+            print(f"Visualizations saved to {args.output_dir}")
+        except Exception as e:
+            print(f"Error creating visualizations: {e}")
 
 if __name__ == "__main__":
-    target_transform = "normalize"
-    main(target_transform)
+    main()

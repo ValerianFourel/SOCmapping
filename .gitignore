@@ -1,4 +1,11 @@
 
+**/*.txt
+**/*.csv
+**/*.pkl
+**/*.pyc
+**.*.log
+**/*.json
+**/*.tif
 **/Archive/
 **/Data/
 **/plots/

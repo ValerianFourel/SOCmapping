@@ -192,8 +192,8 @@ import torch
 from torch.utils.data import Dataset
 import os
 import glob
-#from config import bands_list_order, time_before, window_size
-from configElevationOnlyExperiment import bands_list_order, time_before, window_size
+from config import bands_list_order, time_before, window_size
+#from configElevationOnlyExperiment import bands_list_order, time_before, window_size
 
 import re
 from accelerate import Accelerator

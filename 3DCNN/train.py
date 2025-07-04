@@ -273,9 +273,9 @@ def train_model(args, model, train_loader, val_loader, num_epochs=100, target_tr
 def parse_args():
     parser = argparse.ArgumentParser(description='Train 3DCNN model with customizable parameters')
     parser.add_argument('--lr', type=float, default=0.0001, help='Learning rate')
-    parser.add_argument('--loss_type', type=str, default='composite_l2', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
+    parser.add_argument('--loss_type', type=str, default='mse', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
     parser.add_argument('--loss_alpha', type=float, default=0.5, help='Weight for L1 loss in composite loss (if used)')
-    parser.add_argument('--target_transform', type=str, default='normalize', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
+    parser.add_argument('--target_transform', type=str, default='log', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
     parser.add_argument('--use_validation', action='store_true', default=True, help='Whether to use validation set')
     parser.add_argument('--num-bins', type=int, default=128, help='Number of bins for OC resampling')
     parser.add_argument('--output-dir', type=str, default='output', help='Output directory')
@@ -283,7 +283,8 @@ def parse_args():
     parser.add_argument('--use-gpu', action='store_true', default=True, help='Use GPU')
     parser.add_argument('--distance-threshold', type=float, default=1.2, help='Minimum distance threshold for validation points')
     parser.add_argument('--target-fraction', type=float, default=0.75, help='Fraction of max bin count for resampling')
-    parser.add_argument('--num-runs', type=int, default=1, help='Number of times to run the process')
+    parser.add_argument('--num-runs', type=int, default=4, help='Number of times to run the process')
+    parser.add_argument('--save_train_and_val', type=bool, default=True, help='Dropout rate for the model')
     return parser.parse_args()
 
 def compute_average_metrics(all_runs_metrics):
@@ -380,7 +381,7 @@ if __name__ == "__main__":
     if not args.use_validation:
         args.num_runs = 1
     accelerator = Accelerator()
-    
+
     # Initialize lists to store metrics and best metrics across runs
     all_runs_metrics = []
     all_best_metrics = {
@@ -391,12 +392,18 @@ if __name__ == "__main__":
     }
     min_distance_stats_all = []
     wandb_runs_info = []
-    
+
+    # **Add these variables to track the best model across all runs**
+    best_overall_model_state = None
+    best_overall_r_squared = -float('inf')
+    best_overall_run_number = None
+    best_overall_metrics = {}
+
     # Loop through the specified number of runs
     for run in range(args.num_runs):
         if accelerator.is_main_process:
             print(f"\nStarting Run {run + 1}/{args.num_runs}")
-        
+
         # Initialize wandb for this run
         if accelerator.is_main_process:
             wandb_run = wandb.init(
@@ -424,7 +431,7 @@ if __name__ == "__main__":
                 'name': wandb_run.name,
                 'id': wandb_run.id
             })
-        
+
         # Data preparation
         df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
         samples_coordinates_array_path, data_array_path = separate_and_add_data()
@@ -454,8 +461,6 @@ if __name__ == "__main__":
             )
             min_distance_stats_all.append(min_distance_stats)
 
-            
-
         # Create datasets
         train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
         val_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df) if val_df is not None else None
@@ -483,11 +488,58 @@ if __name__ == "__main__":
             input_width=window_size,
             input_time=time_before
         )
-        
+
         if accelerator.is_main_process:
             wandb_run.summary[f"run_{run+1}_model_parameters"] = sum(p.numel() for p in model.parameters() if p.requires_grad)
             wandb_run.summary[f"run_{run+1}_train_size"] = len(train_df)
             wandb_run.summary[f"run_{run+1}_val_size"] = len(val_df) if val_df is not None else 0
+
+        if args.save_train_and_val:
+            # Create a descriptive filename based on run context
+            parquet_filename = (f'train_val_data_run_{run+1}_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
+                            f'TIME_END_{TIME_END}_TRANSFORM_{args.target_transform}_'
+                            f'LOSS_{args.loss_type}.parquet')
+
+            all_targets = []
+            for _, _, _, targets in train_loader:
+                all_targets.append(targets)
+            all_targets = torch.cat(all_targets)
+            target_mean = all_targets.mean().item()
+            target_std = all_targets.std().item()
+
+            # Combine train and val dataframes if validation is used
+            if args.use_validation:
+                # Add a column to identify train vs validation rows
+                train_df['dataset_type'] = 'train'
+                val_df['dataset_type'] = 'val'
+                combined_df = pd.concat([train_df, val_df], ignore_index=True)
+            else:
+                # Just use train_df and mark all as train
+                train_df['dataset_type'] = 'train'
+                combined_df = train_df
+
+            # Save to parquet file
+            combined_df.to_parquet(parquet_filename)
+
+            # Save normalization statistics to a separate file
+            stats_filename = (f'normalization_stats_run_{run+1}_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
+                            f'TIME_END_{TIME_END}_TRANSFORM_{args.target_transform}_'
+                            f'LOSS_{args.loss_type}.pkl')
+
+            normalization_stats = {
+                'feature_means': train_dataset_std_means.get_feature_means(),
+                'feature_stds': train_dataset_std_means.get_feature_stds(),
+                'target_mean': target_mean,
+                'target_std': target_std
+            }
+
+            import pickle
+            with open(stats_filename, 'wb') as f:
+                pickle.dump(normalization_stats, f)
+
+            if accelerator.is_main_process:
+                print(f"Train and validation data saved to: {parquet_filename}")
+                print(f"Normalization statistics saved to: {stats_filename}")
 
         # Train model
         model, val_outputs, val_targets, best_model_state, best_r_squared, best_mae, best_rmse, best_rpiq, epoch_metrics = train_model(
@@ -504,7 +556,19 @@ if __name__ == "__main__":
             all_best_metrics['rmse'].append(best_rmse)
             all_best_metrics['rpiq'].append(best_rpiq)
 
-        # Save model
+            # **Check if this run has the best overall performance**
+            if best_r_squared > best_overall_r_squared:
+                best_overall_r_squared = best_r_squared
+                best_overall_model_state = best_model_state
+                best_overall_run_number = run + 1
+                best_overall_metrics = {
+                    'r_squared': best_r_squared,
+                    'mae': best_mae,
+                    'rmse': best_rmse,
+                    'rpiq': best_rpiq
+                }
+
+        # Save model for this run
         if accelerator.is_main_process and best_model_state is not None:
             model_path = (f'cnn_model_run_{run+1}_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
                           f'TIME_END_{TIME_END}_TRANSFORM_{args.target_transform}_'
@@ -520,24 +584,24 @@ if __name__ == "__main__":
     if accelerator.is_main_process:
         avg_metrics = compute_average_metrics(all_runs_metrics)
         min_distance_stats = compute_min_distance_stats(min_distance_stats_all)
-        
+
         print("\nAverage Metrics Across Runs:")
         for metric, value in avg_metrics.items():
             print(f"{metric}: {value:.4f}")
-        
+
         print("\nAverage Min Distance Statistics:")
         for stat, value in min_distance_stats.items():
             print(f"{stat}: {value:.4f}")
-        
+
         print("\nBest Metrics Across Runs:")
         for metric, values in all_best_metrics.items():
             print(f"{metric} - Mean: {np.mean(values):.4f}, Std: {np.std(values):.4f}")
-        
+
         # Save all metrics to file
         output_file = os.path.join(args.output_dir, f'training_metrics_3dcnn_{uuid.uuid4().hex[:8]}.txt')
         save_metrics_to_file(args, wandb_runs_info, avg_metrics, min_distance_stats, all_best_metrics, filename=output_file)
         print(f"\nMetrics saved to: {output_file}")
-        
+
         # Log average metrics to a new wandb run
         wandb_run = wandb.init(project="socmapping-3dcnn", name="average_metrics")
         wandb_runs_info.append({
@@ -549,24 +613,39 @@ if __name__ == "__main__":
         for metric, values in all_best_metrics.items():
             wandb_run.summary[f"avg_{metric}"] = np.mean(values)
             wandb_run.summary[f"std_{metric}"] = np.std(values)
-        
-        # Save the best model state from the run with the highest R²
-        if args.use_validation and all_best_metrics['r_squared']:
-            best_run_idx = np.argmax(all_best_metrics['r_squared'])
-            average_best_r2 = np.mean(all_best_metrics['r_squared'])
-            best_model_state = {k: v.cpu() for k, v in train_model(args, Small3DCNN(
-                input_channels=len(bands_list_order),
-                input_height=window_size,
-                input_width=window_size,
-                input_time=time_before
-            ), train_loader, val_loader, num_epochs=num_epochs, target_transform=args.target_transform, loss_type=args.loss_type)[3].items()}
-            model_path = (f'cnn_model_best_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
-                          f'TIME_END_{TIME_END}_TRANSFORM_{args.target_transform}_'
-                          f'LOSS_{args.loss_type}_AVG_R2_{average_best_r2:.4f}.pth')
-            torch.save(best_model_state, model_path)
-            wandb_run.save(model_path)
-            print(f"Best model from run {best_run_idx+1} saved with average R²: {np.mean(all_best_metrics['r_squared']):.4f}")
-        
+
+        # **Save the best model from all runs with run number information**
+        if args.use_validation and best_overall_model_state is not None:
+            # Include run number in the filename and save additional metadata
+            best_model_path = (f'cnn_model_BEST_OVERALL_from_run_{best_overall_run_number}_'
+                              f'MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
+                              f'TIME_END_{TIME_END}_TRANSFORM_{args.target_transform}_'
+                              f'LOSS_{args.loss_type}_R2_{best_overall_r_squared:.4f}.pth')
+
+            # Save model state with metadata
+            model_with_metadata = {
+                'model_state_dict': best_overall_model_state,
+                'best_run_number': best_overall_run_number,
+                'best_metrics': best_overall_metrics,
+                'average_metrics': {
+                    'avg_r_squared': np.mean(all_best_metrics['r_squared']),
+                    'avg_mae': np.mean(all_best_metrics['mae']),
+                    'avg_rmse': np.mean(all_best_metrics['rmse']),
+                    'avg_rpiq': np.mean(all_best_metrics['rpiq'])
+                },
+                'total_runs': args.num_runs
+            }
+
+            torch.save(model_with_metadata, best_model_path)
+            wandb_run.save(best_model_path)
+
+            print(f"\n**Best overall model from run {best_overall_run_number} saved**")
+            print(f"Best R²: {best_overall_r_squared:.4f}")
+            print(f"Best MAE: {best_overall_metrics['mae']:.4f}")
+            print(f"Best RMSE: {best_overall_metrics['rmse']:.4f}")
+            print(f"Best RPIQ: {best_overall_metrics['rpiq']:.4f}")
+            print(f"Average R² across all runs: {np.mean(all_best_metrics['r_squared']):.4f}")
+
         wandb_run.finish()
 
     accelerator.print("All runs completed, average metrics and min distance statistics computed and saved!")
