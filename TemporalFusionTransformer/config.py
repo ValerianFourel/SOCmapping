@@ -5,16 +5,16 @@ base_path_data = '/home/vfourel/SOCProject/SOCmapping/Data'
 file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC = f"{base_path_data}/LUCAS_LFU_Lfl_00to23_Bavaria_OC.xlsx"
 
 
-time_before  = 5 # 5
-window_size = 5 # 41
+time_before  = 5 # 5 works best
+window_size = 5 # 5 works best
 TIME_BEGINNING = '2007'
 LOADING_TIME_BEGINNING = str(int(TIME_BEGINNING)-time_before)
 TIME_END = '2023'
 INFERENCE_TIME = '2023'
 bands_list_order = ['Elevation','LAI','LST','MODIS_NPP','SoilEvaporation','TotalEvapotranspiration']
 MAX_OC = 150
-num_epochs = 270   # 200 
-NUM_EPOCHS_RUN = 320 # 250
+num_epochs = 270   # 200 works as 
+NUM_EPOCHS_RUN = 320 # 250 for when we have a training on all the data validation and training for the mapping Deep Neural Network
 LOADING_TIME_BEGINNING_INFERENCE = str(int(INFERENCE_TIME)-time_before)
 NUM_LAYERS = 2
 NUM_HEADS = 8 

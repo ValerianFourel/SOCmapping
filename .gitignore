@@ -6,6 +6,7 @@
 **.*.log
 **/*.json
 **/*.tif
+**/__pycache__
 **/Archive/
 **/Data/
 **/plots/
