@@ -1,6 +1,0 @@
-Flipping 4608 points from validation to training set (distance < 1 km)
-Size of the full dataset: 16514
-Size of the final validation set: 466 (2.82%)
-Size of the final training set: 16048
-Minimum distance between validation and training sets after flipping (km): 1.11
-Final KDE difference score (lower is better): 1.0046
