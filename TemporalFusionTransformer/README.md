@@ -1,44 +1,3 @@
-<details><summary>Thinking</summary>
-
-Now I need to create a README.md for the TFT (Temporal Fusion Transformer) approach for SOC prediction. The user has provided two TFT models:
-
-1. SimpleTFT - a smaller, simpler version
-2. EnhancedTFT - a larger, more complex version with additional features
-
-And they've also provided the training script which shows the best performing configuration.
-
-From looking at the training script, I can see:
-- It uses SimpleTFT by default (based on the import)
-- The default loss type is 'l1' 
-- The default target transform is 'normalize'
-- It supports both simple and enhanced TFT architectures
-- Uses spatial-temporal processing with CNN + Transformer
-- Has comprehensive experiment tracking and model saving
-
-I need to structure this README similar to the previous ones but focus on the TFT-specific aspects:
-
-1. Overview of TFT approach
-2. Model architectures (SimpleTFT vs EnhancedTFT)
-3. Key features and components
-4. Usage instructions
-5. Best practices
-6. Performance characteristics
-
-Let me focus on what makes TFT special:
-- Combines CNN for spatial feature extraction with Transformer for temporal modeling
-- Gated Residual Networks (GRN)
-- Positional encoding
-- Attention pooling
-- Multiple scales of processing
-
-Based on the script, it seems like the best performing setup uses:
-- SimpleTFT (default import)
-- L1 loss
-- Normalize target transform
-- Learning rate 0.0002
-
-</details>
-
 # Temporal Fusion Transformer (TFT) for Soil Organic Carbon (SOC) Prediction in Bavaria
 
 This repository implements Temporal Fusion Transformer (TFT) models for predicting and mapping soil organic carbon (SOC) content across Bavaria, Germany, using multi-temporal satellite and environmental data from 2007-2023.
@@ -52,6 +11,9 @@ We provide two TFT architectures that combine Convolutional Neural Networks (CNN
 
 Both models leverage the TFT's unique ability to handle heterogeneous inputs and capture complex temporal dependencies for improved SOC prediction accuracy.
 
+![Mapping of SOC prediction using the 360k SimpleTFT for the year 2023](../assets/AllModelsComparison/AllModelsComparison_20kTransformer_MAX_OC_150_Beginning_2007_End_2023_InferenceTime2023_20250527_155525.png)
+
+![Mapping of SOC prediction using the 1.1mil EnhancedTFT for the year 2023](../assets/AllModelsComparison/AllModelsComparison_2milTransformer_MAX_OC_150_Beginning_2007_End_2023_InferenceTime2023_20250527_155525.png)
 ## Model Architectures
 
 ### SimpleTFT (Recommended)

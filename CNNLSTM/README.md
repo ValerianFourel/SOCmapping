@@ -1,36 +1,3 @@
-<details><summary>Thinking</summary>
-
-The user is asking me to create a README.md file for their CNN-LSTM model based on the model.py file and training script they provided. Let me analyze the code to understand what this model does:
-
-1. From model.py:
-- It's a RefittedCovLSTM (Convolutional LSTM) model
-- Combines CNN for spatial feature extraction and LSTM for temporal sequence processing
-- It's designed for CUDA 11.8 compatibility
-- Takes input of shape [batch, bands, height, width, time]
-- Has CNN layers (conv1, conv2) followed by LSTM and fully connected layers
-- Output is a single value (regression)
-
-2. From the training script:
-- It's for SOC (Soil Organic Carbon) prediction/mapping in Bavaria
-- Uses multi-temporal satellite and environmental data from 2007-2023
-- Has multiple loss functions (composite_l1, composite_l2, l1, mse)
-- Uses wandb for experiment tracking
-- Has validation splits with spatial awareness
-- Can run multiple experiments
-- Uses accelerate for distributed training
-
-3. Key features:
-- Multi-year raster datasets
-- Balanced sampling strategies
-- Target transformations (log, normalize)
-- Spatial-temporal modeling
-- CUDA optimized
-- Comprehensive evaluation metrics
-
-Let me create a comprehensive README that covers the architecture, usage, and key features.
-
-</details>
-
 # CNN-LSTM Model for Soil Organic Carbon (SOC) Prediction in Bavaria
 
 This repository contains a deep learning model that combines Convolutional Neural Networks (CNN) and Long Short-Term Memory (LSTM) networks for predicting and mapping soil organic carbon (SOC) content across Bavaria, Germany, using multi-temporal satellite and environmental data from 2007-2023.
@@ -159,6 +126,10 @@ The model uses **Weights & Biases (wandb)** for comprehensive experiment trackin
 - Hyperparameter tracking
 - Multi-run comparison
 - Best model selection
+
+We have obtained the following mapping:
+
+![Mapping of SOC prediction using the CNNLSTM for the year 2023](../assets/AllModelsComparison/AllModelsComparison_CNNLSTM_MAX_OC_150_Beginning_2007_End_2023_InferenceTime2023_20250527_155525.png)
 
 ## Data Processing Pipeline
 

@@ -1,39 +1,3 @@
-<details><summary>Thinking</summary>
-
-The user wants me to create a README.md for a Transformer-based approach for SOC prediction. I need to analyze the provided code to understand:
-
-1. The SimpleTransformer and SimpleTransformerV2 models
-2. The training script for transformers
-3. The specific configurations and features
-4. The best performing configuration (composite_l2 loss with log transformation)
-
-Let me break down the key components:
-
-Models:
-1. SimpleTransformer - smaller version with basic transformer encoder
-2. SimpleTransformerV2 - larger version with more sophisticated architecture including positional encoding, pre-norm, larger feedforward layers
-
-Key features:
-- Uses transformer encoder layers for temporal sequence modeling
-- Processes spatial-temporal satellite data
-- Multiple loss functions including composite losses
-- Target transformations (log, normalize, none)
-- Multi-run experiments with statistical analysis
-- Comprehensive evaluation metrics
-
-The training script shows:
-- Multi-year raster dataset loading
-- Balanced sampling strategies
-- Spatial validation splitting
-- Accelerate framework for distributed training
-- Wandb experiment tracking
-- Best model selection across runs
-
-Best configuration mentioned: "composite_l2" loss with "log" transformation
-
-I should structure this README similarly to the previous ones but focus on the transformer-specific aspects.
-
-</details>
 
 # Transformer Model for Soil Organic Carbon (SOC) Prediction in Bavaria
 
@@ -46,6 +10,12 @@ We implement two transformer architectures for SOC prediction:
 - **SimpleTransformerV2**: Advanced transformer with positional encoding, pre-normalization, and enhanced capacity
 
 Both models leverage the self-attention mechanism to capture complex temporal relationships in multi-year satellite imagery for improved SOC prediction accuracy.
+
+We obtained the 2 mappings of SOC predictions over Bavaria for the year 2023:
+
+![Mapping of SOC prediction using the 20k Transformer for the year 2023](../assets/AllModelsComparison/AllModelsComparison_20kTransformer_MAX_OC_150_Beginning_2007_End_2023_InferenceTime2023_20250527_155525.png)
+
+![Mapping of SOC prediction using the 2.4mil Transformer for the year 2023](../assets/AllModelsComparison/AllModelsComparison_2milTransformer_MAX_OC_150_Beginning_2007_End_2023_InferenceTime2023_20250527_155525.png)
 
 ## Model Architectures
 
