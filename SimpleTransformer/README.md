@@ -15,7 +15,12 @@ We obtained the 2 mappings of SOC predictions over Bavaria for the year 2023:
 
 ![Mapping of SOC prediction using the 20k Transformer for the year 2023](../assets/AllModelsComparison/AllModelsComparison_20kTransformer_MAX_OC_150_Beginning_2007_End_2023_InferenceTime2023_20250527_155525.png)
 
+*Mapping of SOC prediction using the 20k Transformer (2007-2023 dataset, inference time: 2023)*
+
+
 ![Mapping of SOC prediction using the 2.4mil Transformer for the year 2023](../assets/AllModelsComparison/AllModelsComparison_2milTransformer_MAX_OC_150_Beginning_2007_End_2023_InferenceTime2023_20250527_155525.png)
+
+*Mapping of SOC prediction using the 2.4mil Transformer (2007-2023 dataset, inference time: 2023)*
 
 ## Model Architectures
 

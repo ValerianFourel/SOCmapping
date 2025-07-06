@@ -7,7 +7,7 @@ This project implements a deep learning approach to predict soil organic carbon 
 
 ![Mapping of SOC prediction using the 3DCNN for the year 2023](../assets/AllModelsComparison/AllModelsComparison_3DCNN_MAX_OC_150_Beginning_2007_End_2023_InferenceTime2023_20250527_155525.png)
 
-*Performance comparison of different models for SOC prediction (2007-2023 dataset, inference time: 2023)*
+*Mapping of SOC prediction using the 3DCNN (2007-2023 dataset, inference time: 2023)*
 
 Key Features
 3D Convolutional Architecture: Processes spatiotemporal data with dimensions for location (height × width), time series, and multiple environmental channels

@@ -13,7 +13,12 @@ Both models leverage the TFT's unique ability to handle heterogeneous inputs and
 
 ![Mapping of SOC prediction using the 360k SimpleTFT for the year 2023](../assets/AllModelsComparison/AllModelsComparison_20kTransformer_MAX_OC_150_Beginning_2007_End_2023_InferenceTime2023_20250527_155525.png)
 
+*Mapping of SOC prediction using the 360k SimpleTFT (2007-2023 dataset, inference time: 2023)*
+
+
 ![Mapping of SOC prediction using the 1.1mil EnhancedTFT for the year 2023](../assets/AllModelsComparison/AllModelsComparison_2milTransformer_MAX_OC_150_Beginning_2007_End_2023_InferenceTime2023_20250527_155525.png)
+*Mapping of SOC prediction using the 1.1mil EnhancedTFT (2007-2023 dataset, inference time: 2023)*
+
 ## Model Architectures
 
 ### SimpleTFT (Recommended)

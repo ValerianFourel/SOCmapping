@@ -131,6 +131,8 @@ We have obtained the following mapping:
 
 ![Mapping of SOC prediction using the CNNLSTM for the year 2023](../assets/AllModelsComparison/AllModelsComparison_CNNLSTM_MAX_OC_150_Beginning_2007_End_2023_InferenceTime2023_20250527_155525.png)
 
+*Mapping of SOC prediction using the CNNLSTM (2007-2023 dataset, inference time: 2023)*
+
 ## Data Processing Pipeline
 
 ### Spatial-Temporal Data Handling
