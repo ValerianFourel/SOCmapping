@@ -3,7 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
-
+*.zip
 # Data files
 *.csv
 *.pkl
@@ -23,6 +23,7 @@ __pycache__/
 
 # Directories - Data and outputs
 Data/
+Weights-ResidualsModels-MappingInference-SOCmapping/
 SOCmappingData/
 Archive/
 plots/
