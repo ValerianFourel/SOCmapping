@@ -21,6 +21,7 @@ save_path_predictions_plots = '/home/vfourel/SOCProject/SOCmapping/predictions_p
 file_path_coordinates_Bavaria_1mil = "/home/vfourel/SOCProject/SOCmapping/Data/Coordinates1Mil/coordinates_Bavaria_1mil.csv"
 PICTURE_VERSION = f"{str(num_epochs)}_{str(MAX_OC)}_{INFERENCE_TIME}_version"
 extra_tag = 'try_overfit_large_OC'
+NUM_EPOCHS_RUN = num_epochs
 
 def generate_seasonal_list():
     seasons = ['winter', 'spring', 'summer', 'autumn']  # Reordered with winter first
