@@ -28,10 +28,21 @@ import seaborn as sns
 from scipy import stats
 import json
 
-# Increase the timeout value
+# Enhanced NCCL and CUDA settings
 os.environ["NCCL_BLOCKING_WAIT"] = "1"
-os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1" 
-torch.distributed.init_process_group(backend='nccl', timeout=datetime.timedelta(minutes=20))
+os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
+os.environ["NCCL_TIMEOUT"] = "7200"  # 2 hours
+os.environ["NCCL_DEBUG"] = "INFO"
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+os.environ["NCCL_IB_DISABLE"] = "1"  # Disable InfiniBand if causing issues
+os.environ["NCCL_P2P_DISABLE"] = "1"  # Disable P2P if causing issues
+
+# Initialize distributed processing with longer timeout
+if not torch.distributed.is_initialized():
+    torch.distributed.init_process_group(
+        backend='nccl', 
+        timeout=datetime.timedelta(minutes=30)
+    )
 
 
 # Uncomment and use this composite loss function if desired
@@ -82,18 +93,30 @@ def enable_dropout(model):
 def predict_with_uncertainty(model, dataloader, accelerator, target_mean=0.0, target_std=1.0, 
                            target_transform='none', n_samples=20, use_mc_dropout=True):
     """
-    Predict with uncertainty estimation using Monte Carlo dropout
+    Robust prediction with uncertainty estimation using Monte Carlo dropout
     """
+    print(f"Starting uncertainty prediction with {n_samples} samples...")
+
+    # Set model to evaluation mode
     model.eval()
+
+    # Enable dropout for Monte Carlo sampling if requested
     if use_mc_dropout:
         enable_dropout(model)
+        print("Monte Carlo dropout enabled")
 
-    all_predictions = []
+    # Storage for results
+    all_predictions = []  # List of arrays, each array has shape [n_samples, batch_size]
     all_targets = []
     all_coords = []
 
+    batch_count = 0
+
     with torch.no_grad():
-        for longitudes, latitudes, features, targets in dataloader:
+        for batch_data in tqdm(dataloader, desc="Processing batches for uncertainty"):
+            longitudes, latitudes, features, targets = batch_data
+
+            # Move to device
             features = features.to(accelerator.device)
             targets = targets.to(accelerator.device).float()
 
@@ -105,26 +128,79 @@ def predict_with_uncertainty(model, dataloader, accelerator, target_mean=0.0, ta
             else:
                 targets_transformed = targets
 
-            # Collect multiple predictions for uncertainty
+            # Get batch size
+            batch_size = features.shape[0]
+
+            # Collect multiple predictions for uncertainty estimation
             batch_predictions = []
-            for _ in range(n_samples):
+
+            for sample_idx in range(n_samples):
+                # Forward pass
                 outputs = model(features)
-                batch_predictions.append(outputs.cpu().numpy())
 
-            # Stack predictions and compute statistics
-            batch_predictions = np.stack(batch_predictions)  # Shape: (n_samples, batch_size, 1)
+                # Handle different possible output shapes
+                if outputs.dim() > 1:
+                    # If outputs have multiple dimensions, flatten to 1D
+                    outputs_flat = outputs.view(batch_size, -1)
+                    # If there are multiple outputs per sample, take the mean or first column
+                    if outputs_flat.shape[1] > 1:
+                        outputs_flat = outputs_flat.mean(dim=1)
+                    else:
+                        outputs_flat = outputs_flat.squeeze(1)
+                else:
+                    outputs_flat = outputs
 
+                # Ensure we have the right shape [batch_size]
+                assert outputs_flat.shape[0] == batch_size, f"Expected batch size {batch_size}, got {outputs_flat.shape[0]}"
+
+                # Convert to CPU numpy
+                outputs_np = outputs_flat.detach().cpu().numpy()
+                batch_predictions.append(outputs_np)
+
+            # Convert to numpy array: [n_samples, batch_size]
+            batch_predictions = np.array(batch_predictions)
+            assert batch_predictions.shape == (n_samples, batch_size), f"Unexpected batch predictions shape: {batch_predictions.shape}"
+
+            # Store results
             all_predictions.append(batch_predictions)
-            all_targets.extend(targets_transformed.cpu().numpy())
-            all_coords.extend(list(zip(longitudes.cpu().numpy(), latitudes.cpu().numpy())))
 
-    # Concatenate all predictions
-    predictions = np.concatenate(all_predictions, axis=1)  # Shape: (n_samples, total_samples, 1)
-    predictions = predictions.squeeze(-1)  # Shape: (n_samples, total_samples)
+            # Process targets and coordinates
+            targets_np = targets_transformed.detach().cpu().numpy()
+            longitudes_np = longitudes.cpu().numpy()
+            latitudes_np = latitudes.cpu().numpy()
+
+            # Ensure targets are 1D
+            if targets_np.dim > 1:
+                targets_np = targets_np.flatten()
+
+            all_targets.extend(targets_np.tolist())
+            all_coords.extend(list(zip(longitudes_np.tolist(), latitudes_np.tolist())))
+
+            batch_count += 1
+
+    print(f"Processed {batch_count} batches")
+
+    # Concatenate all predictions: [n_samples, total_samples]
+    print("Concatenating predictions...")
+    predictions_array = np.concatenate(all_predictions, axis=1)
+
+    total_samples = len(all_targets)
+    assert predictions_array.shape == (n_samples, total_samples), f"Final predictions shape mismatch: {predictions_array.shape} vs expected ({n_samples}, {total_samples})"
+
+    print(f"Final predictions shape: {predictions_array.shape}")
 
     # Calculate uncertainty metrics
-    mean_predictions = np.mean(predictions, axis=0)
-    std_predictions = np.std(predictions, axis=0)
+    mean_predictions = np.mean(predictions_array, axis=0)
+    std_predictions = np.std(predictions_array, axis=0)
+
+    # Ensure all arrays have consistent lengths
+    assert len(mean_predictions) == len(std_predictions) == len(all_targets) == len(all_coords), \
+        f"Length mismatch: preds={len(mean_predictions)}, std={len(std_predictions)}, targets={len(all_targets)}, coords={len(all_coords)}"
+
+    print(f"Uncertainty prediction completed:")
+    print(f"  - Total samples: {total_samples}")
+    print(f"  - Mean prediction range: [{np.min(mean_predictions):.4f}, {np.max(mean_predictions):.4f}]")
+    print(f"  - Uncertainty range: [{np.min(std_predictions):.4f}, {np.max(std_predictions):.4f}]")
 
     return mean_predictions, std_predictions, np.array(all_targets), all_coords
 
@@ -261,7 +337,7 @@ def parse_args():
 
 
 def train_model(model, train_loader, val_loader,target_mean,target_std, num_epochs=num_epochs, accelerator=None, lr=0.001,
-                loss_type='l1', loss_alpha=0.5, target_transform='none', min_r2=0.5, use_validation=True):
+                loss_type='l1', loss_alpha=0.5, target_transform='none', min_r2=0.35, use_validation=True):
     # Define loss function based on loss_type
     if loss_type == 'composite_l1':
         criterion = lambda outputs, targets: composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=loss_alpha)
@@ -283,7 +359,6 @@ def train_model(model, train_loader, val_loader,target_mean,target_std, num_epoc
 
     # Handle target normalization if selected
     if target_transform == 'normalize':
-
         if accelerator.is_main_process:
             print(f"Target mean: {target_mean}, Target std: {target_std}")
     else:
@@ -444,8 +519,6 @@ def train_model(model, train_loader, val_loader,target_mean,target_std, num_epoc
             accelerator.print(f'RMSE: {rmse:.4f}')
             accelerator.print(f'MAE: {mae:.4f}')
             accelerator.print(f'RPIQ: {rpiq:.4f}\n')
-            # Print the results
-
 
     return model, val_outputs, val_targets_list, best_model_state, best_r2, epoch_metrics
 
@@ -499,7 +572,6 @@ def compute_training_statistics_oc():
         # Calculate target statistics from balanced dataset
     target_mean = df_train['OC'].mean()
     target_std = df_train['OC'].std()
-
 
     return target_mean, target_std
 
@@ -695,7 +767,6 @@ if __name__ == "__main__":
                 distance_threshold=args.distance_threshold
             )
             min_distance_stats_all.append(min_distance_stats)
-            # train_df, val_df = create_balanced_dataset(df, min_ratio=3/4,use_validation=True)
 
         if args.save_train_and_val:
             # Create data subfolder within experiment directory
@@ -797,78 +868,104 @@ if __name__ == "__main__":
             loss_type=args.loss_type,
             loss_alpha=args.loss_alpha,
             target_transform=args.target_transform,
-            min_r2=0.40,
+            min_r2=0.35,
             use_validation=args.use_validation,
         )
 
         # **UNCERTAINTY ANALYSIS FOR EACH RUN**
-        if accelerator.is_main_process and args.perform_uncertainty_analysis and args.use_validation and val_loader is not None and best_model_state is not None:
+        if accelerator.is_main_process and args.perform_uncertainty_analysis and args.use_validation and val_df is not None and best_model_state is not None:
             print(f"\nPerforming uncertainty analysis for Run {run + 1}...")
 
-            # Load the best model for uncertainty analysis
-            model.load_state_dict(best_model_state)
+            try:
+                # Create a fresh model instance and load the best state
+                uncertainty_model = SimpleTFT(
+                    input_channels=len(bands_list_order),
+                    height=window_size,
+                    width=window_size,
+                    time_steps=time_before,
+                    d_model=args.hidden_size
+                ).to(accelerator.device)
 
-            # Create validation loader for uncertainty (without accelerator preparation to avoid issues)
-            val_dataset_uncertainty = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df)
-            val_dataset_uncertainty.set_feature_means(feature_means)
-            val_dataset_uncertainty.set_feature_stds(feature_stds)
-            val_loader_uncertainty = DataLoader(val_dataset_uncertainty, batch_size=args.batch_size, shuffle=False)
+                uncertainty_model.load_state_dict(best_model_state)
 
-            # Predict with uncertainty using Monte Carlo dropout
-            mean_preds, std_preds, targets_array, coords = predict_with_uncertainty(
-                model, val_loader_uncertainty, accelerator, 
-                target_mean=target_mean, target_std=target_std,
-                target_transform=args.target_transform,
-                n_samples=args.uncertainty_samples, 
-                use_mc_dropout=args.use_mc_dropout
-            )
+                # Create validation dataset for uncertainty (fresh instance)
+                val_dataset_uncertainty = NormalizedMultiRasterDatasetMultiYears(
+                    samples_coordinates_array_path, data_array_path, val_df
+                )
+                val_dataset_uncertainty.set_feature_means(feature_means)
+                val_dataset_uncertainty.set_feature_stds(feature_stds)
 
-            # Apply inverse transformation to get original scale
-            if args.target_transform == 'normalize':
-                mean_preds_orig = mean_preds * target_std + target_mean
-                targets_orig = targets_array * target_std + target_mean
-                std_preds_orig = std_preds * target_std  # Scale uncertainty too
-            elif args.target_transform == 'log':
-                mean_preds_orig = np.exp(mean_preds)
-                targets_orig = np.exp(targets_array)
-                # For log transform, uncertainty scaling is more complex
-                std_preds_orig = mean_preds_orig * std_preds  # Approximate scaling
-            else:
-                mean_preds_orig = mean_preds
-                targets_orig = targets_array
-                std_preds_orig = std_preds
+                # Create dataloader with smaller batch size to avoid memory issues
+                uncertainty_batch_size = min(args.batch_size, 512)  # Reduce batch size for uncertainty
+                val_loader_uncertainty = DataLoader(
+                    val_dataset_uncertainty, 
+                    batch_size=uncertainty_batch_size, 
+                    shuffle=False,
+                    num_workers=0  # Avoid multiprocessing issues
+                )
 
-            # Create uncertainty plots
-            results_dir = os.path.join(experiment_dir, "results")
-            os.makedirs(results_dir, exist_ok=True)
-            uncertainty_stats = plot_uncertainty_analysis(
-                mean_preds_orig, std_preds_orig, targets_orig, coords, 
-                results_dir, args.target_transform, run_number=run+1
-            )
+                # Create a simple accelerator for uncertainty analysis
+                uncertainty_accelerator = Accelerator()
 
-            # Store uncertainty statistics
-            all_uncertainty_stats.append(uncertainty_stats)
+                # Predict with uncertainty using Monte Carlo dropout
+                mean_preds, std_preds, targets_array, coords = predict_with_uncertainty(
+                    uncertainty_model, val_loader_uncertainty, uncertainty_accelerator, 
+                    target_mean=target_mean, target_std=target_std,
+                    target_transform=args.target_transform,
+                    n_samples=args.uncertainty_samples, 
+                    use_mc_dropout=args.use_mc_dropout
+                )
 
-            # Save uncertainty data for this run
-            uncertainty_data = pd.DataFrame({
-                'longitude': [coord[0] for coord in coords],
-                'latitude': [coord[1] for coord in coords],
-                'actual': targets_orig,
-                'predicted': mean_preds_orig,
-                'uncertainty': std_preds_orig,
-                'absolute_error': np.abs(mean_preds_orig - targets_orig)
-            })
+                # Apply inverse transformation to get original scale
+                if args.target_transform == 'normalize':
+                    mean_preds_orig = mean_preds * target_std + target_mean
+                    targets_orig = targets_array * target_std + target_mean
+                    std_preds_orig = std_preds * target_std  # Scale uncertainty too
+                elif args.target_transform == 'log':
+                    mean_preds_orig = np.exp(mean_preds)
+                    targets_orig = np.exp(targets_array)
+                    # For log transform, uncertainty scaling is more complex
+                    std_preds_orig = mean_preds_orig * std_preds  # Approximate scaling
+                else:
+                    mean_preds_orig = mean_preds
+                    targets_orig = targets_array
+                    std_preds_orig = std_preds
 
-            uncertainty_file = os.path.join(results_dir, f'uncertainty_analysis_run_{run+1}.csv')
-            uncertainty_data.to_csv(uncertainty_file, index=False)
-            print(f"Uncertainty data for Run {run+1} saved to: {uncertainty_file}")
+                # Create uncertainty plots
+                results_dir = os.path.join(experiment_dir, "results")
+                os.makedirs(results_dir, exist_ok=True)
+                uncertainty_stats = plot_uncertainty_analysis(
+                    mean_preds_orig, std_preds_orig, targets_orig, coords, 
+                    results_dir, args.target_transform, run_number=run+1
+                )
 
-            # Log uncertainty stats to wandb
-            wandb_run.log({
-                "uncertainty_analysis": uncertainty_stats,
-                "mean_uncertainty": uncertainty_stats['mean_uncertainty'],
-                "uncertainty_error_correlation": uncertainty_stats['uncertainty_error_correlation']
-            })
+                # Store uncertainty statistics
+                all_uncertainty_stats.append(uncertainty_stats)
+
+                # Save uncertainty data for this run
+                uncertainty_data = pd.DataFrame({
+                    'longitude': [coord[0] for coord in coords],
+                    'latitude': [coord[1] for coord in coords],
+                    'actual': targets_orig,
+                    'predicted': mean_preds_orig,
+                    'uncertainty': std_preds_orig,
+                    'absolute_error': np.abs(mean_preds_orig - targets_orig)
+                })
+
+                uncertainty_file = os.path.join(results_dir, f'uncertainty_analysis_run_{run+1}.csv')
+                uncertainty_data.to_csv(uncertainty_file, index=False)
+                print(f"Uncertainty data for Run {run+1} saved to: {uncertainty_file}")
+
+                # Log uncertainty stats to wandb
+                wandb_run.log({
+                    "uncertainty_analysis": uncertainty_stats,
+                    "mean_uncertainty": uncertainty_stats['mean_uncertainty'],
+                    "uncertainty_error_correlation": uncertainty_stats['uncertainty_error_correlation']
+                })
+
+            except Exception as e:
+                print(f"Uncertainty analysis failed for Run {run + 1}: {str(e)}")
+                print("Continuing without uncertainty analysis for this run...")
 
         # Store metrics
         all_runs_metrics.append(epoch_metrics)

@@ -26,12 +26,22 @@ import datetime
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-# Increase the timeout value
-os.environ["NCCL_BLOCKING_WAIT"] = "1"
-os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1" 
-torch.distributed.init_process_group(backend='nccl', timeout=datetime.timedelta(minutes=20))
+# Conditional distributed training setup
+def setup_distributed():
+    """Setup distributed training if environment variables are set"""
+    if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+        # Distributed training environment detected
+        os.environ["NCCL_BLOCKING_WAIT"] = "1"
+        os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
+        torch.distributed.init_process_group(
+            backend='nccl', 
+            timeout=datetime.timedelta(minutes=20)
+        )
+        return True
+    return False
 
-# ... [Keep all your existing loss functions and other helper functions unchanged] ...
+# Initialize distributed training only if environment is set up
+is_distributed = setup_distributed()
 
 def composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
     """Composite loss combining L1 and scaled chi-squared loss"""
@@ -47,7 +57,6 @@ def composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
     chi2_scaled = scale_factor * chi2_unscaled_mean
 
     return alpha * l1_loss + (1 - alpha) * chi2_scaled
-
 
 def composite_l2_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
     """Composite loss combining L2 and scaled chi-squared loss"""
@@ -69,10 +78,10 @@ def composite_l2_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
     # Combine the losses with the weighting factor alpha
     return alpha * l2_loss + (1 - alpha) * chi2_scaled
 
-
 def parse_args():
     parser = argparse.ArgumentParser(description='Train SimpleTFT model with customizable parameters')
     parser.add_argument('--lr', type=float, default=0.0002, help='Learning rate')
+    parser.add_argument('--batch_size', type=int, default=256, help='Batch size for training and validation')
     parser.add_argument('--num_heads', type=int, default=NUM_HEADS, help='Number of attention heads')
     parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of transformer layers')
     parser.add_argument('--loss_type', type=str, default='l1', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
@@ -92,8 +101,6 @@ def parse_args():
     parser.add_argument('--run_interpretability', type=bool, default=True, help='Run interpretability analysis after training')
     parser.add_argument('--interpretability_samples', type=int, default=200, help='Number of samples for interpretability analysis')
     return parser.parse_args()
-
-# ... [Keep your existing train_model function unchanged] ...
 
 def train_model(model, train_loader, val_loader,target_mean,target_std, num_epochs=num_epochs, accelerator=None, lr=0.001,
                 loss_type='l1', loss_alpha=0.5, target_transform='none', min_r2=0.5, use_validation=True):
@@ -118,7 +125,6 @@ def train_model(model, train_loader, val_loader,target_mean,target_std, num_epoc
 
     # Handle target normalization if selected
     if target_transform == 'normalize':
-
         if accelerator.is_main_process:
             print(f"Target mean: {target_mean}, Target std: {target_std}")
     else:
@@ -279,8 +285,6 @@ def train_model(model, train_loader, val_loader,target_mean,target_std, num_epoc
             accelerator.print(f'RMSE: {rmse:.4f}')
             accelerator.print(f'MAE: {mae:.4f}')
             accelerator.print(f'RPIQ: {rpiq:.4f}\n')
-            # Print the results
-
 
     return model, val_outputs, val_targets_list, best_model_state, best_r2, epoch_metrics
 
@@ -520,8 +524,6 @@ def create_interpretability_plots(temporal_stats, feature_stats, output_dir):
     print(f"Feature importance plot saved to: {feature_plot_path}")
     print(f"Combined plot saved to: {combined_plot_path}")
 
-# ... [Keep all your existing helper functions unchanged] ...
-
 def compute_average_metrics(all_runs_metrics):
     if not all_runs_metrics:
         return {}
@@ -566,10 +568,9 @@ def compute_min_distance_stats(min_distance_stats_all):
 
 def compute_training_statistics_oc():
     df_train = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
-        # Calculate target statistics from balanced dataset
+    # Calculate target statistics from balanced dataset
     target_mean = df_train['OC'].mean()
     target_std = df_train['OC'].std()
-
 
     return target_mean, target_std
 
@@ -638,6 +639,7 @@ if __name__ == "__main__":
                       f"loss_{args.loss_type}_"
                       f"runs_{args.num_runs}_"
                       f"lr_{args.lr}_"
+                      f"batch_{args.batch_size}_"
                       f"heads_{args.num_heads}_"
                       f"layers_{args.num_layers}")
 
@@ -655,7 +657,8 @@ if __name__ == "__main__":
             "window_size": window_size,
             "time_before": time_before,
             "bands_count": len(bands_list_order),
-            "num_epochs": num_epochs
+            "num_epochs": num_epochs,
+            "batch_size": args.batch_size
         }
     }
 
@@ -708,7 +711,7 @@ if __name__ == "__main__":
                     "time_before": time_before,
                     "bands": len(bands_list_order),
                     "epochs": num_epochs,
-                    "batch_size": 256,
+                    "batch_size": args.batch_size,  # Use args.batch_size instead of hardcoded 256
                     "learning_rate": args.lr,
                     "num_heads": args.num_heads,
                     "num_layers": args.num_layers,
@@ -804,7 +807,7 @@ if __name__ == "__main__":
                 print(f"Train and validation data saved to: {parquet_filename}")
                 print(f"Normalization statistics saved to: {stats_filename}")
 
-        # Create datasets
+        # Create datasets with configurable batch size
         if args.use_validation:
             train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
             val_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df)
@@ -815,12 +818,14 @@ if __name__ == "__main__":
             if accelerator.is_main_process:
                 print(f"Run {run + 1} Length of train_dataset: {len(train_dataset)}")
                 print(f"Run {run + 1} Length of val_dataset: {len(val_dataset)}")
-            train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
-            val_loader = DataLoader(val_dataset, batch_size=256, shuffle=False)
+                print(f"Using batch size: {args.batch_size}")
+            train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+            val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
         else:
             if accelerator.is_main_process:
                 print(f"Run {run + 1} Length of train_dataset: {len(train_dataset_std_means)}")
-            train_loader = DataLoader(train_dataset_std_means, batch_size=256, shuffle=True)
+                print(f"Using batch size: {args.batch_size}")
+            train_loader = DataLoader(train_dataset_std_means, batch_size=args.batch_size, shuffle=True)
             val_loader = None
 
         if accelerator.is_main_process:
@@ -1079,7 +1084,8 @@ if __name__ == "__main__":
                     'learning_rate': args.lr,
                     'num_heads': args.num_heads,
                     'num_layers': args.num_layers,
-                    'dropout_rate': args.dropout_rate
+                    'dropout_rate': args.dropout_rate,
+                    'batch_size': args.batch_size
                 }
             }
 
