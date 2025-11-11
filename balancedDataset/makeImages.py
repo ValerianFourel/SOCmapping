@@ -337,6 +337,110 @@ def create_oc_distribution_plot(subset_df, remaining_df, save_path, iteration=0)
     plt.close()
     print(f"✓ Saved: {filename}")
 
+def create_oc_histogram_kde_combined_plot(subset_df, remaining_df, save_path, iteration=0):
+    """Create a beautiful combined histogram and KDE plot for OC distribution"""
+    setup_plot_style()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    fig, ax = plt.subplots(figsize=(14, 9), dpi=300, facecolor='white')
+    
+    # Determine common bins for both datasets
+    bins = np.histogram_bin_edges(
+        np.concatenate([remaining_df['OC'], subset_df['OC']]), 
+        bins=40
+    )
+    
+    # Plot histograms with transparency
+    ax.hist(remaining_df['OC'].values, bins=bins, density=True, alpha=0.5, 
+            color=COLORS['training'], label=f'Training Histogram (n={len(remaining_df)})',
+            edgecolor='white', linewidth=0.8)
+    
+    ax.hist(subset_df['OC'].values, bins=bins, density=True, alpha=0.5, 
+            color=COLORS['validation'], label=f'Validation Histogram (n={len(subset_df)})',
+            edgecolor='white', linewidth=0.8)
+    
+    # Calculate and plot KDE overlays
+    x_range = np.linspace(
+        min(remaining_df['OC'].min(), subset_df['OC'].min()),
+        max(remaining_df['OC'].max(), subset_df['OC'].max()), 
+        300
+    )
+    
+    if len(remaining_df['OC']) > 1:
+        kde_train = gaussian_kde(remaining_df['OC'].values)
+        ax.plot(x_range, kde_train(x_range), 
+                color=COLORS['training'], 
+                linewidth=3.5, 
+                alpha=0.95,
+                label=f'Training KDE',
+                linestyle='-')
+        # Add subtle fill under KDE
+        ax.fill_between(x_range, kde_train(x_range), 
+                        alpha=0.15, color=COLORS['training'])
+    
+    if len(subset_df['OC']) > 1:
+        kde_val = gaussian_kde(subset_df['OC'].values)
+        ax.plot(x_range, kde_val(x_range), 
+                color=COLORS['validation'], 
+                linewidth=3.5, 
+                alpha=0.95,
+                label=f'Validation KDE',
+                linestyle='-')
+        # Add subtle fill under KDE
+        ax.fill_between(x_range, kde_val(x_range), 
+                        alpha=0.15, color=COLORS['validation'])
+    
+    # Add statistics box
+    train_stats = f"""Training Statistics:
+    Mean: {remaining_df['OC'].mean():.3f}
+    Median: {remaining_df['OC'].median():.3f}
+    Std: {remaining_df['OC'].std():.3f}
+    Min: {remaining_df['OC'].min():.3f}
+    Max: {remaining_df['OC'].max():.3f}"""
+    
+    val_stats = f"""Validation Statistics:
+    Mean: {subset_df['OC'].mean():.3f}
+    Median: {subset_df['OC'].median():.3f}
+    Std: {subset_df['OC'].std():.3f}
+    Min: {subset_df['OC'].min():.3f}
+    Max: {subset_df['OC'].max():.3f}"""
+    
+    # Position stats boxes
+    ax.text(0.02, 0.98, train_stats, transform=ax.transAxes, 
+            bbox=dict(boxstyle="round,pad=0.5", facecolor=COLORS['training'], 
+                     alpha=0.15, edgecolor=COLORS['training'], linewidth=2),
+            verticalalignment='top', horizontalalignment='left', 
+            fontsize=9, fontfamily='monospace', color=COLORS['text'])
+    
+    ax.text(0.98, 0.98, val_stats, transform=ax.transAxes, 
+            bbox=dict(boxstyle="round,pad=0.5", facecolor=COLORS['validation'], 
+                     alpha=0.15, edgecolor=COLORS['validation'], linewidth=2),
+            verticalalignment='top', horizontalalignment='right', 
+            fontsize=9, fontfamily='monospace', color=COLORS['text'])
+    
+    # Styling
+    ax.set_title('Organic Carbon Distribution: Histogram & KDE Analysis', 
+                fontsize=20, fontweight='bold', pad=20, color=COLORS['text'])
+    ax.set_xlabel('Organic Carbon (OC) Value', fontsize=14, fontweight='600')
+    ax.set_ylabel('Density', fontsize=14, fontweight='600')
+    
+    # Legend with custom styling
+    legend = ax.legend(loc='upper center', frameon=True, fancybox=True, 
+                      shadow=True, framealpha=0.95, edgecolor='none',
+                      ncol=2, bbox_to_anchor=(0.5, -0.08))
+    legend.get_frame().set_facecolor('white')
+    
+    # Grid styling
+    ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5, axis='y')
+    ax.set_axisbelow(True)
+    
+    plt.tight_layout()
+    filename = f'05_oc_histogram_kde_combined_{timestamp}_iter{iteration}.png'
+    plt.savefig(os.path.join(save_path, filename), bbox_inches='tight', 
+                facecolor='white', edgecolor='none', dpi=300)
+    plt.close()
+    print(f"✓ Saved: {filename}")
+
 def create_kde_comparison_plot(subset_df, remaining_df, full_df, best_dist, best_params, dist_name, save_path, iteration=0):
     """Create a beautiful KDE vs fitted distribution comparison plot"""
     setup_plot_style()
@@ -403,7 +507,7 @@ def create_kde_comparison_plot(subset_df, remaining_df, full_df, best_dist, best
     print(f"✓ Saved: {filename}")
 
 def create_visualizations(subset_df, remaining_df, full_df, best_dist, best_params, dist_name, save_path, iteration=0, device='cpu'):
-    """Create all four separate visualization plots"""
+    """Create all five separate visualization plots"""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     os.makedirs(save_path, exist_ok=True)
     
@@ -414,6 +518,7 @@ def create_visualizations(subset_df, remaining_df, full_df, best_dist, best_para
     create_distance_distribution_plot(subset_df, remaining_df, save_path, iteration, device)
     create_oc_distribution_plot(subset_df, remaining_df, save_path, iteration)
     create_kde_comparison_plot(subset_df, remaining_df, full_df, best_dist, best_params, dist_name, save_path, iteration)
+    create_oc_histogram_kde_combined_plot(subset_df, remaining_df, save_path, iteration)  # NEW PLOT
     
     print(f"✨ All visualizations saved to: {save_path}")
 

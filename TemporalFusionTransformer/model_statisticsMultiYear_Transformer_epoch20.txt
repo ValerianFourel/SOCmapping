@@ -1,6 +1,0 @@
-Final Statistics:
-Correlation: 0.5769
-R²: 0.3328
-MSE: 282.6447
-RMSE: 16.8120
-MAE: 10.3102

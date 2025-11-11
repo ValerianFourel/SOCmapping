@@ -1,6 +1,6 @@
 
 
-base_path_data = '/home/vfourel/SOCProject/SOCmapping/Data'
+base_path_data = '/home/valerian/SGTPublication/Data'
 
 file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC = f"{base_path_data}/LUCAS_LFU_Lfl_00to23_Bavaria_OC.xlsx"
 
