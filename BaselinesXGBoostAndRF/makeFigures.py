@@ -577,11 +577,391 @@ class SOCModelAnalyzer:
         plt.savefig(self.output_dir / 'figure_8_performance_vs_size.png', bbox_inches='tight')
         plt.show()
 
+    def figure_9_temporal_proximity_analysis(self, radius_m=250):
+        """Figure 9: Temporal Changes in SOC at Proximate Locations
+        
+        Analyzes samples taken at similar locations (within radius_m) across different years
+        to visualize temporal SOC dynamics.
+        
+        Args:
+            radius_m: Radius in meters to consider samples as proximate (default: 250m)
+        """
+        print(f"\nAnalyzing temporal changes within {radius_m}m radius...")
+        
+        # Combine training and validation datasets
+        all_data = pd.concat([self.training_df, self.validation_df]).reset_index(drop=True)
+        
+        # Ensure we have year column
+        if 'year' not in all_data.columns:
+            print("Warning: 'year' column not found in dataset. Cannot perform temporal analysis.")
+            return
+        
+        # Convert degrees to approximate meters (at mid-latitude ~48°N for Bavaria)
+        # 1 degree latitude ≈ 111 km, 1 degree longitude ≈ 74 km at 48°N
+        lat_deg_per_m = 1 / 111000
+        lon_deg_per_m = 1 / 74000
+        
+        radius_lat = radius_m * lat_deg_per_m
+        radius_lon = radius_m * lon_deg_per_m
+        
+        # Find temporal pairs (same location, different years)
+        temporal_groups = []
+        
+        for idx, row in all_data.iterrows():
+            # Find all samples within radius
+            lat_mask = np.abs(all_data['latitude'] - row['latitude']) < radius_lat
+            lon_mask = np.abs(all_data['longitude'] - row['longitude']) < radius_lon
+            nearby_mask = lat_mask & lon_mask
+            
+            nearby_samples = all_data[nearby_mask]
+            
+            # Group by year and get different years
+            if len(nearby_samples['year'].unique()) > 1:
+                temporal_groups.append({
+                    'location_id': idx,
+                    'latitude': row['latitude'],
+                    'longitude': row['longitude'],
+                    'samples': nearby_samples[['year', 'OC', 'latitude', 'longitude']].copy()
+                })
+        
+        print(f"Found {len(temporal_groups)} locations with multi-year samples")
+        
+        if len(temporal_groups) == 0:
+            print("No temporal pairs found. Skipping figure 9.")
+            return
+        
+        # Create visualization
+        fig = plt.figure(figsize=(18, 12))
+        gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3)
+        
+        # Plot 1: Map of temporal sampling locations
+        ax1 = fig.add_subplot(gs[0, :])
+        
+        # Plot all samples
+        ax1.scatter(all_data['longitude'], all_data['latitude'], 
+                   c='lightgray', s=20, alpha=0.3, label='All samples')
+        
+        # Highlight temporal locations
+        temporal_locs = pd.DataFrame([
+            {'lat': g['latitude'], 'lon': g['longitude'], 'n_years': len(g['samples'])}
+            for g in temporal_groups
+        ])
+        
+        scatter = ax1.scatter(temporal_locs['lon'], temporal_locs['lat'],
+                             c=temporal_locs['n_years'], cmap='YlOrRd',
+                             s=100, alpha=0.8, edgecolors='black', linewidth=1,
+                             label='Multi-year locations')
+        
+        divider = make_axes_locatable(ax1)
+        cax = divider.append_axes("right", size="2%", pad=0.1)
+        cbar = plt.colorbar(scatter, cax=cax)
+        cbar.set_label('Number of Years', fontsize=10, fontweight='bold')
+        
+        ax1.set_xlabel('Longitude (°E)', fontweight='bold')
+        ax1.set_ylabel('Latitude (°N)', fontweight='bold')
+        ax1.set_title(f'Locations with Multi-Year Sampling (within {radius_m}m)', 
+                     fontsize=14, fontweight='bold')
+        ax1.legend(loc='upper left')
+        ax1.grid(True, alpha=0.3)
+        ax1.set_aspect('equal')
+        
+        # Plot 2-7: Individual location time series (select 6 most interesting)
+        # Sort by number of years and SOC variance
+        temporal_groups_sorted = sorted(
+            temporal_groups, 
+            key=lambda x: (len(x['samples']), x['samples']['OC'].std()),
+            reverse=True
+        )
+        
+        n_examples = min(6, len(temporal_groups_sorted))
+        
+        for i in range(n_examples):
+            row = i // 3 + 1
+            col = i % 3
+            ax = fig.add_subplot(gs[row, col])
+            
+            group = temporal_groups_sorted[i]
+            samples = group['samples'].sort_values('year')
+            
+            # Plot time series
+            ax.plot(samples['year'], samples['OC'], 
+                   marker='o', linewidth=2, markersize=8,
+                   color=self.colors['observed'], alpha=0.8)
+            
+            # Calculate delta
+            if len(samples) > 1:
+                total_delta = samples['OC'].iloc[-1] - samples['OC'].iloc[0]
+                year_span = samples['year'].iloc[-1] - samples['year'].iloc[0]
+                annual_rate = total_delta / year_span if year_span > 0 else 0
+                
+                ax.text(0.05, 0.95, 
+                       f'Δ SOC: {total_delta:.1f} g/kg\nRate: {annual_rate:.2f} g/kg/yr',
+                       transform=ax.transAxes, fontsize=9,
+                       bbox=dict(boxstyle='round', facecolor='white', alpha=0.8),
+                       verticalalignment='top')
+            
+            ax.set_xlabel('Year', fontweight='bold')
+            ax.set_ylabel('SOC (g/kg)', fontweight='bold')
+            ax.set_title(f'Location {i+1}\n({group["latitude"]:.3f}°N, {group["longitude"]:.3f}°E)',
+                        fontsize=10, fontweight='bold')
+            ax.grid(True, alpha=0.3)
+        
+        # Plot 8: Distribution of SOC changes
+        ax8 = fig.add_subplot(gs[2, :])
+        
+        all_deltas = []
+        for group in temporal_groups:
+            samples = group['samples'].sort_values('year')
+            if len(samples) > 1:
+                # Calculate all pairwise deltas
+                for i in range(len(samples)-1):
+                    delta = samples['OC'].iloc[i+1] - samples['OC'].iloc[i]
+                    year_diff = samples['year'].iloc[i+1] - samples['year'].iloc[i]
+                    all_deltas.append({
+                        'delta': delta,
+                        'annual_rate': delta / year_diff if year_diff > 0 else 0,
+                        'year_diff': year_diff
+                    })
+        
+        deltas_df = pd.DataFrame(all_deltas)
+        
+        if len(deltas_df) > 0:
+            ax8.hist(deltas_df['annual_rate'], bins=30, color=self.colors['XGBoost'],
+                    alpha=0.7, edgecolor='black')
+            ax8.axvline(x=0, color='red', linestyle='--', linewidth=2, label='No change')
+            ax8.axvline(x=deltas_df['annual_rate'].median(), color='blue', 
+                       linestyle='--', linewidth=2, label=f'Median: {deltas_df["annual_rate"].median():.2f}')
+            
+            ax8.set_xlabel('Annual SOC Change Rate (g/kg/year)', fontweight='bold')
+            ax8.set_ylabel('Frequency', fontweight='bold')
+            ax8.set_title('Distribution of Annual SOC Change Rates Across All Temporal Pairs',
+                         fontweight='bold')
+            ax8.legend()
+            ax8.grid(True, alpha=0.3)
+            
+            print(f"\nTemporal Change Statistics:")
+            print(f"Mean annual rate: {deltas_df['annual_rate'].mean():.3f} g/kg/year")
+            print(f"Median annual rate: {deltas_df['annual_rate'].median():.3f} g/kg/year")
+            print(f"Std annual rate: {deltas_df['annual_rate'].std():.3f} g/kg/year")
+        
+        plt.suptitle(f'Temporal SOC Dynamics: Multi-Year Analysis at Proximate Locations (±{radius_m}m)',
+                    fontsize=16, fontweight='bold', y=0.995)
+        plt.savefig(self.output_dir / 'figure_9_temporal_proximity_analysis.png', 
+                   bbox_inches='tight', dpi=300)
+        plt.show()
+
+    def figure_10_altitude_controlled_temporal(self, altitude_bins=5):
+        """Figure 10: Altitude-Controlled Temporal SOC Analysis
+        
+        Examines SOC trends over time while controlling for altitude effects,
+        testing the hypothesis that samples were taken at progressively higher altitudes.
+        
+        Args:
+            altitude_bins: Number of altitude bins to stratify analysis (default: 5)
+        """
+        print(f"\nPerforming altitude-controlled temporal analysis...")
+        
+        # Combine training and validation datasets
+        all_data = pd.concat([self.training_df, self.validation_df]).reset_index(drop=True)
+        
+        # Check for required columns
+        required_cols = ['year', 'OC']
+        if not all(col in all_data.columns for col in required_cols):
+            print(f"Warning: Required columns {required_cols} not found. Cannot perform analysis.")
+            return
+        
+        # Try to get altitude data
+        if 'altitude' not in all_data.columns and 'elevation' not in all_data.columns:
+            print("Warning: No altitude/elevation column found. Creating synthetic altitude from latitude.")
+            # Approximate: higher latitude in Bavaria tends to correlate with higher elevation
+            all_data['altitude'] = (all_data['latitude'] - all_data['latitude'].min()) * 1000
+        elif 'elevation' in all_data.columns:
+            all_data['altitude'] = all_data['elevation']
+        
+        # Remove any rows with missing critical data
+        all_data = all_data.dropna(subset=['year', 'OC', 'altitude'])
+        
+        print(f"Analyzing {len(all_data)} samples across {all_data['year'].nunique()} years")
+        
+        # Create altitude bins
+        all_data['altitude_bin'] = pd.qcut(all_data['altitude'], 
+                                           q=altitude_bins, 
+                                           labels=[f'Q{i+1}' for i in range(altitude_bins)],
+                                           duplicates='drop')
+        
+        # Create visualization
+        fig = plt.figure(figsize=(18, 14))
+        gs = fig.add_gridspec(4, 3, hspace=0.35, wspace=0.3)
+        
+        # Plot 1: Altitude distribution by year
+        ax1 = fig.add_subplot(gs[0, :])
+        
+        years = sorted(all_data['year'].unique())
+        altitude_by_year = [all_data[all_data['year'] == year]['altitude'].values 
+                           for year in years]
+        
+        bp = ax1.boxplot(altitude_by_year, labels=years, patch_artist=True,
+                        boxprops=dict(facecolor=self.colors['XGBoost'], alpha=0.6),
+                        medianprops=dict(color='red', linewidth=2))
+        
+        # Add trend line
+        mean_altitudes = [np.mean(alt) for alt in altitude_by_year]
+        z = np.polyfit(years, mean_altitudes, 1)
+        p = np.poly1d(z)
+        ax1.plot(range(1, len(years)+1), p(years), "b--", linewidth=2, 
+                label=f'Trend: {z[0]:.2f} m/year')
+        
+        ax1.set_xlabel('Year', fontweight='bold')
+        ax1.set_ylabel('Altitude (m)', fontweight='bold')
+        ax1.set_title('Sampling Altitude Distribution by Year', fontsize=14, fontweight='bold')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # Plot 2: Raw SOC by year (not altitude-controlled)
+        ax2 = fig.add_subplot(gs[1, 0])
+        
+        soc_by_year = all_data.groupby('year')['OC'].agg(['mean', 'std', 'count']).reset_index()
+        
+        ax2.errorbar(soc_by_year['year'], soc_by_year['mean'], 
+                    yerr=soc_by_year['std'], marker='o', linewidth=2,
+                    capsize=5, capthick=2, color=self.colors['observed'],
+                    label='Mean ± Std')
+        
+        # Add trend line
+        z_raw = np.polyfit(soc_by_year['year'], soc_by_year['mean'], 1)
+        p_raw = np.poly1d(z_raw)
+        ax2.plot(soc_by_year['year'], p_raw(soc_by_year['year']), "r--", 
+                linewidth=2, label=f'Trend: {z_raw[0]:.3f} g/kg/yr')
+        
+        ax2.set_xlabel('Year', fontweight='bold')
+        ax2.set_ylabel('SOC (g/kg)', fontweight='bold')
+        ax2.set_title('Raw SOC Temporal Trend (No Altitude Control)', fontweight='bold')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        
+        # Plot 3: SOC vs Altitude relationship
+        ax3 = fig.add_subplot(gs[1, 1])
+        
+        ax3.scatter(all_data['altitude'], all_data['OC'], 
+                   alpha=0.3, s=20, color=self.colors['RandomForest'])
+        
+        # Add regression line
+        z_alt = np.polyfit(all_data['altitude'], all_data['OC'], 1)
+        p_alt = np.poly1d(z_alt)
+        altitude_range = np.linspace(all_data['altitude'].min(), 
+                                    all_data['altitude'].max(), 100)
+        ax3.plot(altitude_range, p_alt(altitude_range), "r-", linewidth=2,
+                label=f'Slope: {z_alt[0]:.4f} g/kg/m')
+        
+        ax3.set_xlabel('Altitude (m)', fontweight='bold')
+        ax3.set_ylabel('SOC (g/kg)', fontweight='bold')
+        ax3.set_title('SOC vs Altitude Relationship', fontweight='bold')
+        ax3.legend()
+        ax3.grid(True, alpha=0.3)
+        
+        # Plot 4: Sample count by altitude bin and year
+        ax4 = fig.add_subplot(gs[1, 2])
+        
+        count_pivot = all_data.groupby(['year', 'altitude_bin']).size().unstack(fill_value=0)
+        count_pivot.plot(kind='bar', stacked=True, ax=ax4, 
+                        colormap='viridis', alpha=0.8)
+        
+        ax4.set_xlabel('Year', fontweight='bold')
+        ax4.set_ylabel('Sample Count', fontweight='bold')
+        ax4.set_title('Sample Distribution by Altitude Bin', fontweight='bold')
+        ax4.legend(title='Altitude Bin', bbox_to_anchor=(1.05, 1), loc='upper left')
+        ax4.grid(True, alpha=0.3, axis='y')
+        plt.setp(ax4.xaxis.get_majorticklabels(), rotation=45)
+        
+        # Plots 5-9: SOC trends within each altitude bin
+        for i, bin_label in enumerate(sorted(all_data['altitude_bin'].dropna().unique())):
+            row = 2 + i // 3
+            col = i % 3
+            ax = fig.add_subplot(gs[row, col])
+            
+            bin_data = all_data[all_data['altitude_bin'] == bin_label]
+            bin_stats = bin_data.groupby('year')['OC'].agg(['mean', 'std', 'count']).reset_index()
+            
+            if len(bin_stats) > 1:
+                ax.errorbar(bin_stats['year'], bin_stats['mean'],
+                           yerr=bin_stats['std'], marker='o', linewidth=2,
+                           capsize=4, capthick=1.5, color=self.colors['predicted'])
+                
+                # Add trend line
+                z_bin = np.polyfit(bin_stats['year'], bin_stats['mean'], 1)
+                p_bin = np.poly1d(z_bin)
+                ax.plot(bin_stats['year'], p_bin(bin_stats['year']), "r--",
+                       linewidth=2, alpha=0.8)
+                
+                # Add statistics box
+                alt_range = f"{bin_data['altitude'].min():.0f}-{bin_data['altitude'].max():.0f}m"
+                ax.text(0.05, 0.95, 
+                       f'{alt_range}\nTrend: {z_bin[0]:.3f} g/kg/yr\nn = {len(bin_data)}',
+                       transform=ax.transAxes, fontsize=9,
+                       bbox=dict(boxstyle='round', facecolor='white', alpha=0.8),
+                       verticalalignment='top')
+            else:
+                ax.scatter(bin_data['year'], bin_data['OC'], alpha=0.5)
+            
+            ax.set_xlabel('Year', fontweight='bold', fontsize=10)
+            ax.set_ylabel('SOC (g/kg)', fontweight='bold', fontsize=10)
+            ax.set_title(f'Altitude Bin: {bin_label}', fontweight='bold', fontsize=11)
+            ax.grid(True, alpha=0.3)
+        
+        # Plot 10: Summary of trends by altitude bin
+        ax_summary = fig.add_subplot(gs[3, :])
+        
+        trends_by_bin = []
+        for bin_label in sorted(all_data['altitude_bin'].dropna().unique()):
+            bin_data = all_data[all_data['altitude_bin'] == bin_label]
+            bin_stats = bin_data.groupby('year')['OC'].mean().reset_index()
+            
+            if len(bin_stats) > 1:
+                z = np.polyfit(bin_stats['year'], bin_stats['OC'], 1)
+                trends_by_bin.append({
+                    'bin': bin_label,
+                    'trend': z[0],
+                    'mean_altitude': bin_data['altitude'].mean(),
+                    'n_samples': len(bin_data)
+                })
+        
+        trends_df = pd.DataFrame(trends_by_bin)
+        
+        if len(trends_df) > 0:
+            bars = ax_summary.bar(trends_df['bin'], trends_df['trend'],
+                                 color=self.colors['RandomForest'], alpha=0.8,
+                                 edgecolor='black', linewidth=1.5)
+            
+            ax_summary.axhline(y=0, color='red', linestyle='--', linewidth=2)
+            ax_summary.set_xlabel('Altitude Bin', fontweight='bold')
+            ax_summary.set_ylabel('SOC Trend (g/kg/year)', fontweight='bold')
+            ax_summary.set_title('Altitude-Stratified SOC Temporal Trends', 
+                                fontweight='bold', fontsize=14)
+            ax_summary.grid(True, alpha=0.3, axis='y')
+            
+            # Add sample counts on bars
+            for bar, n in zip(bars, trends_df['n_samples']):
+                height = bar.get_height()
+                ax_summary.text(bar.get_x() + bar.get_width()/2., height,
+                              f'n={n}', ha='center', va='bottom' if height > 0 else 'top',
+                              fontsize=9)
+            
+            print("\nAltitude-Stratified Trends:")
+            print(trends_df.to_string(index=False))
+        
+        plt.suptitle('Altitude-Controlled Temporal SOC Analysis',
+                    fontsize=16, fontweight='bold', y=0.998)
+        plt.savefig(self.output_dir / 'figure_10_altitude_controlled_temporal.png',
+                   bbox_inches='tight', dpi=300)
+        plt.show()
+
 if __name__ == "__main__":
     analyzer = SOCModelAnalyzer()
     args = analyzer.parse_arguments()
     analyzer.load_and_prepare_data(args)
     analyzer.train_models()
+    
+    # Original figures
     analyzer.figure_1_sample_locations()
     analyzer.figure_2_data_pipeline()
     analyzer.figure_3_model_performance()
@@ -590,3 +970,7 @@ if __name__ == "__main__":
     analyzer.figure_6_error_analysis()
     analyzer.figure_7_time_series()
     analyzer.figure_8_performance_vs_size()
+    
+    # New temporal analysis figures
+    analyzer.figure_9_temporal_proximity_analysis(radius_m=250)
+    analyzer.figure_10_altitude_controlled_temporal(altitude_bins=10)

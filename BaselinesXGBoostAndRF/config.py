@@ -2,7 +2,7 @@
 
 
 
-base_path_data = '/home/vfourel/SOCProject/SOCmapping/Data'
+base_path_data = '/home/valerian/SGTPublication/Data'
 
 file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC = f"{base_path_data}/LUCAS_LFU_Lfl_00to23_Bavaria_OC.xlsx"
 
@@ -19,8 +19,8 @@ num_epochs = 200
 NUM_EPOCHS_RUN = 250
 LOADING_TIME_BEGINNING_INFERENCE = str(int(INFERENCE_TIME)-time_before)
 
-save_path_predictions_plots = '/home/vfourel/SOCProject/SOCmapping/predictions_plots/trees_plots'
-file_path_coordinates_Bavaria_1mil = "/home/vfourel/SOCProject/SOCmapping/Data/Coordinates1Mil/coordinates_Bavaria_1mil.csv"
+save_path_predictions_plots = '/home/valerian/SGTPublication/predictions_plots/trees_plots'
+file_path_coordinates_Bavaria_1mil = "/home/valerian/SGTPublication/Data/Coordinates1Mil/coordinates_Bavaria_1mil.csv"
 PICTURE_VERSION = f"{str(num_epochs)}_{str(MAX_OC)}_{INFERENCE_TIME}_version"
 
 def generate_seasonal_list():
