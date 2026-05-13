@@ -204,12 +204,20 @@ def load_normalization_stats(ckpt: dict):
 # --------------------------------------------------------------------------
 # Inference data + MC sampling
 # --------------------------------------------------------------------------
-def build_inference_loader(feature_means, feature_stds, start_idx=0, end_idx=None):
-    """Match the dataset construction in running.py exactly."""
+def build_inference_loader(feature_means, feature_stds, start_idx=0, end_idx=None,
+                           indices=None):
+    """Match the dataset construction in running.py exactly.
+
+    If `indices` (1-D np.ndarray of int row positions) is provided it wins
+    over (start_idx, end_idx). Used by the orchestrator to hand each
+    worker a non-contiguous slice (e.g. every k-th row of the CSV)."""
     df_full = pd.read_csv(file_path_coordinates_Bavaria_1mil)
-    if end_idx is None:
-        end_idx = len(df_full)
-    df_sub = df_full.iloc[start_idx:end_idx].copy()
+    if indices is not None:
+        df_sub = df_full.iloc[indices].copy().reset_index(drop=True)
+    else:
+        if end_idx is None:
+            end_idx = len(df_full)
+        df_sub = df_full.iloc[start_idx:end_idx].copy()
     sp, dp = separate_and_add_data_1mil_inference()
 
     def flatten(lst):
@@ -424,13 +432,23 @@ def validation_check(lons, lats, mc_mean):
 # Invoked as a subprocess by the orchestrator with CUDA_VISIBLE_DEVICES
 # already restricted to one physical GPU.
 # --------------------------------------------------------------------------
-def _worker_run_shard(start_idx: int, end_idx: int, shard_id: int):
+def _worker_run_shard(start_idx: int, end_idx: int, shard_id: int,
+                      indices_file: Path | None = None):
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f'[worker shard={shard_id}] device={device} '
-          f'CUDA_VISIBLE_DEVICES={os.environ.get("CUDA_VISIBLE_DEVICES", "unset")} '
-          f'range=[{start_idx}, {end_idx})  '
-          f'n_points={end_idx - start_idx}', flush=True)
+
+    if indices_file is not None:
+        indices = np.load(indices_file)
+        print(f'[worker shard={shard_id}] device={device} '
+              f'CUDA_VISIBLE_DEVICES={os.environ.get("CUDA_VISIBLE_DEVICES", "unset")} '
+              f'indices-file={indices_file.name}  n_points={len(indices):,}',
+              flush=True)
+    else:
+        indices = None
+        print(f'[worker shard={shard_id}] device={device} '
+              f'CUDA_VISIBLE_DEVICES={os.environ.get("CUDA_VISIBLE_DEVICES", "unset")} '
+              f'range=[{start_idx}, {end_idx})  '
+              f'n_points={end_idx - start_idx}', flush=True)
 
     # Per-shard RNG offset so MC sampling streams don't repeat across GPUs.
     torch.manual_seed(20260513 + shard_id)
@@ -440,7 +458,8 @@ def _worker_run_shard(start_idx: int, end_idx: int, shard_id: int):
     model, ckpt = load_model_b(device)
     feature_means, feature_stds, _, _ = load_normalization_stats(ckpt)
     _, loader, n_pts = build_inference_loader(
-        feature_means, feature_stds, start_idx=start_idx, end_idx=end_idx)
+        feature_means, feature_stds,
+        start_idx=start_idx, end_idx=end_idx, indices=indices)
     print(f'[worker shard={shard_id}] points in shard: {n_pts:,}', flush=True)
 
     lons, lats, mean_pred, std_pred = run_mc_dropout(model, loader, n_pts, device)
@@ -460,27 +479,69 @@ def _worker_run_shard(start_idx: int, end_idx: int, shard_id: int):
 # Orchestrator — shards the 1.3 M point grid across visible GPUs and
 # launches one worker subprocess per shard, in parallel.
 # --------------------------------------------------------------------------
-def _orchestrate_shards(gpu_ids: list[int]) -> list[dict]:
+def _orchestrate_shards(gpu_ids: list[int], max_points: int = 0,
+                        stride: int = 1, indices_npy: Path | None = None) -> list[dict]:
     """Spawn one worker per GPU, each handling an equal-sized slice of
-    the inference CSV. Waits for all to finish, then loads the pickled
-    shard results in shard-id order and returns them."""
+    the (possibly sub-sampled) inference grid.
+
+    Sub-sampling rules (applied in this order — first match wins):
+      • indices_npy != None  → use those exact row indices
+      • stride > 1           → take every `stride`-th row of the full CSV
+      • max_points > 0       → uniform stride = ceil(total / max_points)
+      • otherwise            → use all rows
+
+    Workers receive contiguous slices of the resulting *sub-sampled* index
+    array via a per-shard indices.npy file (saved alongside the shard
+    pickles), so each shard knows exactly which CSV rows it owns.
+    """
     df_full = pd.read_csv(file_path_coordinates_Bavaria_1mil)
     total = len(df_full)
+
+    # Build the array of CSV row indices the experiment should actually use
+    if indices_npy is not None:
+        sel_idx = np.load(indices_npy).astype(np.int64)
+        if sel_idx.max() >= total or sel_idx.min() < 0:
+            raise SystemExit(f'indices file {indices_npy} out of range '
+                             f'[0, {total}).')
+        print(f'Using {len(sel_idx):,} pre-selected indices from {indices_npy}',
+              flush=True)
+    elif stride > 1:
+        sel_idx = np.arange(0, total, stride, dtype=np.int64)
+        print(f'Stride {stride} → {len(sel_idx):,} / {total:,} grid points',
+              flush=True)
+    elif max_points and max_points < total:
+        eff_stride = int(np.ceil(total / max_points))
+        sel_idx = np.arange(0, total, eff_stride, dtype=np.int64)
+        print(f'max_points={max_points:,} → stride={eff_stride} → '
+              f'{len(sel_idx):,} / {total:,} grid points', flush=True)
+    else:
+        sel_idx = np.arange(total, dtype=np.int64)
+        print(f'Using full grid: {total:,} points', flush=True)
+
+    n_used = int(len(sel_idx))
     n_shards = len(gpu_ids)
-    # Equal split — last shard gets the remainder
-    chunk = total // n_shards
-    bounds = [(i * chunk, (i + 1) * chunk if i < n_shards - 1 else total)
-              for i in range(n_shards)]
-    print(f'Total grid points: {total:,}  shards: {n_shards}', flush=True)
-    for i, (s, e) in enumerate(bounds):
-        print(f'  shard {i:>2}  GPU {gpu_ids[i]}  rows [{s:>9,}, {e:>9,})  '
-              f'n={e - s:>9,}', flush=True)
+    # Save the per-shard slices of sel_idx to disk so workers can mmap them
+    chunk = n_used // n_shards
+    shard_index_files = []
+    for i in range(n_shards):
+        s = i * chunk
+        e = (i + 1) * chunk if i < n_shards - 1 else n_used
+        shard_idx = sel_idx[s:e]
+        path = OUT_DIR / f'_shard_{i:02d}_indices.npy'
+        np.save(path, shard_idx)
+        shard_index_files.append(path)
+    print(f'Total selected grid points: {n_used:,}  shards: {n_shards}',
+          flush=True)
+    for i, path in enumerate(shard_index_files):
+        n_i = len(np.load(path))
+        print(f'  shard {i:>2}  GPU {gpu_ids[i]}  n={n_i:>9,}  '
+              f'(from {path.name})', flush=True)
 
     log_dir = OUT_DIR / 'worker_logs'
     log_dir.mkdir(parents=True, exist_ok=True)
     running: list[tuple[int, subprocess.Popen, Path]] = []
     t0 = time.time()
-    for shard_id, (gpu_id, (s, e)) in enumerate(zip(gpu_ids, bounds)):
+    for shard_id, (gpu_id, idx_path) in enumerate(zip(gpu_ids, shard_index_files)):
         env = os.environ.copy()
         env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
         env['SOC_MC_WORKER'] = '1'
@@ -488,8 +549,7 @@ def _orchestrate_shards(gpu_ids: list[int]) -> list[dict]:
         cmd = [sys.executable, str(Path(__file__).resolve()),
                '--worker',
                '--shard-id', str(shard_id),
-               '--start-idx', str(s),
-               '--end-idx', str(e)]
+               '--indices-file', str(idx_path)]
         p = subprocess.Popen(cmd, env=env,
                              stdout=open(log_path, 'w'),
                              stderr=subprocess.STDOUT)
@@ -546,20 +606,40 @@ def main():
     parser.add_argument('--shard-id', type=int, default=None)
     parser.add_argument('--start-idx', type=int, default=None)
     parser.add_argument('--end-idx', type=int, default=None)
+    parser.add_argument('--indices-file', type=str, default=None,
+                        help='Internal: per-shard .npy of CSV row indices.')
     parser.add_argument('--gpus', type=str, default=None,
                         help='Comma-separated GPU IDs to use, e.g. "0,1,2,3". '
                              'Default: all visible CUDA devices.')
     parser.add_argument('--sequential', action='store_true',
                         help='Force the legacy single-GPU loop.')
     parser.add_argument('--keep-shards', action='store_true',
-                        help='Keep the _shard_*.pkl files after concat.')
+                        help='Keep the _shard_*.pkl + _shard_*_indices.npy '
+                             'files after concat.')
+    parser.add_argument('--max-points', type=int,
+                        default=int(os.environ.get('SOC_MAX_INFERENCE_POINTS', 0)),
+                        help='Cap the inference grid to this many points using '
+                             'uniform stride sampling (0 = use all 1.3 M). '
+                             'Default: $SOC_MAX_INFERENCE_POINTS env var or 0.')
+    parser.add_argument('--stride', type=int, default=1,
+                        help='Take every Nth row of the CSV. Overrides --max-points '
+                             'when > 1. Default: 1 (no striding).')
+    parser.add_argument('--indices-npy', type=str, default=None,
+                        help='Path to a pre-built .npy of int row indices into '
+                             'the 1.3 M CSV; overrides --max-points / --stride.')
     args = parser.parse_args()
 
     # ----- Worker mode -----
     if args.worker:
-        if args.shard_id is None or args.start_idx is None or args.end_idx is None:
-            raise SystemExit('--shard-id, --start-idx, --end-idx required for --worker.')
-        _worker_run_shard(args.start_idx, args.end_idx, args.shard_id)
+        if args.shard_id is None:
+            raise SystemExit('--shard-id is required for --worker.')
+        if args.indices_file is not None:
+            _worker_run_shard(0, 0, args.shard_id, Path(args.indices_file))
+        elif args.start_idx is not None and args.end_idx is not None:
+            _worker_run_shard(args.start_idx, args.end_idx, args.shard_id)
+        else:
+            raise SystemExit('worker needs either --indices-file or both '
+                             '--start-idx and --end-idx.')
         return
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -577,9 +657,14 @@ def main():
 
     t0 = time.time()
 
+    indices_npy = Path(args.indices_npy) if args.indices_npy else None
+
     # ----- Parallel sharded mode -----
     if use_parallel:
-        shards = _orchestrate_shards(gpu_ids)
+        shards = _orchestrate_shards(gpu_ids,
+                                     max_points=args.max_points,
+                                     stride=args.stride,
+                                     indices_npy=indices_npy)
         lons, lats, mean_pred, std_pred = _concat_shards(shards)
         # Re-derive normalization stats for the metadata block by loading
         # the checkpoint once on CPU
@@ -592,7 +677,20 @@ def main():
         print(f'Sequential mode on device={device}', flush=True)
         model, ckpt = load_model_b(device)
         feature_means, feature_stds, t_mean, t_std = load_normalization_stats(ckpt)
-        _, loader, n_pts = build_inference_loader(feature_means, feature_stds)
+        # Apply the same sub-sample rules used in the parallel orchestrator
+        if indices_npy is not None:
+            sel = np.load(indices_npy).astype(np.int64)
+        elif args.stride > 1:
+            df_tmp = pd.read_csv(file_path_coordinates_Bavaria_1mil)
+            sel = np.arange(0, len(df_tmp), args.stride, dtype=np.int64)
+        elif args.max_points:
+            df_tmp = pd.read_csv(file_path_coordinates_Bavaria_1mil)
+            eff = int(np.ceil(len(df_tmp) / args.max_points))
+            sel = np.arange(0, len(df_tmp), eff, dtype=np.int64)
+        else:
+            sel = None
+        _, loader, n_pts = build_inference_loader(feature_means, feature_stds,
+                                                   indices=sel)
         print(f'Inference grid: {n_pts:,} points', flush=True)
         lons, lats, mean_pred, std_pred = run_mc_dropout(model, loader, n_pts, device)
 
@@ -659,15 +757,19 @@ def main():
         'multi_gpu_mode': 'parallel' if use_parallel else 'sequential',
         'gpus_used': gpu_ids,
         'wall_time_seconds': float(elapsed),
+        'max_points_requested': int(args.max_points),
+        'stride_requested': int(args.stride),
+        'indices_npy_requested': args.indices_npy,
     }
     (OUT_DIR / 'mc_dropout_metadata.json').write_text(
         json.dumps(meta, indent=2, default=str))
     print(f'Wrote {OUT_DIR / "mc_dropout_metadata.json"}', flush=True)
 
-    # Clean up the per-shard pickles unless the user asked to keep them
+    # Clean up the per-shard pickles + index files unless asked to keep them
     if use_parallel and not args.keep_shards:
-        for p in OUT_DIR.glob('_shard_*.pkl'):
-            p.unlink(missing_ok=True)
+        for pattern in ('_shard_*.pkl', '_shard_*_indices.npy'):
+            for p in OUT_DIR.glob(pattern):
+                p.unlink(missing_ok=True)
 
     print('\nExperiment 2 complete.', flush=True)
 

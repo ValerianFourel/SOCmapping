@@ -161,8 +161,9 @@ source /workspace/SOC/SOCmapping/rebuttal/gpu_experiments/.venv/bin/activate
 cd /workspace/SOC/SOCmapping
 
 # Experiment 2 — MC dropout uncertainty map
-#   4 GPUs → grid sharded 4 ways → ≈ 45 min (vs ≈ 3 h single-GPU)
-python rebuttal/gpu_experiments/uncertainty/mc_dropout_inference.py
+#   Full 1.3 M grid on 4 GPUs ≈ 45 min (vs ≈ 3 h single-GPU)
+#   400 k uniform sub-sample on 4 GPUs ≈ 14 min (recommended for a draft)
+python rebuttal/gpu_experiments/uncertainty/mc_dropout_inference.py --max-points 400000
 python rebuttal/gpu_experiments/uncertainty/plot_uncertainty.py        # CPU only
 
 # Experiment 1 — spatial 5-fold CV
@@ -181,6 +182,14 @@ python rebuttal/gpu_experiments/spatial_kfold/run_kfold.py --gpus 0,2
 # Force the legacy single-GPU sequential mode (for debugging)
 python rebuttal/gpu_experiments/uncertainty/mc_dropout_inference.py --sequential
 python rebuttal/gpu_experiments/spatial_kfold/run_kfold.py --sequential
+
+# Cap the Experiment 2 inference grid (uniform stride sub-sample)
+python rebuttal/gpu_experiments/uncertainty/mc_dropout_inference.py --max-points 400000
+# or equivalently
+SOC_MAX_INFERENCE_POINTS=400000 python rebuttal/gpu_experiments/uncertainty/mc_dropout_inference.py
+
+# Take every k-th row (alternative phrasing of the same sub-sampling)
+python rebuttal/gpu_experiments/uncertainty/mc_dropout_inference.py --stride 3   # ~ 433k points
 ```
 
 Per-GPU worker logs land in:

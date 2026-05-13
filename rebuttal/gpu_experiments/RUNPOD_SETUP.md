@@ -321,7 +321,10 @@ Useful overrides:
 |---|---|
 | `--gpus 0,2,3` | restrict to listed GPUs (instead of every visible one) |
 | `--sequential` | force the legacy single-GPU loop (debugging) |
-| `--keep-shards` *(Exp 2 only)* | don't delete `_shard_*.pkl` after concat |
+| `--keep-shards` *(Exp 2 only)* | don't delete `_shard_*.pkl` / `_shard_*_indices.npy` after concat |
+| `--max-points 400000` *(Exp 2 only)* | cap the inference grid via uniform stride sampling (`SOC_MAX_INFERENCE_POINTS` env var does the same). 400 k points on 4 GPUs ≈ 14 min |
+| `--stride 3` *(Exp 2 only)* | take every 3rd row of the 1.3 M CSV (~ 433 k points). Overrides `--max-points` when > 1. |
+| `--indices-npy path.npy` *(Exp 2 only)* | use a pre-built `.npy` of int row indices — overrides both above |
 
 Per-GPU worker logs land in:
 
