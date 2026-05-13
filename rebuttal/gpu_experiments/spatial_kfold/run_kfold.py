@@ -210,6 +210,15 @@ WEIGHT_DECAY = 1e-5              # ASSUMPTION: user spec value; train.py has non
 DROPOUT = 0.3
 SEED_BASE = 42
 
+# Gradient accumulation — simulate the gradient signal of an 8-GPU
+# data-parallel run with per-GPU BATCH_SIZE=256. With ACCUM_STEPS=8 the
+# effective batch is 256 × 8 = 2048: optimizer.step() fires once every
+# 8 forward+backward passes, and the per-step loss is averaged over the
+# accumulated micro-batches.
+# Override via env: SOC_KFOLD_ACCUM_STEPS=4 for ~1024 effective, etc.
+ACCUM_STEPS = max(1, int(os.environ.get('SOC_KFOLD_ACCUM_STEPS', 8)))
+EFFECTIVE_BATCH = BATCH_SIZE * ACCUM_STEPS
+
 # ASSUMPTION: model_ready_dataset.parquet has an 'altitude' column that maps
 # to the same elevation values used at training time. This script doesn't
 # need altitude — it only uses GPS_LONG/GPS_LAT/year/OC, but the column is
@@ -411,6 +420,12 @@ def run_fold(fold: dict, device: torch.device) -> dict:
     print(f'Test SOC: mean={test_df.OC.mean():.2f} std={test_df.OC.std():.2f} '
           f'max={test_df.OC.max():.1f} %>50={100*(test_df.OC>50).mean():.2f}%',
           flush=True)
+    expected_steps_per_epoch = max(1, (len(train_df) + BATCH_SIZE - 1) // BATCH_SIZE // ACCUM_STEPS)
+    print(f'Training: BATCH_SIZE={BATCH_SIZE} × ACCUM_STEPS={ACCUM_STEPS} '
+          f'→ effective batch = {EFFECTIVE_BATCH}; '
+          f'≈ {expected_steps_per_epoch} optimizer.step() calls per epoch '
+          f'(was {(len(train_df) + BATCH_SIZE - 1) // BATCH_SIZE} without accumulation)',
+          flush=True)
 
     # Per-fold feature normalisation (no leakage)
     means, stds = compute_fold_statistics(train_df)
@@ -442,25 +457,38 @@ def run_fold(fold: dict, device: torch.device) -> dict:
     best_r2 = -float('inf')
 
     for epoch in range(N_EPOCHS):
-        # ----- train -----
+        # ----- train (with gradient accumulation → effective batch 2048) ---
         model.train()
         running = 0.0
-        n_batches = 0
-        for _, _, x, y in train_loader:
+        n_micro = 0
+        n_optim_steps = 0
+        optimizer.zero_grad()
+        # Make a list so we can detect the last micro-batch and flush any
+        # partial accumulation at the end of the epoch.
+        train_batches = list(enumerate(train_loader))
+        n_total = len(train_batches)
+        for batch_idx, (_, _, x, y) in train_batches:
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True).float()
             y_t = transform_target(y)
-            optimizer.zero_grad()
             pred = model(x).float()
-            loss = criterion(pred, y_t)
+            # Scale loss so the accumulated gradient equals the mean over
+            # the full effective batch (not the sum).
+            loss = criterion(pred, y_t) / ACCUM_STEPS
             if torch.isnan(loss):
                 continue
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
-            running += float(loss.item())
-            n_batches += 1
-        train_loss = running / max(n_batches, 1)
+            running += float(loss.item()) * ACCUM_STEPS  # un-scale for log
+            n_micro += 1
+
+            is_last = (batch_idx == n_total - 1)
+            if ((batch_idx + 1) % ACCUM_STEPS == 0) or is_last:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
+                optimizer.zero_grad()
+                n_optim_steps += 1
+
+        train_loss = running / max(n_micro, 1)
 
         # ----- eval -----
         model.eval()
