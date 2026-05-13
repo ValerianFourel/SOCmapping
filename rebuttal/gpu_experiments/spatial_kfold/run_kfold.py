@@ -71,18 +71,21 @@ SGT_DIR = SOC_CODE_DIR / 'SpatiotemporalGatedTransformer'
 sys.path.insert(0, str(SGT_DIR))
 sys.path.insert(0, str(SGT_DIR / 'dataloader'))
 
-# Model selection — match SGT train.py.
-#   train.py's active import is `from SimpleSGT import SimpleSGT` (line 19).
-#   running.py aliases EnhancedSGT *as* SimpleSGT for INFERENCE on already-
-#   trained checkpoints, but the actual TRAINER is SimpleSGT. EnhancedSGT
-#   at lr=2e-4 with effective batch 2048 and no LR warmup trains so slowly
-#   it looks like the model isn't learning — that was the root cause of
-#   the flat fold curves before this commit. Override via env if needed.
-_MODEL_NAME = os.environ.get('SOC_KFOLD_MODEL', 'simple').lower()
-if _MODEL_NAME == 'enhanced':
-    from EnhancedSGT import EnhancedSGT as _SGTModel  # noqa: E402
-else:
+# Model selection — match the historic wandb run that produced
+# Model A (run_1, val R²=0.755, model_parameters=1,120,546):
+#   - EnhancedSGT  (~1.12M params, BatchNorm + 3 GRN blocks)
+#   - num_heads=8, num_encoder_layers=2 (overrides EnhancedSGT defaults of 4/3)
+#   - lr=2e-4, batch 256 × 8 GPUs = effective 2048, normalize transform, MSE
+# Today's train.py has the import flipped back to SimpleSGT (line 19), but
+# the wandb evidence (commit 8dce131, 2025-05-26) shows the trainer that
+# produced our published numbers was EnhancedSGT — `running.py` still
+# aliases it as `from EnhancedSGT import EnhancedSGT as SimpleSGT`, which
+# is what loads the saved weights correctly.
+_MODEL_NAME = os.environ.get('SOC_KFOLD_MODEL', 'enhanced').lower()
+if _MODEL_NAME == 'simple':
     from SimpleSGT import SimpleSGT as _SGTModel  # noqa: E402
+else:
+    from EnhancedSGT import EnhancedSGT as _SGTModel  # noqa: E402
 
 from dataloader.dataloaderMultiYears import (  # noqa: E402
     MultiRasterDatasetMultiYears,
@@ -217,10 +220,9 @@ DIST_THRESHOLD_KM = 1.2          # match train.py / config
 EARTH_RADIUS_KM = 6371.0
 N_EPOCHS = int(num_epochs)       # 270 from config (use_validation=True)
 BATCH_SIZE = 256
-LR = float(os.environ.get('SOC_KFOLD_LR', 1e-4))  # reduced from train.py's 2e-4
-                                                   # to help SimpleSGT converge at
-                                                   # effective batch 2048. Override via
-                                                   # SOC_KFOLD_LR=5e-5 / 2e-4 / etc.
+LR = float(os.environ.get('SOC_KFOLD_LR', 2e-4))  # matches the historic wandb
+                                                   # run (rxeolg7e, R²=0.755).
+                                                   # Override via SOC_KFOLD_LR=1e-4.
 WEIGHT_DECAY = 0.0               # matches SGT train.py — Adam plain, no weight decay
 DROPOUT = 0.3
 SEED_BASE = 42
@@ -449,33 +451,38 @@ def compute_fold_statistics(train_df: pd.DataFrame, max_n: int = 1500):
 # Training / evaluation
 # --------------------------------------------------------------------------
 def make_model() -> nn.Module:
-    """Match SGT train.py exactly: SimpleSGT(input_channels, height, width,
-    time_steps, d_model). num_heads defaults to 2 inside SimpleSGT, dropout
-    to 0.3 — same as train.py which passes only d_model. No extra kwargs
-    because SimpleSGT does not accept num_encoder_layers / expansion_factor.
+    """Mirror the historic wandb run that produced Model A
+    (valerian-fourel/socmapping-SimpleTFT/rxeolg7e, 2025-05-26,
+    val R²=0.755, 1,120,546 params):
 
-    Set SOC_KFOLD_MODEL=enhanced to fall back to EnhancedSGT (1.1 M params,
-    BatchNorm, 3-layer transformer) — only useful for reproducing the
-    legacy mapping checkpoints, not for the Table-2 evaluation recipe."""
-    if _MODEL_NAME == 'enhanced':
+        EnhancedSGT(d_model=128, num_heads=8, num_encoder_layers=2,
+                    dropout=0.3, expansion_factor=4)
+
+    Override via env:
+        SOC_KFOLD_MODEL=simple   → use SimpleSGT instead
+        SOC_KFOLD_NUM_HEADS=4    → fall back to EnhancedSGT default heads
+        SOC_KFOLD_NUM_LAYERS=3   → fall back to EnhancedSGT default layers
+    """
+    if _MODEL_NAME == 'simple':
         return _SGTModel(
             input_channels=len(bands_list_order),
             height=window_size,
             width=window_size,
             time_steps=time_before,
             d_model=hidden_size,
-            num_heads=4,
-            dropout=DROPOUT,
-            num_encoder_layers=3,
-            expansion_factor=4,
         )
-    # Default — SimpleSGT, mirroring train.py:549
+    n_heads = int(os.environ.get('SOC_KFOLD_NUM_HEADS', 8))
+    n_layers = int(os.environ.get('SOC_KFOLD_NUM_LAYERS', 2))
     return _SGTModel(
         input_channels=len(bands_list_order),
         height=window_size,
         width=window_size,
         time_steps=time_before,
         d_model=hidden_size,
+        num_heads=n_heads,
+        dropout=DROPOUT,
+        num_encoder_layers=n_layers,
+        expansion_factor=4,
     )
 
 
@@ -614,7 +621,11 @@ def run_fold(fold: dict, device: torch.device) -> dict:
     # WEIGHT_DECAY=0 by default — matches SGT train.py (plain Adam).
     optimizer = torch.optim.Adam(model.parameters(), lr=LR,
                                  weight_decay=WEIGHT_DECAY)
-    criterion = nn.L1Loss()
+    # MSE matches the historic wandb run (rxeolg7e: loss_type='mse',
+    # loss_alpha=0.5 → composite_l2 ≡ MSE per rebuttal_numbers.md §1).
+    # Override: SOC_KFOLD_LOSS=l1 to use L1 instead.
+    criterion = (nn.L1Loss() if os.environ.get('SOC_KFOLD_LOSS', 'mse').lower() == 'l1'
+                 else nn.MSELoss())
 
     per_epoch: list[dict] = []
     best_state = None
