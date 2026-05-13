@@ -71,15 +71,14 @@ SGT_DIR = SOC_CODE_DIR / 'SpatiotemporalGatedTransformer'
 sys.path.insert(0, str(SGT_DIR))
 sys.path.insert(0, str(SGT_DIR / 'dataloader'))
 
-# Model selection — match the historic wandb run that produced
-# Model A (run_1, val proper R²=0.594, Pearson r²=0.626, RMSE=4.76):
-#   - EnhancedSGT at d_model=128, num_heads=8, num_encoder_layers=2,
-#     expansion_factor=4
+# Model selection — reproduce Model A's saved checkpoint architecture
+# (verified empirically by rebuttal/verify_model_a_architecture.py):
+#   - EnhancedSGT at d_model=128, num_heads=4, num_encoder_layers=3,
+#     expansion_factor=4  → 1,120,546 trainable params
 #   - lr=2e-4, batch 256 × 8 GPUs = effective 2048, normalize transform, MSE
-# DO NOT MODIFY these architecture kwargs without explicit ask.
 #
 # SimpleSGT alternative (--model-size small / SOC_KFOLD_MODEL=simple):
-#   d_model=128, num_heads=2, 1 transformer layer
+#   d_model=128, num_heads=2, 1 transformer layer  → 360,593 trainable params
 _MODEL_NAME = os.environ.get('SOC_KFOLD_MODEL', 'enhanced').lower()
 if _MODEL_NAME == 'simple':
     from SimpleSGT import SimpleSGT as _SGTModel  # noqa: E402
@@ -450,19 +449,23 @@ def compute_fold_statistics(train_df: pd.DataFrame, max_n: int = 1500):
 # Training / evaluation
 # --------------------------------------------------------------------------
 def make_model() -> nn.Module:
-    """Mirror the historic wandb run that produced Model A
-    (valerian-fourel/socmapping-SimpleTFT/rxeolg7e, 2025-05-26):
+    """Reproduce Model A's saved-checkpoint architecture exactly:
 
-        EnhancedSGT(d_model=128, num_heads=8, num_encoder_layers=2,
+        EnhancedSGT(d_model=128, num_heads=4, num_encoder_layers=3,
                     dropout=0.3, expansion_factor=4)
 
-    DO NOT MODIFY these architecture kwargs without explicit ask.
+    → 1,120,546 trainable params. Verified empirically against the saved
+    `.pth` by rebuttal/verify_model_a_architecture.py — the alternative
+    heads=8 produces 0.67 g/kg max abs prediction diff (clearly different
+    model), while heads=4 reproduces saved val predictions to 2e-6.
 
-    Override via env (only if the user explicitly wants a different
-    architecture for an ablation):
-        SOC_KFOLD_MODEL=simple   → use SimpleSGT instead
-        SOC_KFOLD_NUM_HEADS=N    → override num_heads (default 8)
-        SOC_KFOLD_NUM_LAYERS=N   → override num_encoder_layers (default 2)
+    For SimpleSGT (--model-size small): d_model=128, num_heads=2, 1 layer
+    → 360,593 trainable params.
+
+    Override via env:
+        SOC_KFOLD_MODEL=simple   → SimpleSGT (architecture-ablation row)
+        SOC_KFOLD_NUM_HEADS=N    → override num_heads (default 4)
+        SOC_KFOLD_NUM_LAYERS=N   → override num_encoder_layers (default 3)
     """
     if _MODEL_NAME == 'simple':
         return _SGTModel(
@@ -472,9 +475,11 @@ def make_model() -> nn.Module:
             time_steps=time_before,
             d_model=hidden_size,
         )
-    # DO NOT MODIFY: heads=8, layers=2 matches the historic wandb run args.
-    n_heads = int(os.environ.get('SOC_KFOLD_NUM_HEADS', 8))
-    n_layers = int(os.environ.get('SOC_KFOLD_NUM_LAYERS', 2))
+    # Defaults: heads=4, layers=3 — verified against Model A's saved .pth
+    # by rebuttal/verify_model_a_architecture.py (32-sample prediction
+    # reproduction to 2e-6 abs error). Overridable via env for ablations.
+    n_heads = int(os.environ.get('SOC_KFOLD_NUM_HEADS', 4))
+    n_layers = int(os.environ.get('SOC_KFOLD_NUM_LAYERS', 3))
     return _SGTModel(
         input_channels=len(bands_list_order),
         height=window_size,

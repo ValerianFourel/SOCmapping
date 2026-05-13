@@ -18,10 +18,14 @@ from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,NUM_EPOCHS_
                    file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC, time_before)
 # SGT model variants — selected at runtime via --model-size:
 #   small → SimpleSGT  at d_model=128, num_heads=2, num_encoder_layers=1
-#   big   → EnhancedSGT at d_model=128, num_heads=8, num_encoder_layers=2
-#           — matches the historic wandb run rxeolg7e (2025-05-26) which
-#           is "Model A" from Table 2. DO NOT MODIFY these architecture
-#           kwargs without explicit ask.
+#                       → 360,593 trainable params
+#   big   → EnhancedSGT at d_model=128, num_heads=4, num_encoder_layers=3,
+#                       expansion_factor=4
+#                       → 1,120,546 trainable params
+#           ← architecture matches Model A's saved .pth (verified
+#           empirically by rebuttal/verify_model_a_architecture.py:
+#           state_dict load + 32-sample prediction reproduction to 2e-6
+#           against the saved analysis_results.pkl).
 from SimpleSGT import SimpleSGT
 from EnhancedSGT import EnhancedSGT
 import argparse
@@ -67,9 +71,10 @@ def parse_args():
     parser.add_argument('--model-size', type=str, default='big',
                         choices=['small', 'big'],
                         help='SGT variant: "small" = SimpleSGT '
-                             '(d_model=128, num_heads=2, num_encoder_layers=1); '
-                             '"big" = EnhancedSGT (d_model=128, num_heads=8, '
-                             'num_encoder_layers=2) — matches Model A architecture.')
+                             '(d_model=128, num_heads=2, 1 layer; 360,593 params); '
+                             '"big" = EnhancedSGT (d_model=128, num_heads=4, '
+                             'num_encoder_layers=3, expansion_factor=4; 1,120,546 '
+                             'params — matches Model A architecture).')
     # --- Gradient-accumulation knobs -------------------------------------
     # Target effective batch = num_GPUs × per_gpu_batch × accum_steps. The
     # historic 8-GPU training (wandb run rxeolg7e, R²=0.755) used
@@ -443,10 +448,14 @@ def _resolve_rebuttal_preset(args):
     --num-runs and per-gpu-batch-size to control parallelism; everything
     else is locked.
 
-    Architecture (DO NOT MODIFY without explicit ask):
-      big   → EnhancedSGT, num_heads=8, num_encoder_layers=2
-              (matches the historic wandb run rxeolg7e CLI args)
-      small → SimpleSGT, num_heads=2, num_encoder_layers=1
+    Architecture (verified empirically against Model A's saved .pth — see
+    rebuttal/verify_model_a_architecture.py):
+      big   → EnhancedSGT(d_model=128, num_heads=4, num_encoder_layers=3,
+                          dropout=0.3, expansion_factor=4)  → 1,120,546 params
+              ← matches Model A's saved checkpoint exactly (state_dict
+                shapes + 32-sample prediction reproduction to 2e-6)
+      small → SimpleSGT (d_model=128, num_heads=2, 1 transformer layer)
+              → 360,593 params
     """
     if not args.rebuttal:
         return args
@@ -460,9 +469,11 @@ def _resolve_rebuttal_preset(args):
     args.use_validation = True
     args.save_train_and_val = True
     if args.model_size == 'big':
-        args.num_heads = 8
-        args.num_layers = 2
+        # EnhancedSGT defaults — reproduces Model A's 1,120,546-param model.
+        args.num_heads = 4
+        args.num_layers = 3
     else:
+        # SimpleSGT at d_model=128 → 360,593 params.
         args.num_heads = 2
         args.num_layers = 1
     return args
