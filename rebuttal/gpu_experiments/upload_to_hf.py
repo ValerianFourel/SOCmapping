@@ -41,24 +41,13 @@ REPO_ID = "ValerianFourel/SOCrebuttal"
 REPO_TYPE = "dataset"
 ROOT = Path(__file__).resolve().parent       # rebuttal/gpu_experiments/
 
-# Whitelist of relative paths under ROOT that should be uploaded.
-# Anything outside this list is excluded by the allow_patterns filter.
-EXPECTED_PATHS = [
-    # Experiment 1 — spatial 5-fold CV
+# Fixed singletons we always expect (or skip silently).
+EXPECTED_FIXED_PATHS = [
+    # Experiment 1 — spatial k-fold CV (k can be 5, 10, or anything else)
     "spatial_kfold/kfold_results.md",
     "spatial_kfold/kfold_results_summary.json",
     "spatial_kfold/kfold_predictions_all_folds.parquet",
     "spatial_kfold/figure_kfold.png",
-    "spatial_kfold/fold_0_best.pth",
-    "spatial_kfold/fold_0_metrics.json",
-    "spatial_kfold/fold_1_best.pth",
-    "spatial_kfold/fold_1_metrics.json",
-    "spatial_kfold/fold_2_best.pth",
-    "spatial_kfold/fold_2_metrics.json",
-    "spatial_kfold/fold_3_best.pth",
-    "spatial_kfold/fold_3_metrics.json",
-    "spatial_kfold/fold_4_best.pth",
-    "spatial_kfold/fold_4_metrics.json",
 
     # Experiment 2 — MC dropout uncertainty
     "uncertainty/SGT_1mil_2023_mean_mc30.tif",
@@ -73,14 +62,37 @@ EXPECTED_PATHS = [
     "uncertainty/validation_check.txt",
 ]
 
+# Per-fold checkpoints + metrics — globbed at runtime so k=5/k=10/k=N all
+# upload without code edits.
+def _discover_fold_files() -> list[str]:
+    kfold_dir = ROOT / "spatial_kfold"
+    out = []
+    if kfold_dir.exists():
+        for p in sorted(kfold_dir.glob("fold_*_best.pth")):
+            out.append(str(p.relative_to(ROOT)))
+        for p in sorted(kfold_dir.glob("fold_*_metrics.json")):
+            out.append(str(p.relative_to(ROOT)))
+    return out
+
+
+def _expected_paths() -> list[str]:
+    """Combine the fixed list with discovered per-fold artefacts. Called
+    each time we need the list, so glob is fresh on every invocation."""
+    return EXPECTED_FIXED_PATHS + _discover_fold_files()
+
+
+# Back-compat alias for the rest of the script
+EXPECTED_PATHS = _expected_paths()
+
 # Generated each run; pinned at the root of the HF repo
 README_PATH = ROOT / "_SOCrebuttal_README.md"
 
 
 # --------------------------------------------------------------------------
 def find_existing() -> list[Path]:
-    """Subset of EXPECTED_PATHS that actually exist on disk right now."""
-    return [ROOT / p for p in EXPECTED_PATHS if (ROOT / p).exists()]
+    """Subset of EXPECTED_PATHS that actually exist on disk right now.
+    Re-globs per-fold files each call so this works across k=5/k=10/k=N."""
+    return [ROOT / p for p in _expected_paths() if (ROOT / p).exists()]
 
 
 def file_size(p: Path) -> int:
@@ -258,16 +270,17 @@ def main():
     api = HfApi(token=token)
 
     existing = find_existing()
+    expected_now = _expected_paths()
     if not existing:
         print(f"ERROR: none of the expected output files exist under {ROOT}.")
         print("Run the experiments first, then re-run this upload script.")
         print("Expected:")
-        for p in EXPECTED_PATHS:
+        for p in expected_now:
             print(f"  {p}  (missing)")
         sys.exit(1)
 
-    missing = [p for p in EXPECTED_PATHS if not (ROOT / p).exists()]
-    print(f"Found {len(existing)} / {len(EXPECTED_PATHS)} expected files.")
+    missing = [p for p in expected_now if not (ROOT / p).exists()]
+    print(f"Found {len(existing)} / {len(expected_now)} expected files.")
     if missing:
         print("\nMissing (will be skipped):")
         for p in missing:
@@ -294,7 +307,7 @@ def main():
     #    local _SOCrebuttal_README.md to README.md inside the repo by uploading
     #    the file individually below; meanwhile upload_folder() takes the
     #    whitelisted experiment outputs and the _provenance.json.
-    allow_patterns = [str(p) for p in EXPECTED_PATHS] + ["_provenance.json"]
+    allow_patterns = expected_now + ["_provenance.json"]
 
     print("\n→ uploading experiment artefacts (this may take a few minutes)…")
     upload_folder(
