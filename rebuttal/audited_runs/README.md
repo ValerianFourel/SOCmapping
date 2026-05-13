@@ -40,11 +40,12 @@ class name, and the full args dict in its serialized payload — so any single
 From `SOCmapping/SpatiotemporalGatedTransformer/`:
 
 ```bash
-# Big model (Model A architecture, ~1.12M params, 8 heads, 2 transformer layers)
+# Big model (Model A architecture, 1,120,546 params, EnhancedSGT defaults:
+#   d_model=128, num_heads=4, num_encoder_layers=3, expansion_factor=4)
 accelerate launch --num_processes 4 train.py \
     --rebuttal --model-size big --num-runs 4
 
-# Small model (SimpleSGT, ~50k params, 2 heads, 1 transformer layer)
+# Small model (SimpleSGT, 360,593 params at d_model=128, num_heads=2, 1 transformer layer)
 accelerate launch --num_processes 4 train.py \
     --rebuttal --model-size small --num-runs 4
 ```
@@ -63,8 +64,8 @@ not need to pass them):
 | `--target-fraction` | `0.75` |
 | `--use_validation` | `True` |
 | `--save_train_and_val` | `True` |
-| `--num_heads` | `8` for big / `2` for small |
-| `--num_layers` | `2` for big / `1` for small |
+| `--num_heads` | `4` for big / `2` for small |
+| `--num_layers` | `3` for big (= EnhancedSGT `num_encoder_layers=3`) / `1` for small |
 | effective batch | `num_processes × per-gpu-batch-size × accum_steps` (auto-scales to 2048) |
 
 You can still control parallelism via `--num_processes` / `--per-gpu-batch-size`,
@@ -98,9 +99,18 @@ A successful audited run should land its best run's val R² (proper, from
 `residualsStudy.py`) inside that CI. If it lands outside, investigate
 before publishing.
 
-For the **small** model expect roughly half the R² and roughly 30 % higher
-RMSE — SimpleSGT is the architecture-ablation version, not the headline
-result.
+For the **small** model (SimpleSGT, 360,593 params) we don't have a
+direct historic comparison — this is the architecture-ablation row, run
+specifically to support the "the GRN-blocks + multi-layer transformer
+matter" framing in the rebuttal. Expect moderately worse than big (the
+big model has ~3× more parameters AND the BatchNorm stack the v1 paper
+ablated against).
+
+A note on why "small" is still 360 k and not the ~50 k I earlier mis-stated:
+the bulk of SimpleSGT's parameters come from the `(feature_dim=512 ×
+d_model=128)` projection inside the GRN block + the final `(time_steps ×
+d_model = 640 → 64 → 1)` head, not from the single transformer encoder
+layer.
 
 ## Post-training: residual study + uploading
 

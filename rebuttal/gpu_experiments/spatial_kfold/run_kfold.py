@@ -72,15 +72,18 @@ sys.path.insert(0, str(SGT_DIR))
 sys.path.insert(0, str(SGT_DIR / 'dataloader'))
 
 # Model selection — match the historic wandb run that produced
-# Model A (run_1, val R²=0.755, model_parameters=1,120,546):
-#   - EnhancedSGT  (~1.12M params, BatchNorm + 3 GRN blocks)
-#   - num_heads=8, num_encoder_layers=2 (overrides EnhancedSGT defaults of 4/3)
+# Model A (run_1, val proper R²=0.594, Pearson r²=0.626, RMSE=4.76,
+# model_parameters=1,120,546):
+#   - EnhancedSGT at d_model=128, num_heads=4, num_encoder_layers=3,
+#     expansion_factor=4 — the EnhancedSGT CLASS DEFAULTS. The wandb
+#     run logged num_heads=8, num_layers=2 from its CLI args but the
+#     training code at that time called `EnhancedSGT(d_model=hidden_size)`
+#     without forwarding the args, so the class defaults are what
+#     actually got used. The param count 1,120,546 confirms this.
 #   - lr=2e-4, batch 256 × 8 GPUs = effective 2048, normalize transform, MSE
-# Today's train.py has the import flipped back to SimpleSGT (line 19), but
-# the wandb evidence (commit 8dce131, 2025-05-26) shows the trainer that
-# produced our published numbers was EnhancedSGT — `running.py` still
-# aliases it as `from EnhancedSGT import EnhancedSGT as SimpleSGT`, which
-# is what loads the saved weights correctly.
+#
+# SimpleSGT alternative (--model-size small / SOC_KFOLD_MODEL=simple):
+#   - 360,593 params at d_model=128, num_heads=2, 1 transformer layer
 _MODEL_NAME = os.environ.get('SOC_KFOLD_MODEL', 'enhanced').lower()
 if _MODEL_NAME == 'simple':
     from SimpleSGT import SimpleSGT as _SGTModel  # noqa: E402
@@ -453,15 +456,24 @@ def compute_fold_statistics(train_df: pd.DataFrame, max_n: int = 1500):
 def make_model() -> nn.Module:
     """Mirror the historic wandb run that produced Model A
     (valerian-fourel/socmapping-SimpleTFT/rxeolg7e, 2025-05-26,
-    val R²=0.755, 1,120,546 params):
+    val proper R²=0.594, Pearson r²=0.626, 1,120,546 params):
 
-        EnhancedSGT(d_model=128, num_heads=8, num_encoder_layers=2,
+        EnhancedSGT(d_model=128, num_heads=4, num_encoder_layers=3,
                     dropout=0.3, expansion_factor=4)
+        # ← the EnhancedSGT class DEFAULTS. Wandb logged
+        # ←   num_heads=8, num_layers=2 from CLI args, but the
+        # ←   training code at that time called
+        # ←   EnhancedSGT(d_model=hidden_size) without forwarding
+        # ←   the args, so the class defaults are what actually got
+        # ←   used. Param count 1,120,546 confirms this.
+
+    For SimpleSGT (--model-size small), expect 360,593 params at
+    d_model=128, num_heads=2, 1 transformer layer.
 
     Override via env:
         SOC_KFOLD_MODEL=simple   → use SimpleSGT instead
-        SOC_KFOLD_NUM_HEADS=4    → fall back to EnhancedSGT default heads
-        SOC_KFOLD_NUM_LAYERS=3   → fall back to EnhancedSGT default layers
+        SOC_KFOLD_NUM_HEADS=N    → override num_heads (default 4)
+        SOC_KFOLD_NUM_LAYERS=N   → override num_encoder_layers (default 3)
     """
     if _MODEL_NAME == 'simple':
         return _SGTModel(
@@ -471,8 +483,9 @@ def make_model() -> nn.Module:
             time_steps=time_before,
             d_model=hidden_size,
         )
-    n_heads = int(os.environ.get('SOC_KFOLD_NUM_HEADS', 8))
-    n_layers = int(os.environ.get('SOC_KFOLD_NUM_LAYERS', 2))
+    # Defaults match Model A's actual architecture: num_heads=4, num_layers=3.
+    n_heads = int(os.environ.get('SOC_KFOLD_NUM_HEADS', 4))
+    n_layers = int(os.environ.get('SOC_KFOLD_NUM_LAYERS', 3))
     return _SGTModel(
         input_channels=len(bands_list_order),
         height=window_size,

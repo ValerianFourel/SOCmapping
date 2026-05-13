@@ -92,7 +92,7 @@ python rebuttal/gpu_experiments/spatial_kfold/run_kfold.py
 
 ```bash
 SOC_KFOLD_N_FOLDS=5         # back to k=5
-SOC_KFOLD_MODEL=simple      # SimpleSGT (~50k params) instead of EnhancedSGT
+SOC_KFOLD_MODEL=simple      # SimpleSGT (360,593 params at d_model=128) instead of EnhancedSGT
 SOC_KFOLD_NUM_HEADS=4       # EnhancedSGT default heads (instead of 8)
 SOC_KFOLD_NUM_LAYERS=3      # EnhancedSGT default layers (instead of 2)
 SOC_KFOLD_LOSS=l1           # L1 instead of MSE
