@@ -202,6 +202,24 @@ rebuttal/gpu_experiments/uncertainty/worker_logs/shard_<i>_gpu_<g>.log
 `nvidia-smi -l 5` should show ≈ 100% utilisation across **all** visible
 GPUs once both experiments are running.
 
+### Live progress in % from another terminal
+
+```bash
+# Snapshot
+python /workspace/SOC/SOCmapping/rebuttal/gpu_experiments/progress.py
+
+# Auto-refresh every 5 s (Ctrl+C to stop)
+python /workspace/SOC/SOCmapping/rebuttal/gpu_experiments/progress.py --watch
+
+# Only MC dropout or only k-fold
+python /workspace/SOC/SOCmapping/rebuttal/gpu_experiments/progress.py --watch --mc
+python /workspace/SOC/SOCmapping/rebuttal/gpu_experiments/progress.py --watch --kfold
+```
+
+The script parses each worker's log tail for `batch N/M` (MC dropout)
+or `Fold N | Epoch E/270` (k-fold), shows per-shard / per-fold status,
+and prints an aggregate %.
+
 ## 10 — Push outputs to the SOCrebuttal HF dataset
 
 ```bash
