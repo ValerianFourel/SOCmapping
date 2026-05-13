@@ -118,19 +118,48 @@ PY
 
 Expected: `params=1,120,546  missing=0  unexpected=0  forward OK torch.Size([4])`.
 
-## 9 — Launch experiments
+## 9 — Launch experiments (auto-uses every visible GPU)
+
+Both experiments shard themselves across all CUDA devices in the pod
+with no extra flags — no `accelerate launch`, no `torchrun`. Internally
+each spawns one subprocess per GPU and orchestrates the work.
 
 ```bash
 source /workspace/SOC/SOCmapping/rebuttal/gpu_experiments/.venv/bin/activate
 cd /workspace/SOC/SOCmapping
 
-# Experiment 2 — MC dropout uncertainty map (~3 GPU-hours)
+# Experiment 2 — MC dropout uncertainty map
+#   4 GPUs → grid sharded 4 ways → ≈ 45 min (vs ≈ 3 h single-GPU)
 python rebuttal/gpu_experiments/uncertainty/mc_dropout_inference.py
-python rebuttal/gpu_experiments/uncertainty/plot_uncertainty.py
+python rebuttal/gpu_experiments/uncertainty/plot_uncertainty.py        # CPU only
 
-# Experiment 1 — spatial 5-fold CV (~15 GPU-hours)
+# Experiment 1 — spatial 5-fold CV
+#   4 GPUs → folds 0-3 in parallel, then fold 4 → ≈ 2 × 1-fold time
+#   ≈ 6 h on 4 × 4090 (vs ≈ 15 h single-GPU)
 python rebuttal/gpu_experiments/spatial_kfold/run_kfold.py
 ```
+
+Useful overrides:
+
+```bash
+# Restrict to specific GPUs
+python rebuttal/gpu_experiments/uncertainty/mc_dropout_inference.py --gpus 0,1
+python rebuttal/gpu_experiments/spatial_kfold/run_kfold.py --gpus 0,2
+
+# Force the legacy single-GPU sequential mode (for debugging)
+python rebuttal/gpu_experiments/uncertainty/mc_dropout_inference.py --sequential
+python rebuttal/gpu_experiments/spatial_kfold/run_kfold.py --sequential
+```
+
+Per-GPU worker logs land in:
+
+```
+rebuttal/gpu_experiments/spatial_kfold/worker_logs/fold_<i>_gpu_<g>.log
+rebuttal/gpu_experiments/uncertainty/worker_logs/shard_<i>_gpu_<g>.log
+```
+
+`nvidia-smi -l 5` should show ≈ 100% utilisation across **all** visible
+GPUs once both experiments are running.
 
 ## 10 — Push outputs to the SOCrebuttal HF dataset
 

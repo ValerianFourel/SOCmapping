@@ -74,18 +74,34 @@ scripts (see each script's docstring for the full output list).
   - `uncertainty/figure_uncertainty_3panel.pdf` — vector for journal submission
 - **Answers:** R3.9, R4.4
 
-## Parallelisation
+## Parallelisation — built in
 
-If two GPUs are available, run both experiments simultaneously:
+Both scripts shard themselves across every visible CUDA device with no
+extra launcher. Plain `python script.py` is enough:
+
+- **Experiment 1** orchestrates one worker subprocess per GPU and
+  schedules the 5 folds across them (4 folds in parallel, then fold 4
+  on the first free GPU). Total wall time ≈ 2 × (single-fold time)
+  on 4 GPUs.
+- **Experiment 2** shards the 1.3 M Bavaria inference grid into
+  equal-sized contiguous slices, one per GPU, and concatenates the
+  shards back into a single GeoTIFF/parquet at the end. Total wall
+  time ≈ (single-GPU time) / N_GPUs.
+
+Override with `--gpus 0,1` (subset) or `--sequential` (debug). Per-GPU
+stdout lands in `{spatial_kfold,uncertainty}/worker_logs/<id>_gpu_<g>.log`.
+
+If you really want to run both experiments concurrently on disjoint
+GPU subsets:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python rebuttal/gpu_experiments/spatial_kfold/run_kfold.py
-CUDA_VISIBLE_DEVICES=1 python rebuttal/gpu_experiments/uncertainty/mc_dropout_inference.py
+python rebuttal/gpu_experiments/spatial_kfold/run_kfold.py        --gpus 0,1 &
+python rebuttal/gpu_experiments/uncertainty/mc_dropout_inference.py --gpus 2,3 &
+wait
 ```
 
-If one GPU only: run Experiment 2 first (≈ 3 hrs), then Experiment 1
-overnight (≈ 15 hrs). The k-fold checkpoints are saved per fold so a
-crash on fold N does not invalidate folds 0..N−1.
+The k-fold checkpoints are saved per fold so a crash on fold N does
+not invalidate folds 0..N-1.
 
 ## What to do with the outputs
 

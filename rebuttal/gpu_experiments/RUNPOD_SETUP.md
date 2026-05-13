@@ -268,25 +268,53 @@ selective HF download captured the right files.
 
 ---
 
-## 9. Launch the experiments
+## 9. Launch the experiments — auto-uses every visible GPU
+
+Both scripts now auto-detect `torch.cuda.device_count()` and shard work
+across all GPUs without `accelerate launch` / `torchrun` / `mpirun`.
+Just run them with plain `python` — the orchestrator inside each script
+forks one worker subprocess per GPU with the right
+`CUDA_VISIBLE_DEVICES` and waits for them to finish.
 
 ```bash
-# Single-GPU order: Experiment 2 first (≈ 3 h), then Experiment 1 (≈ 15 h)
 cd /workspace/SOC/SOCmapping
 source rebuttal/gpu_experiments/.venv/bin/activate
 
 # Experiment 2 — MC dropout uncertainty map (R3.9, R4.4)
+#   1.3 M grid points → 4 shards of ≈ 325 k → ≈ 45 min on 4 × 4090
+#   (vs ≈ 3 h on a single GPU)
 python rebuttal/gpu_experiments/uncertainty/mc_dropout_inference.py
-python rebuttal/gpu_experiments/uncertainty/plot_uncertainty.py
+python rebuttal/gpu_experiments/uncertainty/plot_uncertainty.py        # CPU-only
 
 # Experiment 1 — spatial 5-fold CV (R1.3, R3.6, R3.8)
+#   Folds 0-3 train concurrently on the 4 GPUs, fold 4 follows on GPU 0
+#   → ≈ 2 × (single-fold time) instead of 5 ×
+#   ≈ 6 h on 4 × 4090 (vs ≈ 15 h on a single GPU)
 python rebuttal/gpu_experiments/spatial_kfold/run_kfold.py
 ```
 
+Useful overrides:
+
+| flag | effect |
+|---|---|
+| `--gpus 0,2,3` | restrict to listed GPUs (instead of every visible one) |
+| `--sequential` | force the legacy single-GPU loop (debugging) |
+| `--keep-shards` *(Exp 2 only)* | don't delete `_shard_*.pkl` after concat |
+
+Per-GPU worker logs land in:
+
+```
+rebuttal/gpu_experiments/spatial_kfold/worker_logs/fold_<i>_gpu_<g>.log
+rebuttal/gpu_experiments/uncertainty/worker_logs/shard_<i>_gpu_<g>.log
+```
+
+`nvidia-smi -l 5` in a second terminal should show ≈ 100 %
+utilisation on every visible GPU during the runs.
+
 Outputs land alongside each script:
 
-- `spatial_kfold/kfold_results.md` + `figure_kfold.png` + `kfold_predictions_all_folds.parquet`
-- `uncertainty/SGT_1mil_2023_mean_mc30.tif` + `_std_mc30.tif` + `figure_uncertainty_3panel.{png,pdf}`
+- `spatial_kfold/kfold_results.md` + `figure_kfold.png` + `kfold_predictions_all_folds.parquet` + 5 × `fold_{i}_best.pth`
+- `uncertainty/SGT_1mil_2023_mean_mc30.tif` + `_std_mc30.tif` + `figure_uncertainty_3panel.{png,pdf}` + `mc_dropout_points.parquet`
 
 ---
 

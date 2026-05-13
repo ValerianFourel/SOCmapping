@@ -39,11 +39,15 @@ by the project lead.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
+import pickle
+import subprocess
 import sys
 import time
 import warnings
+from collections import deque
 from pathlib import Path
 
 import numpy as np
@@ -606,33 +610,174 @@ def make_figure(fold_results: list[dict], folds_meta: list[dict],
 
 
 # --------------------------------------------------------------------------
+# Worker mode — runs ONE fold, dumps its result dict to a pickle
+# --------------------------------------------------------------------------
+# Each worker is invoked as a subprocess with CUDA_VISIBLE_DEVICES already
+# set to a single device by the orchestrator. The worker therefore always
+# uses `cuda:0` (which is its assigned physical GPU). Output is pickled to
+# OUT_DIR / fold_{i}_results.pkl so the orchestrator can pick it up after
+# the subprocess exits.
+
+def _worker_run_fold(fold_id: int):
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f'[worker fold={fold_id}] device={device} '
+          f'CUDA_VISIBLE_DEVICES={os.environ.get("CUDA_VISIBLE_DEVICES", "unset")}',
+          flush=True)
+
+    df = pd.read_parquet(MODEL_READY).reset_index(drop=True)
+    folds_meta = build_folds(df)
+    fold = folds_meta[fold_id]
+    result = run_fold(fold, device)
+    out = OUT_DIR / f'fold_{fold_id}_results.pkl'
+    with open(out, 'wb') as f:
+        pickle.dump(result, f)
+    print(f'[worker fold={fold_id}] wrote {out}', flush=True)
+
+
+# --------------------------------------------------------------------------
+# Orchestrator — schedules folds across visible GPUs (one fold per GPU)
+# --------------------------------------------------------------------------
+def _orchestrate_folds(n_folds: int, gpu_ids: list[int]) -> list[Path]:
+    """Spawn one worker subprocess per fold. Up to len(gpu_ids) workers run
+    concurrently; as each finishes, its GPU is freed and the next pending
+    fold is dispatched. Returns the list of fold-result pickle paths in
+    fold-id order."""
+    pending = deque(range(n_folds))
+    free_gpus = deque(gpu_ids)
+    running: dict[int, tuple[int, subprocess.Popen]] = {}   # gpu_id -> (fold_id, Popen)
+    completed: dict[int, int] = {}                          # fold_id -> exit code
+    log_dir = OUT_DIR / 'worker_logs'
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    t0 = time.time()
+    while pending or running:
+        # Dispatch as many pending folds as we have free GPUs
+        while pending and free_gpus:
+            fold_id = pending.popleft()
+            gpu_id = free_gpus.popleft()
+            env = os.environ.copy()
+            env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+            # Don't let workers re-orchestrate by accident
+            env['SOC_KFOLD_WORKER'] = '1'
+            log_path = log_dir / f'fold_{fold_id}_gpu_{gpu_id}.log'
+            log_fh = open(log_path, 'w')
+            cmd = [sys.executable, str(Path(__file__).resolve()),
+                   '--worker', '--fold', str(fold_id)]
+            p = subprocess.Popen(cmd, env=env, stdout=log_fh, stderr=subprocess.STDOUT)
+            running[gpu_id] = (fold_id, p)
+            elapsed = time.time() - t0
+            print(f'[orchestrator t+{elapsed/60:.1f}m] launched fold {fold_id} '
+                  f'on GPU {gpu_id} (pid={p.pid}, log={log_path.name})',
+                  flush=True)
+
+        # Reap any finished subprocesses
+        finished_gpus = []
+        for gpu_id, (fold_id, proc) in running.items():
+            rc = proc.poll()
+            if rc is not None:
+                completed[fold_id] = rc
+                finished_gpus.append(gpu_id)
+                elapsed = time.time() - t0
+                tag = 'OK' if rc == 0 else f'FAILED rc={rc}'
+                print(f'[orchestrator t+{elapsed/60:.1f}m] fold {fold_id} '
+                      f'on GPU {gpu_id} → {tag}', flush=True)
+        for gpu_id in finished_gpus:
+            del running[gpu_id]
+            free_gpus.append(gpu_id)
+
+        if pending or running:
+            time.sleep(3)
+
+    # Report any failures
+    failures = [fid for fid, rc in completed.items() if rc != 0]
+    if failures:
+        raise RuntimeError(
+            f'Worker(s) for fold(s) {failures} exited non-zero. '
+            f'Check {log_dir}/fold_<id>_gpu_<g>.log for details.'
+        )
+
+    return [OUT_DIR / f'fold_{i}_results.pkl' for i in range(n_folds)]
+
+
+# --------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------
 def main():
+    parser = argparse.ArgumentParser(description='Spatial 5-fold CV (multi-GPU).')
+    parser.add_argument('--worker', action='store_true',
+                        help='Run ONE fold in worker mode (used internally).')
+    parser.add_argument('--fold', type=int, default=None,
+                        help='Fold ID (0..N_FOLDS-1) for worker mode.')
+    parser.add_argument('--gpus', type=str, default=None,
+                        help='Comma-separated GPU IDs to use, e.g. "0,1,2,3". '
+                             'Default: all visible CUDA devices.')
+    parser.add_argument('--sequential', action='store_true',
+                        help='Force the legacy sequential single-GPU loop '
+                             '(useful for debugging).')
+    args = parser.parse_args()
+
+    # ----- Worker mode -----
+    if args.worker:
+        if args.fold is None:
+            raise SystemExit('--fold N is required when --worker is set.')
+        _worker_run_fold(args.fold)
+        return
+
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f'Device: {device}', flush=True)
 
-    df = pd.read_parquet(MODEL_READY)
-    df = df.reset_index(drop=True)
-    df['__row'] = df.index   # safety
-    print(f'Loaded {len(df)} rows from {MODEL_READY}', flush=True)
-
+    # Probe the dataset once on the orchestrator side so we can log fold
+    # geometry up front (the actual training happens in subprocesses).
+    df = pd.read_parquet(MODEL_READY).reset_index(drop=True)
     folds_meta = build_folds(df)
+    print(f'Loaded {len(df)} rows from {MODEL_READY}', flush=True)
     for f in folds_meta:
         print(f'Fold {f["fold_id"]}: lat [{f["lat_lo"]:.4f}, {f["lat_hi"]:.4f}) '
               f'| n_test={len(f["test_idx"])} n_train={len(f["train_idx"])} '
               f'n_buffer={len(f["buffer_idx"])}', flush=True)
 
-    fold_results = []
-    t_start = time.time()
-    for f in folds_meta:
-        r = run_fold(f, device)
-        fold_results.append(r)
-        elapsed = time.time() - t_start
-        print(f'>>> Fold {f["fold_id"]} done. Elapsed {elapsed/60:.1f} min',
-              flush=True)
+    # ----- Pick GPUs to use -----
+    if args.gpus:
+        gpu_ids = [int(g) for g in args.gpus.split(',') if g.strip() != '']
+    elif torch.cuda.is_available():
+        gpu_ids = list(range(torch.cuda.device_count()))
+    else:
+        gpu_ids = []
 
+    use_parallel = (not args.sequential) and len(gpu_ids) >= 2
+    print(f'\nGPUs visible: {gpu_ids}  parallel={use_parallel}', flush=True)
+
+    t_start = time.time()
+
+    # ----- Parallel orchestration (1 fold per GPU, queue rest) -----
+    if use_parallel:
+        pickle_paths = _orchestrate_folds(N_FOLDS, gpu_ids)
+        fold_results: list[dict] = []
+        for p in pickle_paths:
+            with open(p, 'rb') as f:
+                fold_results.append(pickle.load(f))
+
+    # ----- Sequential fallback (single GPU or --sequential) -----
+    else:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        print(f'Sequential mode on device={device}', flush=True)
+        fold_results = []
+        for f in folds_meta:
+            r = run_fold(f, device)
+            fold_results.append(r)
+            elapsed = time.time() - t_start
+            print(f'>>> Fold {f["fold_id"]} done. Elapsed {elapsed/60:.1f} min',
+                  flush=True)
+
+    # ----- Aggregation (same in both modes) -----
+    elapsed = time.time() - t_start
+    print(f'\nAll folds finished in {elapsed/60:.1f} min '
+          f'(mode={"parallel" if use_parallel else "sequential"}).',
+          flush=True)
+
+    # Fold-results pickled by workers don't carry the test-set buffer_idx
+    # array (it's a property of the orchestrator's folds_meta, not the
+    # worker's run_fold output), so the figure code receives both.
     write_results(fold_results)
     write_predictions_parquet(fold_results)
     make_figure(fold_results, folds_meta, df)

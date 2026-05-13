@@ -43,10 +43,14 @@ DO NOT RUN until ASSUMPTION blocks have been reviewed.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
+import pickle
+import subprocess
 import sys
 import time
+from collections import deque
 from pathlib import Path
 
 import numpy as np
@@ -411,28 +415,185 @@ def validation_check(lons, lats, mc_mean):
 
 
 # --------------------------------------------------------------------------
+# Worker mode — runs MC dropout on a single contiguous shard of the grid.
+# Invoked as a subprocess by the orchestrator with CUDA_VISIBLE_DEVICES
+# already restricted to one physical GPU.
+# --------------------------------------------------------------------------
+def _worker_run_shard(start_idx: int, end_idx: int, shard_id: int):
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f'[worker shard={shard_id}] device={device} '
+          f'CUDA_VISIBLE_DEVICES={os.environ.get("CUDA_VISIBLE_DEVICES", "unset")} '
+          f'range=[{start_idx}, {end_idx})  '
+          f'n_points={end_idx - start_idx}', flush=True)
+
+    # Per-shard RNG offset so MC sampling streams don't repeat across GPUs.
+    torch.manual_seed(20260513 + shard_id)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(20260513 + shard_id)
+
+    model, ckpt = load_model_b(device)
+    feature_means, feature_stds, _, _ = load_normalization_stats(ckpt)
+    _, loader, n_pts = build_inference_loader(
+        feature_means, feature_stds, start_idx=start_idx, end_idx=end_idx)
+    print(f'[worker shard={shard_id}] points in shard: {n_pts:,}', flush=True)
+
+    lons, lats, mean_pred, std_pred = run_mc_dropout(model, loader, n_pts, device)
+
+    out = OUT_DIR / f'_shard_{shard_id:02d}.pkl'
+    with open(out, 'wb') as f:
+        pickle.dump({
+            'shard_id': shard_id,
+            'start_idx': start_idx, 'end_idx': end_idx,
+            'lons': lons, 'lats': lats,
+            'mean_pred': mean_pred, 'std_pred': std_pred,
+        }, f)
+    print(f'[worker shard={shard_id}] wrote {out}', flush=True)
+
+
+# --------------------------------------------------------------------------
+# Orchestrator — shards the 1.3 M point grid across visible GPUs and
+# launches one worker subprocess per shard, in parallel.
+# --------------------------------------------------------------------------
+def _orchestrate_shards(gpu_ids: list[int]) -> list[dict]:
+    """Spawn one worker per GPU, each handling an equal-sized slice of
+    the inference CSV. Waits for all to finish, then loads the pickled
+    shard results in shard-id order and returns them."""
+    df_full = pd.read_csv(file_path_coordinates_Bavaria_1mil)
+    total = len(df_full)
+    n_shards = len(gpu_ids)
+    # Equal split — last shard gets the remainder
+    chunk = total // n_shards
+    bounds = [(i * chunk, (i + 1) * chunk if i < n_shards - 1 else total)
+              for i in range(n_shards)]
+    print(f'Total grid points: {total:,}  shards: {n_shards}', flush=True)
+    for i, (s, e) in enumerate(bounds):
+        print(f'  shard {i:>2}  GPU {gpu_ids[i]}  rows [{s:>9,}, {e:>9,})  '
+              f'n={e - s:>9,}', flush=True)
+
+    log_dir = OUT_DIR / 'worker_logs'
+    log_dir.mkdir(parents=True, exist_ok=True)
+    running: list[tuple[int, subprocess.Popen, Path]] = []
+    t0 = time.time()
+    for shard_id, (gpu_id, (s, e)) in enumerate(zip(gpu_ids, bounds)):
+        env = os.environ.copy()
+        env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+        env['SOC_MC_WORKER'] = '1'
+        log_path = log_dir / f'shard_{shard_id:02d}_gpu_{gpu_id}.log'
+        cmd = [sys.executable, str(Path(__file__).resolve()),
+               '--worker',
+               '--shard-id', str(shard_id),
+               '--start-idx', str(s),
+               '--end-idx', str(e)]
+        p = subprocess.Popen(cmd, env=env,
+                             stdout=open(log_path, 'w'),
+                             stderr=subprocess.STDOUT)
+        running.append((shard_id, p, log_path))
+        print(f'[orchestrator] launched shard {shard_id} on GPU {gpu_id} '
+              f'(pid={p.pid}, log={log_path.name})', flush=True)
+
+    # Wait for them all
+    failed = []
+    while running:
+        time.sleep(5)
+        still_running = []
+        for shard_id, p, log in running:
+            rc = p.poll()
+            if rc is None:
+                still_running.append((shard_id, p, log))
+            else:
+                elapsed = time.time() - t0
+                tag = 'OK' if rc == 0 else f'FAILED rc={rc}'
+                print(f'[orchestrator t+{elapsed/60:.1f}m] shard {shard_id} → {tag}',
+                      flush=True)
+                if rc != 0:
+                    failed.append(shard_id)
+        running = still_running
+
+    if failed:
+        raise RuntimeError(
+            f'Worker(s) for shard(s) {failed} exited non-zero. '
+            f'Check {log_dir}/shard_<id>_gpu_<g>.log for details.')
+
+    # Load the shard pickles
+    shards = []
+    for shard_id in range(n_shards):
+        with open(OUT_DIR / f'_shard_{shard_id:02d}.pkl', 'rb') as f:
+            shards.append(pickle.load(f))
+    return shards
+
+
+def _concat_shards(shards: list[dict]) -> tuple[np.ndarray, ...]:
+    lons = np.concatenate([s['lons'] for s in shards])
+    lats = np.concatenate([s['lats'] for s in shards])
+    mean_pred = np.concatenate([s['mean_pred'] for s in shards]).astype(np.float32)
+    std_pred = np.concatenate([s['std_pred'] for s in shards]).astype(np.float32)
+    return lons, lats, mean_pred, std_pred
+
+
+# --------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------
 def main():
+    parser = argparse.ArgumentParser(description='MC Dropout uncertainty map (multi-GPU).')
+    parser.add_argument('--worker', action='store_true',
+                        help='Internal: run ONE shard as a worker subprocess.')
+    parser.add_argument('--shard-id', type=int, default=None)
+    parser.add_argument('--start-idx', type=int, default=None)
+    parser.add_argument('--end-idx', type=int, default=None)
+    parser.add_argument('--gpus', type=str, default=None,
+                        help='Comma-separated GPU IDs to use, e.g. "0,1,2,3". '
+                             'Default: all visible CUDA devices.')
+    parser.add_argument('--sequential', action='store_true',
+                        help='Force the legacy single-GPU loop.')
+    parser.add_argument('--keep-shards', action='store_true',
+                        help='Keep the _shard_*.pkl files after concat.')
+    args = parser.parse_args()
+
+    # ----- Worker mode -----
+    if args.worker:
+        if args.shard_id is None or args.start_idx is None or args.end_idx is None:
+            raise SystemExit('--shard-id, --start-idx, --end-idx required for --worker.')
+        _worker_run_shard(args.start_idx, args.end_idx, args.shard_id)
+        return
+
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f'Device: {device}', flush=True)
 
-    model, ckpt = load_model_b(device)
-    feature_means, feature_stds, t_mean, t_std = load_normalization_stats(ckpt)
-    print(f'Target mean / std (saved): {t_mean} / {t_std}', flush=True)
-    print(f'Feature means shape: {tuple(feature_means.shape)}; '
-          f'Feature stds shape: {tuple(feature_stds.shape)}', flush=True)
+    # ----- Pick GPUs -----
+    if args.gpus:
+        gpu_ids = [int(g) for g in args.gpus.split(',') if g.strip() != '']
+    elif torch.cuda.is_available():
+        gpu_ids = list(range(torch.cuda.device_count()))
+    else:
+        gpu_ids = []
+    use_parallel = (not args.sequential) and len(gpu_ids) >= 2
+    print(f'GPUs visible: {gpu_ids}  parallel={use_parallel}', flush=True)
 
-    df_sub, loader, n_pts = build_inference_loader(feature_means, feature_stds)
-    print(f'Inference grid: {n_pts:,} points', flush=True)
+    t0 = time.time()
 
-    # ASSUMPTION: this script runs single-process. If you want multi-GPU,
-    # wrap with accelerate.Accelerator and use accelerator.gather to
-    # reconcile (predictions need to stay deterministic per point — see
-    # running.py for the original pattern).
+    # ----- Parallel sharded mode -----
+    if use_parallel:
+        shards = _orchestrate_shards(gpu_ids)
+        lons, lats, mean_pred, std_pred = _concat_shards(shards)
+        # Re-derive normalization stats for the metadata block by loading
+        # the checkpoint once on CPU
+        ckpt = torch.load(MODEL_B_PATH, map_location='cpu', weights_only=False)
+        feature_means, feature_stds, t_mean, t_std = load_normalization_stats(ckpt)
 
-    lons, lats, mean_pred, std_pred = run_mc_dropout(model, loader, n_pts, device)
+    # ----- Sequential fallback -----
+    else:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        print(f'Sequential mode on device={device}', flush=True)
+        model, ckpt = load_model_b(device)
+        feature_means, feature_stds, t_mean, t_std = load_normalization_stats(ckpt)
+        _, loader, n_pts = build_inference_loader(feature_means, feature_stds)
+        print(f'Inference grid: {n_pts:,} points', flush=True)
+        lons, lats, mean_pred, std_pred = run_mc_dropout(model, loader, n_pts, device)
+
+    elapsed = time.time() - t0
+    print(f'\nMC sampling done in {elapsed/60:.1f} min '
+          f'(mode={"parallel" if use_parallel else "sequential"}).',
+          flush=True)
 
     # ----- write parquet and metadata -----
     parq = pd.DataFrame({'longitude': lons, 'latitude': lats,
@@ -447,10 +608,8 @@ def main():
     np.save(OUT_DIR / 'mc_dropout_coords.npy',
             np.column_stack([lons, lats]))
 
-    # ----- GeoTIFFs -----
     points_to_geotiffs(lons, lats, mean_pred, std_pred)
 
-    # ----- Validation check vs single-pass map -----
     r, n_cmp, note = validation_check(lons, lats, mean_pred)
     txt = []
     txt.append(f'MC mean prediction summary')
@@ -471,14 +630,9 @@ def main():
         flag = 'OK' if r > 0.95 else 'WARNING (r < 0.95)'
         txt.append(f'Validation [{flag}]: Pearson r (mean_mc vs single_pass) '
                    f'= {r:.6f}  (n_compared={n_cmp})')
-        if r < 0.95:
-            # Diagnose offset
-            # (Re-load merged for stats — small)
-            pass
     (OUT_DIR / 'validation_check.txt').write_text('\n'.join(txt))
     print('\n'.join(txt), flush=True)
 
-    # ----- Metadata JSON -----
     meta = {
         'model_b_path': str(MODEL_B_PATH),
         'n_passes': N_PASSES,
@@ -489,17 +643,26 @@ def main():
         'target_transform': TARGET_TRANSFORM,
         'target_resolution_m': TARGET_RESOLUTION_M,
         'target_crs': TARGET_CRS,
-        'n_grid_points': int(n_pts),
+        'n_grid_points': int(len(mean_pred)),
         'feature_means_shape': list(feature_means.shape),
         'feature_stds_shape': list(feature_stds.shape),
         'target_mean': float(t_mean) if t_mean is not None else None,
         'target_std': float(t_std) if t_std is not None else None,
         'validation_pearson_r': r,
         'validation_n_compared': n_cmp,
+        'multi_gpu_mode': 'parallel' if use_parallel else 'sequential',
+        'gpus_used': gpu_ids,
+        'wall_time_seconds': float(elapsed),
     }
     (OUT_DIR / 'mc_dropout_metadata.json').write_text(
         json.dumps(meta, indent=2, default=str))
     print(f'Wrote {OUT_DIR / "mc_dropout_metadata.json"}', flush=True)
+
+    # Clean up the per-shard pickles unless the user asked to keep them
+    if use_parallel and not args.keep_shards:
+        for p in OUT_DIR.glob('_shard_*.pkl'):
+            p.unlink(missing_ok=True)
+
     print('\nExperiment 2 complete.', flush=True)
 
 
