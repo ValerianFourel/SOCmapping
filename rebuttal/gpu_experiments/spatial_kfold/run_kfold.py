@@ -205,10 +205,23 @@ DIST_THRESHOLD_KM = 1.2          # match train.py / config
 EARTH_RADIUS_KM = 6371.0
 N_EPOCHS = int(num_epochs)       # 270 from config (use_validation=True)
 BATCH_SIZE = 256
-LR = 2e-4                        # match train.py CLI default; spec said 1e-3
-WEIGHT_DECAY = 1e-5              # ASSUMPTION: user spec value; train.py has none
+LR = 2e-4                        # matches SGT train.py CLI default (--lr 0.0002)
+WEIGHT_DECAY = 0.0               # matches SGT train.py — Adam plain, no weight decay
 DROPOUT = 0.3
 SEED_BASE = 42
+
+# Target transform — matches SGT train.py default (--target_transform normalize):
+#   train-time:  y_t = (y - TARGET_MEAN) / (TARGET_STD + 1e-10)
+#   invert:      y   = y_t * TARGET_STD + TARGET_MEAN
+# TARGET_MEAN/STD come from compute_training_statistics_oc() on the FULL
+# 16,514-row dataset (same as train.py), NOT per-fold. This matches the
+# operational Model-A recipe; switch to 'log' only if you want to
+# reproduce Model B instead.
+TARGET_TRANSFORM = os.environ.get('SOC_KFOLD_TARGET_TRANSFORM', 'normalize').lower()
+
+# Gradient clipping — train.py does NOT clip. Set to 0 to disable; the
+# rebuttal env can opt-in via SOC_KFOLD_GRAD_CLIP=1.0 if needed.
+GRAD_CLIP_MAX_NORM = float(os.environ.get('SOC_KFOLD_GRAD_CLIP', 0.0))
 
 # Gradient accumulation — simulate the gradient signal of an 8-GPU
 # data-parallel run with per-GPU BATCH_SIZE=256. With ACCUM_STEPS=8 the
@@ -436,13 +449,72 @@ def make_model() -> nn.Module:
     )
 
 
-def transform_target(y: torch.Tensor) -> torch.Tensor:
-    """Log transform — match train.py exactly (NOT log1p)."""
-    return torch.log(y + 1e-10)
+def compute_target_stats() -> tuple[float, float]:
+    """Mirror SGT train.py:compute_training_statistics_oc — mean/std of OC
+    over the FULL 16,514-row model-ready dataset. Used by the 'normalize'
+    target transform. Stays constant across folds (same as train.py)."""
+    df = pd.read_parquet(MODEL_READY)
+    return float(df['OC'].mean()), float(df['OC'].std())
 
 
-def invert_target(y_log: np.ndarray) -> np.ndarray:
-    return np.exp(y_log)
+_FULL_FEATURE_STATS_CACHE: tuple[torch.Tensor, torch.Tensor] | None = None
+
+
+def compute_full_feature_statistics() -> tuple[torch.Tensor, torch.Tensor]:
+    """Mirror SGT train.py:line 453 — feature_means/stds computed from a
+    NormalizedMultiRasterDatasetMultiYears over the FULL 16,514-row df.
+    Cached per worker process so the 4-5 second hit only happens once
+    (the first fold pays it; subsequent folds within the same worker
+    re-use the cached tensors)."""
+    global _FULL_FEATURE_STATS_CACHE
+    if _FULL_FEATURE_STATS_CACHE is not None:
+        return _FULL_FEATURE_STATS_CACHE
+    from dataloader.dataloaderMultiYears import NormalizedMultiRasterDatasetMultiYears
+    df = pd.read_parquet(MODEL_READY)
+    sample_paths, data_paths = separate_and_add_data()
+    sample_paths = list(dict.fromkeys(_flatten(sample_paths)))
+    data_paths = list(dict.fromkeys(_flatten(data_paths)))
+    norm_ds = NormalizedMultiRasterDatasetMultiYears(sample_paths, data_paths, df)
+    fm = norm_ds.get_feature_means()
+    fs = norm_ds.get_feature_stds()
+    print(f'Computed full-df feature stats once: '
+          f'means.shape={tuple(fm.shape)}  stds.shape={tuple(fs.shape)}',
+          flush=True)
+    _FULL_FEATURE_STATS_CACHE = (fm, fs)
+    return fm, fs
+
+
+def _flatten(lst):
+    out = []
+    for x in lst:
+        if isinstance(x, list):
+            out.extend(_flatten(x))
+        else:
+            out.append(x)
+    return out
+
+
+def make_transform_fns(target_mean: float, target_std: float):
+    """Return (transform, invert) callable pair matching whatever
+    TARGET_TRANSFORM the user picked. Defaults to SGT train.py's
+    'normalize'; 'log' kept for reproducing Model B."""
+    eps = 1e-10
+    if TARGET_TRANSFORM == 'normalize':
+        denom = target_std + eps
+        def transform(y: torch.Tensor) -> torch.Tensor:
+            return (y - target_mean) / denom
+        def invert(y_t: np.ndarray) -> np.ndarray:
+            return y_t * target_std + target_mean
+        return transform, invert
+    if TARGET_TRANSFORM == 'log':
+        def transform(y: torch.Tensor) -> torch.Tensor:
+            return torch.log(y + eps)
+        def invert(y_t: np.ndarray) -> np.ndarray:
+            return np.exp(y_t)
+        return transform, invert
+    if TARGET_TRANSFORM == 'none':
+        return (lambda y: y), (lambda y: y)
+    raise ValueError(f'Unknown SOC_KFOLD_TARGET_TRANSFORM: {TARGET_TRANSFORM!r}')
 
 
 def run_fold(fold: dict, device: torch.device) -> dict:
@@ -480,19 +552,24 @@ def run_fold(fold: dict, device: torch.device) -> dict:
           f'(was {(len(train_df) + BATCH_SIZE - 1) // BATCH_SIZE} without accumulation)',
           flush=True)
 
-    # Per-fold feature normalisation (no leakage) — compute from the
-    # REBALANCED train set so the feature stats reflect what the model
-    # actually sees during training.
-    means, stds = compute_fold_statistics(train_df)
+    # Feature normalisation — matches SGT train.py: stats computed ONCE
+    # on the full 16,514-row df (`train_dataset_features_norm` in
+    # train.py:453), then applied identically to every fold's train/test.
+    # Same recipe → ~negligible leakage (the test rows contribute to a
+    # 6-channel mean/std computed over 16k samples).
+    means, stds = compute_full_feature_statistics()
+
+    # Target-normalize stats — also from the full df, matching train.py
+    target_mean, target_std = compute_target_stats()
+    transform_target, invert_target = make_transform_fns(target_mean, target_std)
+    print(f'Target transform = {TARGET_TRANSFORM!r}  '
+          f'(target_mean={target_mean:.4f}  target_std={target_std:.4f})',
+          flush=True)
 
     train_ds = make_dataset(train_df, means, stds)
     test_ds = make_dataset(test_df, means, stds)
 
-    # NUM_WORKERS=0: the dataset now carries an O(1) (lat, lon) hashmap
-    # per subfolder. With num_workers>0 the DataLoader would have to
-    # pickle that whole structure to each subprocess (~minutes of stall);
-    # main-process loading is already fast. Override with $SOC_KFOLD_NUM_WORKERS
-    # if you have a reason to.
+    # NUM_WORKERS=0: see top-of-file note about hashmap pickling cost.
     _nw = int(os.environ.get('SOC_KFOLD_NUM_WORKERS', 0))
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,
                               num_workers=_nw, pin_memory=True)
@@ -500,12 +577,10 @@ def run_fold(fold: dict, device: torch.device) -> dict:
                              num_workers=_nw, pin_memory=True)
 
     model = make_model().to(device)
+    # WEIGHT_DECAY=0 by default — matches SGT train.py (plain Adam).
     optimizer = torch.optim.Adam(model.parameters(), lr=LR,
                                  weight_decay=WEIGHT_DECAY)
     criterion = nn.L1Loss()
-    # ASSUMPTION: no LR scheduler (matches train.py). If user wants
-    # exponential decay, add:
-    #   scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.98)
 
     per_epoch: list[dict] = []
     best_state = None
@@ -538,7 +613,11 @@ def run_fold(fold: dict, device: torch.device) -> dict:
 
             is_last = (batch_idx == n_total - 1)
             if ((batch_idx + 1) % ACCUM_STEPS == 0) or is_last:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                # SGT train.py does NOT clip. Opt-in via
+                # SOC_KFOLD_GRAD_CLIP=1.0 if you need it.
+                if GRAD_CLIP_MAX_NORM > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(),
+                                                    max_norm=GRAD_CLIP_MAX_NORM)
                 optimizer.step()
                 optimizer.zero_grad()
                 n_optim_steps += 1
