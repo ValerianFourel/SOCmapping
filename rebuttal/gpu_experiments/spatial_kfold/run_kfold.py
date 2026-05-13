@@ -647,6 +647,27 @@ def _worker_run_fold(fold_id: int):
 
 
 # --------------------------------------------------------------------------
+# Orchestrator helper — tail the most recent non-empty line of a log file
+# --------------------------------------------------------------------------
+def _tail_last_line(path: Path, max_bytes: int = 4096) -> str:
+    try:
+        if not path.exists():
+            return ''
+        size = path.stat().st_size
+        with open(path, 'rb') as f:
+            if size > max_bytes:
+                f.seek(-max_bytes, 2)
+            chunk = f.read()
+        text = chunk.decode('utf-8', errors='replace')
+        for line in reversed(text.splitlines()):
+            if line.strip():
+                return line.strip()
+    except OSError:
+        pass
+    return ''
+
+
+# --------------------------------------------------------------------------
 # Orchestrator — schedules folds across visible GPUs (one fold per GPU)
 # --------------------------------------------------------------------------
 def _orchestrate_folds(n_folds: int, gpu_ids: list[int]) -> list[Path]:
@@ -656,11 +677,14 @@ def _orchestrate_folds(n_folds: int, gpu_ids: list[int]) -> list[Path]:
     fold-id order."""
     pending = deque(range(n_folds))
     free_gpus = deque(gpu_ids)
-    running: dict[int, tuple[int, subprocess.Popen]] = {}   # gpu_id -> (fold_id, Popen)
+    # gpu_id -> dict(fold_id, proc, log_path, started)
+    running: dict[int, dict] = {}
     completed: dict[int, int] = {}                          # fold_id -> exit code
     log_dir = OUT_DIR / 'worker_logs'
     log_dir.mkdir(parents=True, exist_ok=True)
 
+    POLL_S, HEARTBEAT_S = 5, 60
+    last_heartbeat = 0.0
     t0 = time.time()
     while pending or running:
         # Dispatch as many pending folds as we have free GPUs
@@ -669,14 +693,14 @@ def _orchestrate_folds(n_folds: int, gpu_ids: list[int]) -> list[Path]:
             gpu_id = free_gpus.popleft()
             env = os.environ.copy()
             env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
-            # Don't let workers re-orchestrate by accident
             env['SOC_KFOLD_WORKER'] = '1'
             log_path = log_dir / f'fold_{fold_id}_gpu_{gpu_id}.log'
             log_fh = open(log_path, 'w')
             cmd = [sys.executable, str(Path(__file__).resolve()),
                    '--worker', '--fold', str(fold_id)]
             p = subprocess.Popen(cmd, env=env, stdout=log_fh, stderr=subprocess.STDOUT)
-            running[gpu_id] = (fold_id, p)
+            running[gpu_id] = {'fold_id': fold_id, 'proc': p,
+                               'log': log_path, 'started': time.time()}
             elapsed = time.time() - t0
             print(f'[orchestrator t+{elapsed/60:.1f}m] launched fold {fold_id} '
                   f'on GPU {gpu_id} (pid={p.pid}, log={log_path.name})',
@@ -684,21 +708,41 @@ def _orchestrate_folds(n_folds: int, gpu_ids: list[int]) -> list[Path]:
 
         # Reap any finished subprocesses
         finished_gpus = []
-        for gpu_id, (fold_id, proc) in running.items():
-            rc = proc.poll()
+        for gpu_id, w in running.items():
+            rc = w['proc'].poll()
             if rc is not None:
-                completed[fold_id] = rc
+                completed[w['fold_id']] = rc
                 finished_gpus.append(gpu_id)
                 elapsed = time.time() - t0
                 tag = 'OK' if rc == 0 else f'FAILED rc={rc}'
-                print(f'[orchestrator t+{elapsed/60:.1f}m] fold {fold_id} '
-                      f'on GPU {gpu_id} → {tag}', flush=True)
+                wdur = (time.time() - w['started']) / 60
+                print(f'[orchestrator t+{elapsed/60:.1f}m] fold {w["fold_id"]} '
+                      f'on GPU {gpu_id} → {tag} (worker ran {wdur:.1f} min)',
+                      flush=True)
         for gpu_id in finished_gpus:
             del running[gpu_id]
             free_gpus.append(gpu_id)
 
         if pending or running:
-            time.sleep(3)
+            time.sleep(POLL_S)
+
+        # Heartbeat: per-fold elapsed + last log line
+        now = time.time()
+        if running and (now - last_heartbeat) >= HEARTBEAT_S:
+            last_heartbeat = now
+            elapsed = now - t0
+            ok = sum(1 for rc in completed.values() if rc == 0)
+            fail = sum(1 for rc in completed.values() if rc != 0)
+            print(f'\n[orchestrator t+{elapsed/60:.1f}m] '
+                  f'{len(running)} fold(s) running, {ok} done, '
+                  f'{fail} failed, {len(pending)} pending:', flush=True)
+            for gpu_id, w in running.items():
+                wdur = (now - w['started']) / 60
+                last_line = _tail_last_line(w['log'])
+                print(f'  ▶ fold {w["fold_id"]} GPU {gpu_id} '
+                      f'pid={w["proc"].pid:<6} elapsed {wdur:5.1f} min   '
+                      f'last log: {last_line[:110]}', flush=True)
+            print('', flush=True)
 
     # Report any failures
     failures = [fid for fid, rc in completed.items() if rc != 0]

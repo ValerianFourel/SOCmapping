@@ -428,6 +428,29 @@ def validation_check(lons, lats, mc_mean):
 
 
 # --------------------------------------------------------------------------
+# Orchestrator helper — tail the most recent non-empty line of a log file
+# without loading the whole thing into memory. Used by the heartbeat
+# printer below.
+# --------------------------------------------------------------------------
+def _tail_last_line(path: Path, max_bytes: int = 4096) -> str:
+    try:
+        if not path.exists():
+            return ''
+        size = path.stat().st_size
+        with open(path, 'rb') as f:
+            if size > max_bytes:
+                f.seek(-max_bytes, 2)
+            chunk = f.read()
+        text = chunk.decode('utf-8', errors='replace')
+        for line in reversed(text.splitlines()):
+            if line.strip():
+                return line.strip()
+    except OSError:
+        pass
+    return ''
+
+
+# --------------------------------------------------------------------------
 # Worker mode — runs MC dropout on a single contiguous shard of the grid.
 # Invoked as a subprocess by the orchestrator with CUDA_VISIBLE_DEVICES
 # already restricted to one physical GPU.
@@ -539,7 +562,7 @@ def _orchestrate_shards(gpu_ids: list[int], max_points: int = 0,
 
     log_dir = OUT_DIR / 'worker_logs'
     log_dir.mkdir(parents=True, exist_ok=True)
-    running: list[tuple[int, subprocess.Popen, Path]] = []
+    running: list[dict] = []
     t0 = time.time()
     for shard_id, (gpu_id, idx_path) in enumerate(zip(gpu_ids, shard_index_files)):
         env = os.environ.copy()
@@ -553,27 +576,49 @@ def _orchestrate_shards(gpu_ids: list[int], max_points: int = 0,
         p = subprocess.Popen(cmd, env=env,
                              stdout=open(log_path, 'w'),
                              stderr=subprocess.STDOUT)
-        running.append((shard_id, p, log_path))
+        running.append({'shard_id': shard_id, 'gpu_id': gpu_id, 'proc': p,
+                        'log': log_path, 'started': time.time()})
         print(f'[orchestrator] launched shard {shard_id} on GPU {gpu_id} '
               f'(pid={p.pid}, log={log_path.name})', flush=True)
 
-    # Wait for them all
+    # Wait for them all — poll every 5s, heartbeat every 60s
     failed = []
+    POLL_S, HEARTBEAT_S = 5, 60
+    last_heartbeat = 0.0
     while running:
-        time.sleep(5)
+        time.sleep(POLL_S)
         still_running = []
-        for shard_id, p, log in running:
-            rc = p.poll()
+        for w in running:
+            rc = w['proc'].poll()
             if rc is None:
-                still_running.append((shard_id, p, log))
+                still_running.append(w)
             else:
                 elapsed = time.time() - t0
                 tag = 'OK' if rc == 0 else f'FAILED rc={rc}'
-                print(f'[orchestrator t+{elapsed/60:.1f}m] shard {shard_id} → {tag}',
-                      flush=True)
+                worker_dur = time.time() - w['started']
+                print(f'[orchestrator t+{elapsed/60:.1f}m] '
+                      f'shard {w["shard_id"]} on GPU {w["gpu_id"]} → {tag} '
+                      f'(worker ran {worker_dur/60:.1f} min)', flush=True)
                 if rc != 0:
-                    failed.append(shard_id)
+                    failed.append(w['shard_id'])
         running = still_running
+
+        # Heartbeat: brief status of every still-running shard
+        now = time.time()
+        if running and (now - last_heartbeat) >= HEARTBEAT_S:
+            last_heartbeat = now
+            elapsed = now - t0
+            print(f'\n[orchestrator t+{elapsed/60:.1f}m] '
+                  f'{len(running)} shard(s) still running, '
+                  f'{len(failed)} failed, {4 - len(running) - len(failed)} done so far:',
+                  flush=True)
+            for w in running:
+                wdur = (now - w['started']) / 60
+                last_line = _tail_last_line(w['log'])
+                print(f'  ▶ shard {w["shard_id"]:>2} GPU {w["gpu_id"]} '
+                      f'pid={w["proc"].pid:<6} elapsed {wdur:5.1f} min   '
+                      f'last log: {last_line[:110]}', flush=True)
+            print('', flush=True)
 
     if failed:
         raise RuntimeError(
