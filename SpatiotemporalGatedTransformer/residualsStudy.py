@@ -128,12 +128,21 @@ def run_inference(model, dataloader, target_transform, target_mean, target_std, 
     return np.array(all_outputs), np.array(all_targets), np.array(all_longitudes), np.array(all_latitudes)
 
 def calculate_metrics(predictions, targets):
-    """Calculate various performance metrics"""
+    """Calculate various performance metrics.
+
+    `r2` is the COEFFICIENT OF DETERMINATION (1 - SS_res/SS_tot) — what
+    scikit-learn's r2_score returns and what reviewers mean by "R²" for
+    regression on held-out data. Squared Pearson correlation is reported
+    alongside as `pearson_r2` for continuity; the two diverge when
+    predictions are biased or systematically rescaled.
+    """
     residuals = targets - predictions
 
-    # Calculate R² as squared correlation coefficient
-    correlation_coeff = np.corrcoef(targets, predictions)[0, 1]
-    r2 = correlation_coeff ** 2
+    correlation_coeff = float(np.corrcoef(targets, predictions)[0, 1])
+    pearson_r2 = correlation_coeff ** 2
+    ss_res = float(np.sum((targets - predictions) ** 2))
+    ss_tot = float(np.sum((targets - np.mean(targets)) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float('nan')
 
     rmse = np.sqrt(mean_squared_error(targets, predictions))
     mae = mean_absolute_error(targets, predictions)
@@ -143,6 +152,8 @@ def calculate_metrics(predictions, targets):
     return {
         'residuals': residuals,
         'r2': r2,
+        'pearson_r': correlation_coeff,
+        'pearson_r2': pearson_r2,
         'rmse': rmse,
         'mae': mae,
         'rpiq': rpiq,

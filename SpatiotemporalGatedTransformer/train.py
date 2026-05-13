@@ -197,12 +197,21 @@ def train_model(model, train_loader, val_loader,target_mean,target_std, num_epoc
                     accelerator.print("Max of original_val_outputs:", max_outputs)
                     accelerator.print("Min of original_val_targets:", min_targets)
                     accelerator.print("Max of original_val_targets:", max_targets)
-                # Compute metrics on original scale
+                # Compute metrics on original scale.
+                # `r_squared` is the COEFFICIENT OF DETERMINATION (1 - SS_res/SS_tot),
+                # which is what scikit-learn's r2_score reports and what reviewers mean by
+                # R² for regression on held-out data. Squared Pearson correlation is kept
+                # alongside as `pearson_r2` for continuity with v1 reporting; the two
+                # agree only when predictions are unbiased and identically scaled.
                 if len(original_val_outputs) > 1 and np.std(original_val_outputs) > 1e-6 and np.std(original_val_targets) > 1e-6:
-                    correlation = np.corrcoef(original_val_outputs, original_val_targets)[0, 1]
-                    r_squared = correlation ** 2
+                    correlation = float(np.corrcoef(original_val_outputs, original_val_targets)[0, 1])
+                    pearson_r2 = correlation ** 2
+                    ss_res = float(np.sum((original_val_targets - original_val_outputs) ** 2))
+                    ss_tot = float(np.sum((original_val_targets - np.mean(original_val_targets)) ** 2))
+                    r_squared = 1.0 - ss_res / ss_tot if ss_tot > 0 else float('nan')
                 else:
                     correlation = 0.0
+                    pearson_r2 = 0.0
                     r_squared = 0.0
                 mse = np.mean((original_val_outputs - original_val_targets) ** 2)
                 rmse = np.sqrt(mse)
@@ -219,6 +228,7 @@ def train_model(model, train_loader, val_loader,target_mean,target_std, num_epoc
             else:
                 val_loss = float('nan')
                 correlation = float('nan')
+                pearson_r2 = float('nan')
                 r_squared = float('nan')
                 mse = float('nan')
                 rmse = float('nan')
@@ -229,6 +239,7 @@ def train_model(model, train_loader, val_loader,target_mean,target_std, num_epoc
             val_outputs = np.array([])
             val_targets_list = np.array([])
             correlation = float('nan')
+            pearson_r2 = float('nan')
             r_squared = 1.0
             mse = float('nan')
             rmse = float('nan')
@@ -241,6 +252,7 @@ def train_model(model, train_loader, val_loader,target_mean,target_std, num_epoc
                 'train_loss_avg': train_loss,
                 'val_loss': val_loss,
                 'correlation': correlation,
+                'pearson_r2': pearson_r2,
                 'r_squared': r_squared,
                 'mse': mse,
                 'rmse': rmse,

@@ -191,6 +191,7 @@ def train_model(args, model, train_loader, val_loader, num_epochs=100, target_tr
 
                 if output_std < 1e-6 or target_std < 1e-6:
                     correlation = 0.0
+                    pearson_r2 = 0.0
                     r_squared = 0.0
                     mse = float('nan')
                     rmse = float('nan')
@@ -198,9 +199,16 @@ def train_model(args, model, train_loader, val_loader, num_epochs=100, target_tr
                     rpiq = float('nan')
                     accelerator.print(f"Epoch {epoch+1}: No variability in outputs or targets")
                 else:
+                    # `r_squared` is COEFFICIENT OF DETERMINATION (1 - SS_res/SS_tot),
+                    # not squared Pearson correlation. Pearson² kept as `pearson_r2`.
                     corr_matrix = np.corrcoef(original_outputs.flatten(), val_original_targets.flatten())
-                    correlation = corr_matrix[0, 1] if not np.isnan(corr_matrix[0, 1]) else 0.0
-                    r_squared = correlation ** 2
+                    correlation = float(corr_matrix[0, 1]) if not np.isnan(corr_matrix[0, 1]) else 0.0
+                    pearson_r2 = correlation ** 2
+                    _flat_pred = original_outputs.flatten()
+                    _flat_targ = val_original_targets.flatten()
+                    ss_res = float(np.sum((_flat_targ - _flat_pred) ** 2))
+                    ss_tot = float(np.sum((_flat_targ - np.mean(_flat_targ)) ** 2))
+                    r_squared = 1.0 - ss_res / ss_tot if ss_tot > 0 else float('nan')
                     mse = np.mean((original_outputs - val_original_targets) ** 2) if not np.any(np.isnan(original_outputs)) else float('nan')
                     rmse = np.sqrt(mse) if not np.isnan(mse) else float('nan')
                     mae = np.mean(np.abs(original_outputs - val_original_targets)) if not np.any(np.isnan(original_outputs)) else float('nan')
@@ -231,6 +239,7 @@ def train_model(args, model, train_loader, val_loader, num_epochs=100, target_tr
                         'train_loss': train_loss,
                         'val_loss': val_loss,
                         'correlation': correlation,
+                        'pearson_r2': pearson_r2,
                         'r_squared': r_squared,
                         'mse': mse,
                         'rmse': rmse,

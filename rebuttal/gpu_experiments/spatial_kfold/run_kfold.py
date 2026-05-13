@@ -687,17 +687,30 @@ def run_fold(fold: dict, device: torch.device) -> dict:
         val_loss = val_running / max(n_val_b, 1)
         pred_orig = invert_target(np.concatenate(preds))
         targ_orig = np.concatenate(targets)
-        r2 = float(np.corrcoef(pred_orig, targ_orig)[0, 1] ** 2)
+        # `val_r2` is the COEFFICIENT OF DETERMINATION (1 - SS_res/SS_tot) —
+        # the scientifically meaningful R² for held-out data. Squared
+        # Pearson correlation is kept alongside as `val_pearson_r2` for
+        # continuity with v1 reporting; the two diverge whenever
+        # predictions are biased or systematically rescaled (typical in
+        # spatial extrapolation).
+        pearson_r = float(np.corrcoef(pred_orig, targ_orig)[0, 1])
+        val_pearson_r2 = pearson_r ** 2
+        ss_res = float(np.sum((targ_orig - pred_orig) ** 2))
+        ss_tot = float(np.sum((targ_orig - np.mean(targ_orig)) ** 2))
+        r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float('nan')
         rmse = float(np.sqrt(np.mean((pred_orig - targ_orig) ** 2)))
         mae = float(np.mean(np.abs(pred_orig - targ_orig)))
+        bias = float((pred_orig - targ_orig).mean())
 
         rec = {'epoch': epoch + 1, 'train_loss': train_loss,
                'val_loss': val_loss, 'val_r2': r2,
-               'val_rmse': rmse, 'val_mae': mae}
+               'val_pearson_r2': val_pearson_r2, 'val_pearson_r': pearson_r,
+               'val_rmse': rmse, 'val_mae': mae, 'val_bias': bias}
         per_epoch.append(rec)
         print(f'Fold {fold_id} | Epoch {epoch+1}/{N_EPOCHS} | '
-              f'train_loss={train_loss:.4f} | val_R²={r2:.4f} | '
-              f'val_RMSE={rmse:.3f}', flush=True)
+              f'train_loss={train_loss:.4f} | val_R²={r2:.4f} '
+              f'(Pearson²={val_pearson_r2:.4f}) | '
+              f'val_RMSE={rmse:.3f} | bias={bias:+.3f}', flush=True)
 
         if r2 > best_r2 and not np.isnan(r2):
             best_r2 = r2
@@ -745,10 +758,16 @@ def run_fold(fold: dict, device: torch.device) -> dict:
     test_lon = np.concatenate(all_lon)
     test_lat = np.concatenate(all_lat)
 
-    # Final metrics
-    r2 = float(np.corrcoef(test_pred, test_actual)[0, 1] ** 2)
+    # Final metrics — `r2` is COEFFICIENT OF DETERMINATION (1 - SS_res/SS_tot).
+    # Squared Pearson correlation kept as `pearson_r2` for continuity.
+    pearson_r_final = float(np.corrcoef(test_pred, test_actual)[0, 1])
+    pearson_r2 = pearson_r_final ** 2
+    ss_res = float(np.sum((test_actual - test_pred) ** 2))
+    ss_tot = float(np.sum((test_actual - test_actual.mean()) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float('nan')
     rmse = float(np.sqrt(np.mean((test_pred - test_actual) ** 2)))
     mae = float(np.mean(np.abs(test_pred - test_actual)))
+    bias = float((test_pred - test_actual).mean())
     q1, q3 = np.percentile(test_actual, [25, 75])
     rpiq = float((q3 - q1) / rmse) if rmse > 0 else float('inf')
 
@@ -767,7 +786,8 @@ def run_fold(fold: dict, device: torch.device) -> dict:
         'test_oc_std': float(test_df.OC.std()),
         'test_oc_max': float(test_df.OC.max()),
         'test_pct_gt_50': float(100 * (test_df.OC > 50).mean()),
-        'r2': r2, 'rmse': rmse, 'mae': mae, 'rpiq': rpiq,
+        'r2': r2, 'pearson_r2': pearson_r2, 'pearson_r': pearson_r_final,
+        'rmse': rmse, 'mae': mae, 'bias': bias, 'rpiq': rpiq,
         'best_epoch_r2_during_training': best_r2,
         '_predictions': {
             'lon': test_lon, 'lat': test_lat,
