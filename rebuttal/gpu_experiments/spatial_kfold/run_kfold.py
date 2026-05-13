@@ -217,7 +217,10 @@ DIST_THRESHOLD_KM = 1.2          # match train.py / config
 EARTH_RADIUS_KM = 6371.0
 N_EPOCHS = int(num_epochs)       # 270 from config (use_validation=True)
 BATCH_SIZE = 256
-LR = 2e-4                        # matches SGT train.py CLI default (--lr 0.0002)
+LR = float(os.environ.get('SOC_KFOLD_LR', 1e-4))  # reduced from train.py's 2e-4
+                                                   # to help SimpleSGT converge at
+                                                   # effective batch 2048. Override via
+                                                   # SOC_KFOLD_LR=5e-5 / 2e-4 / etc.
 WEIGHT_DECAY = 0.0               # matches SGT train.py — Adam plain, no weight decay
 DROPOUT = 0.3
 SEED_BASE = 42
@@ -576,7 +579,8 @@ def run_fold(fold: dict, device: torch.device) -> dict:
     print(f'Training: BATCH_SIZE={BATCH_SIZE} × ACCUM_STEPS={ACCUM_STEPS} '
           f'→ effective batch = {EFFECTIVE_BATCH}; '
           f'≈ {expected_steps_per_epoch} optimizer.step() calls per epoch '
-          f'(was {(len(train_df) + BATCH_SIZE - 1) // BATCH_SIZE} without accumulation)',
+          f'(was {(len(train_df) + BATCH_SIZE - 1) // BATCH_SIZE} without accumulation)  '
+          f'LR={LR:g}',
           flush=True)
 
     # Feature normalisation — matches SGT train.py: stats computed ONCE
