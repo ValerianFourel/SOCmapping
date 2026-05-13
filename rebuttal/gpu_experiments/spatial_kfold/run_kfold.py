@@ -57,8 +57,17 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 
 # ----- Path setup ---------------------------------------------------------
-PROJECT_ROOT = Path('/home/valerian/SGTPublication')
-SGT_DIR = PROJECT_ROOT / 'SOCmapping' / 'SpatiotemporalGatedTransformer'
+# Resolve abstract roots (env vars + walk-up + legacy fallback).
+# rebuttal/gpu_experiments/spatial_kfold/run_kfold.py is 3 levels deep
+# inside SOCmapping/ → walk up to import _paths.
+_THIS = Path(__file__).resolve()
+SOC_CODE_DIR = _THIS.parent.parent.parent.parent          # SOCmapping/
+sys.path.insert(0, str(SOC_CODE_DIR))
+from _paths import (  # noqa: E402
+    SOC_DATA_DIR, SOC_WEIGHTS_DIR, SOC_REBUTTAL_DIR, describe as _describe_paths,
+)
+
+SGT_DIR = SOC_CODE_DIR / 'SpatiotemporalGatedTransformer'
 sys.path.insert(0, str(SGT_DIR))
 sys.path.insert(0, str(SGT_DIR / 'dataloader'))
 
@@ -77,9 +86,11 @@ from config import (  # noqa: E402
     window_size,
 )
 
+print(_describe_paths(), flush=True)
+
 # ----- Configuration ------------------------------------------------------
-OUT_DIR = Path('/home/valerian/SGTPublication/rebuttal/gpu_experiments/spatial_kfold')
-MODEL_READY = Path('/home/valerian/SGTPublication/rebuttal/model_ready_dataset.parquet')
+OUT_DIR = SOC_REBUTTAL_DIR / 'gpu_experiments' / 'spatial_kfold'
+MODEL_READY = SOC_REBUTTAL_DIR / 'model_ready_dataset.parquet'
 
 # Single-split baseline (hardcoded from rebuttal_numbers.md for the report)
 ORIGINAL_SINGLE_SPLIT = {

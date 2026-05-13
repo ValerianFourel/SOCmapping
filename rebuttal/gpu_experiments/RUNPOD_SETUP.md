@@ -175,42 +175,64 @@ hf download \
 
 ---
 
-## 6. Point the codebase at the data + weights paths
+## 6. Tell the codebase where things live (env vars, not symlinks)
 
-The `config.py` files hard-code `/home/valerian/SGTPublication/Data/`
-and the scripts in `rebuttal/` reference
-`/home/valerian/SGTPublication/Weights-ResidualsModels-MappingInference-SOCmapping/`.
-Easiest fix: **symlink** instead of editing source. One pair of `ln -s`
-keeps every script working unmodified.
+As of the *"Abstract path resolution"* commit, every absolute path in
+`SpatiotemporalGatedTransformer/config.py`, `balancedDataset/config.py`,
+and the GPU experiment scripts is resolved through `SOCmapping/_paths.py`
+in this order:
 
-```bash
-mkdir -p /home/valerian/SGTPublication
+1. component-specific env var (`SOC_DATA_DIR`, `SOC_WEIGHTS_DIR`, …)
+2. `SOC_PROJECT_ROOT` + child (e.g. `$SOC_PROJECT_ROOT/Data`)
+3. walk-up search from `__file__` for a sibling `Data/` /
+   `Weights-Residuals…/` / `SOCmapping/`
+4. the historical hardcoded `/home/valerian/SGTPublication/…` default
 
-# NOTE: the dataset zip extracts into /workspace/SOC/Data/Data/ (the zip
-# wraps everything in a "Data/" folder). Point the symlink at the inner
-# directory so the codebase's hard-coded /home/valerian/SGTPublication/Data/...
-# paths resolve correctly. If you already flattened the layout, replace
-# "/workspace/SOC/Data/Data" with "/workspace/SOC/Data" below.
-ln -s /workspace/SOC/Data/Data /home/valerian/SGTPublication/Data
-ln -s /workspace/SOC/Weights /home/valerian/SGTPublication/Weights-ResidualsModels-MappingInference-SOCmapping
-ln -s /workspace/SOC/SOCmapping /home/valerian/SGTPublication/SOCmapping
-ln -s /workspace/SOC/SOCmapping/rebuttal /home/valerian/SGTPublication/rebuttal
-```
-
-After this:
+On Runpod where the clone lives at `/workspace/SOC/SOCmapping/`, the
+walk-up automatically picks up `/workspace/SOC/Data` and
+`/workspace/SOC/Weights-…/` as siblings — usually you don't need any
+env vars at all. If your layout differs (e.g. data on a different
+mount), set the override and add it to `~/.bashrc`:
 
 ```bash
-ls -la /home/valerian/SGTPublication/Data/LUCAS_LFU_Lfl_00to23_Bavaria_OC.xlsx
-ls -la /home/valerian/SGTPublication/Weights-ResidualsModels-MappingInference-SOCmapping/TemporalFusionTransformer/finalResults2023_1milVersion_TRANSFORM_log_LOSS_l1/
-```
-Both must resolve (symlinks shown with `->`).
+# Single root containing Data/, Weights-…/, SOCmapping/ as siblings
+export SOC_PROJECT_ROOT=/workspace/SOC
+echo 'export SOC_PROJECT_ROOT=/workspace/SOC' >> ~/.bashrc
 
-> **If you don't want symlinks:** open
-> `SOCmapping/SpatiotemporalGatedTransformer/config.py` and change
-> `base_path_data = '/home/valerian/SGTPublication/Data'` to
-> `base_path_data = '/workspace/SOC/Data'`. Then also edit the four
-> `MODEL_B_PATH` / `MODEL_READY` / `PRED_PATH` etc. constants at the top
-> of each rebuttal script.
+# Or override one component at a time:
+# export SOC_DATA_DIR=/mnt/external/SOC_data
+# export SOC_WEIGHTS_DIR=/mnt/external/SOC_weights
+# export SOC_REBUTTAL_DIR=/workspace/SOC/SOCmapping/rebuttal
+# export SOC_COORDS_1MIL_CSV=/path/to/coordinates_Bavaria_1mil.csv
+```
+
+> The dataset zip wraps everything in a top-level `Data/`, so on Runpod
+> the actual data sits at `/workspace/SOC/Data/Data/`. Either flatten
+> it (`cd /workspace/SOC/Data && mv Data/* Data/.[!.]* . && rmdir Data`)
+> or set `SOC_DATA_DIR=/workspace/SOC/Data/Data` explicitly.
+
+Verify everything resolves:
+
+```bash
+python /workspace/SOC/SOCmapping/_paths.py
+# Should print all 5 roots with ✓ markers (no ✗ MISSING)
+
+python -c "
+import sys; sys.path.insert(0, '/workspace/SOC/SOCmapping/SpatiotemporalGatedTransformer')
+import config, os
+for k in ('file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC',
+          'file_path_coordinates_Bavaria_1mil'):
+    v = getattr(config, k)
+    print(f'{k}\n  → {v}\n  exists? {os.path.exists(v)}')"
+```
+
+Both file paths must show `exists? True`.
+
+> The symlink trick (`ln -s /workspace/SOC/Data /home/valerian/SGTPublication/Data`)
+> still works as a fallback if you'd rather not set env vars — the
+> resolver will pick the symlinked path first via the legacy default.
+> But the env-var approach is preferred because it travels with the
+> shell session and doesn't require root for `mkdir -p /home/valerian`.
 
 ---
 

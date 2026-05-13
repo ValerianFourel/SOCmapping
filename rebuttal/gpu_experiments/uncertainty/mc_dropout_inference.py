@@ -60,8 +60,14 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 # ----- Path setup ---------------------------------------------------------
-PROJECT_ROOT = Path('/home/valerian/SGTPublication')
-SGT_DIR = PROJECT_ROOT / 'SOCmapping' / 'SpatiotemporalGatedTransformer'
+_THIS = Path(__file__).resolve()
+SOC_CODE_DIR = _THIS.parent.parent.parent.parent       # SOCmapping/
+sys.path.insert(0, str(SOC_CODE_DIR))
+from _paths import (  # noqa: E402
+    SOC_DATA_DIR, SOC_WEIGHTS_DIR, SOC_REBUTTAL_DIR, describe as _describe_paths,
+)
+
+SGT_DIR = SOC_CODE_DIR / 'SpatiotemporalGatedTransformer'
 sys.path.insert(0, str(SGT_DIR))
 
 from EnhancedSGT import EnhancedSGT  # noqa: E402
@@ -87,13 +93,12 @@ from config import (  # noqa: E402
 )
 
 # ----- Configuration ------------------------------------------------------
-MODEL_B_PATH = Path(
-    '/home/valerian/SGTPublication/Weights-ResidualsModels-MappingInference-SOCmapping/'
+MODEL_B_PATH = SOC_WEIGHTS_DIR / (
     'TemporalFusionTransformer/finalResults2023_1milVersion_TRANSFORM_log_LOSS_l1/'
     'TFT_model_BEST_OVERALL_from_run_1_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_'
     'TRANSFORM_log_LOSS_l1_R2_1.0000.pth'
 )
-OUT_DIR = Path('/home/valerian/SGTPublication/rebuttal/gpu_experiments/uncertainty')
+OUT_DIR = SOC_REBUTTAL_DIR / 'gpu_experiments' / 'uncertainty'
 N_PASSES = 30
 BATCH_SIZE = 256
 NUM_WORKERS = 4
@@ -558,6 +563,7 @@ def main():
         return
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+    print(_describe_paths(), flush=True)
 
     # ----- Pick GPUs -----
     if args.gpus:

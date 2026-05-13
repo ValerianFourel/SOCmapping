@@ -68,18 +68,50 @@ hf download ValerianFourel/Weights-ResidualsModels-MappingInference-SOCmapping \
 find . -name "*.pth" -size +1M                # expect 2 .pth files
 ```
 
-## 6 — Symlinks (so hard-coded `/home/valerian/...` paths resolve)
+## 6 — Tell the codebase where things live (no more symlinks)
+
+`config.py` and the GPU scripts read the four abstract roots from env
+vars + a walk-up fallback (`SOCmapping/_paths.py`). On Runpod where the
+clone lives at `/workspace/SOC/SOCmapping/`, the walk-up resolves the
+sibling `Data/` and `Weights-…/` automatically — usually no env vars
+needed.
+
+If your layout differs (e.g. SOC_DATA_DIR on a separate volume), set
+the relevant overrides. Add them to `~/.bashrc` so they persist:
 
 ```bash
-mkdir -p /home/valerian/SGTPublication
-ln -s /workspace/SOC/Data/Data /home/valerian/SGTPublication/Data
-ln -s /workspace/SOC/Weights /home/valerian/SGTPublication/Weights-ResidualsModels-MappingInference-SOCmapping
-ln -s /workspace/SOC/SOCmapping /home/valerian/SGTPublication/SOCmapping
-ln -s /workspace/SOC/SOCmapping/rebuttal /home/valerian/SGTPublication/rebuttal
+# Project root containing Data/, Weights-…/, SOCmapping/ as siblings
+export SOC_PROJECT_ROOT=/workspace/SOC
 
-# Verify (no broken symlinks)
-ls /home/valerian/SGTPublication/Data/LUCAS_LFU_Lfl_00to23_Bavaria_OC.xlsx
-ls /home/valerian/SGTPublication/Weights-ResidualsModels-MappingInference-SOCmapping/TemporalFusionTransformer/finalResults2023_1milVersion_TRANSFORM_log_LOSS_l1/
+# Or per-component (overrides PROJECT_ROOT for that one)
+# export SOC_DATA_DIR=/workspace/SOC/Data
+# export SOC_WEIGHTS_DIR=/workspace/SOC/Weights
+# export SOC_REBUTTAL_DIR=/workspace/SOC/SOCmapping/rebuttal
+# export SOC_COORDS_1MIL_CSV=/workspace/SOC/Data/Coordinates1Mil/coordinates_Bavaria_1mil.csv
+
+echo 'export SOC_PROJECT_ROOT=/workspace/SOC' >> ~/.bashrc
+```
+
+> The dataset zip wraps everything in a top-level `Data/`, so on Runpod
+> the actual data sits at `/workspace/SOC/Data/Data/`. Either flatten it
+> (`cd /workspace/SOC/Data && mv Data/* Data/.[!.]* . && rmdir Data`) or
+> set `SOC_DATA_DIR=/workspace/SOC/Data/Data` explicitly.
+
+Verify:
+
+```bash
+python /workspace/SOC/SOCmapping/_paths.py
+# Should print all four roots with ✓ markers (no ✗ MISSING)
+
+# And from the SGT config, the actual file paths should resolve:
+python -c "
+import sys; sys.path.insert(0, '/workspace/SOC/SOCmapping/SpatiotemporalGatedTransformer')
+import config
+import os
+for k in ('file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC',
+          'file_path_coordinates_Bavaria_1mil'):
+    v = getattr(config, k)
+    print(f'{k}\n  → {v}\n  exists? {os.path.exists(v)}')"
 ```
 
 ## 7 — Build venv (auto-detects CUDA, ≈ 3 GB)

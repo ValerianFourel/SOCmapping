@@ -1,6 +1,13 @@
 
 
-base_path_data = '/home/valerian/SGTPublication/Data'
+# Path resolution — env-var-overridable, walk-up fallback. See SOCmapping/_paths.py.
+import os as _os
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+from _paths import SOC_DATA_DIR_STR as _SOC_DATA_DIR_STR  # noqa: E402
+
+base_path_data = _SOC_DATA_DIR_STR
 
 file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC = f"{base_path_data}/LUCAS_LFU_Lfl_00to23_Bavaria_OC.xlsx"
 
@@ -16,9 +23,16 @@ MAX_OC = 150
 num_epochs = 100
 LOADING_TIME_BEGINNING_INFERENCE = str(int(INFERENCE_TIME)-time_before)
 NUM_LAYERS = 2
-NUM_HEADS = 8 
-save_path_predictions_plots = '/home/vfourel/SOCProject/SOCmapping/predictions_plots/simpleTransformer_plots'
-file_path_coordinates_Bavaria_1mil = "/home/vfourel/SOCProject/SOCmapping/Data/Coordinates1Mil/coordinates_Bavaria_1mil.csv"
+NUM_HEADS = 8
+
+save_path_predictions_plots = _os.environ.get(
+    'SOC_PREDICTIONS_PLOTS_DIR',
+    f"{base_path_data}/../predictions_plots/simpleTransformer_plots",
+)
+file_path_coordinates_Bavaria_1mil = _os.environ.get(
+    'SOC_COORDS_1MIL_CSV',
+    f"{base_path_data}/Coordinates1Mil/coordinates_Bavaria_1mil.csv",
+)
 PICTURE_VERSION = f"{str(num_epochs)}_{str(MAX_OC)}_{INFERENCE_TIME}_version"
 
 

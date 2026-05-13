@@ -18,7 +18,12 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 
-OUT_DIR = Path('/home/valerian/SGTPublication/rebuttal/gpu_experiments/uncertainty')
+_THIS = Path(__file__).resolve()
+SOC_CODE_DIR = _THIS.parent.parent.parent.parent       # SOCmapping/
+sys.path.insert(0, str(SOC_CODE_DIR))
+from _paths import SOC_CODE_DIR as _SOC_CODE_DIR, SOC_REBUTTAL_DIR  # noqa: E402
+
+OUT_DIR = SOC_REBUTTAL_DIR / 'gpu_experiments' / 'uncertainty'
 MEAN_TIF = OUT_DIR / 'SGT_1mil_2023_mean_mc30.tif'
 STD_TIF = OUT_DIR / 'SGT_1mil_2023_std_mc30.tif'
 
@@ -52,9 +57,9 @@ def maybe_load_bavaria_outline():
         import geopandas as gpd
         # ASSUMPTION: bavaria.geojson exists in the project dir
         for cand in (
-            Path('/home/valerian/SGTPublication/SOCmapping/SpatiotemporalGatedTransformer/bavaria.geojson'),
-            Path('/home/valerian/SGTPublication/SOCmapping/Maps/bavaria.geojson'),
-            Path('/home/valerian/SGTPublication/SOCmapping/balancedDataset/bavaria.geojson'),
+            _SOC_CODE_DIR / 'SpatiotemporalGatedTransformer' / 'bavaria.geojson',
+            _SOC_CODE_DIR / 'Maps' / 'bavaria.geojson',
+            _SOC_CODE_DIR / 'balancedDataset' / 'bavaria.geojson',
         ):
             if cand.exists():
                 bav = gpd.read_file(cand)
