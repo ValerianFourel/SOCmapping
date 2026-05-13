@@ -40,12 +40,12 @@ class name, and the full args dict in its serialized payload — so any single
 From `SOCmapping/SpatiotemporalGatedTransformer/`:
 
 ```bash
-# Big model (Model A architecture, 1,120,546 params, EnhancedSGT defaults:
-#   d_model=128, num_heads=4, num_encoder_layers=3, expansion_factor=4)
+# Big model (Model A architecture, EnhancedSGT:
+#   d_model=128, num_heads=8, num_encoder_layers=2, expansion_factor=4)
 accelerate launch --num_processes 4 train.py \
     --rebuttal --model-size big --num-runs 4
 
-# Small model (SimpleSGT, 360,593 params at d_model=128, num_heads=2, 1 transformer layer)
+# Small model (SimpleSGT, d_model=128, num_heads=2, 1 transformer layer)
 accelerate launch --num_processes 4 train.py \
     --rebuttal --model-size small --num-runs 4
 ```
@@ -64,8 +64,8 @@ not need to pass them):
 | `--target-fraction` | `0.75` |
 | `--use_validation` | `True` |
 | `--save_train_and_val` | `True` |
-| `--num_heads` | `4` for big / `2` for small |
-| `--num_layers` | `3` for big (= EnhancedSGT `num_encoder_layers=3`) / `1` for small |
+| `--num_heads` | `8` for big / `2` for small |
+| `--num_layers` | `2` for big (= EnhancedSGT `num_encoder_layers=2`) / `1` for small |
 | effective batch | `num_processes × per-gpu-batch-size × accum_steps` (auto-scales to 2048) |
 
 You can still control parallelism via `--num_processes` / `--per-gpu-batch-size`,

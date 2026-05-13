@@ -17,14 +17,11 @@ from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,NUM_EPOCHS_
                    MatrixCoordinates_1mil_Seasonally, DataSeasonally, window_size,
                    file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC, time_before)
 # SGT model variants — selected at runtime via --model-size:
-#   small → SimpleSGT  (~360k params at d_model=128, num_heads=2,
-#                        1 transformer layer, no BatchNorm)
-#   big   → EnhancedSGT (~1,120,546 params at d_model=128, num_heads=4,
-#                        num_encoder_layers=3, expansion_factor=4 —
-#                        the EnhancedSGT class defaults). The historic
-#                        wandb run (rxeolg7e, 2025-05-26, val R²=0.755)
-#                        used the big variant — that's "Model A" from
-#                        Table 2.
+#   small → SimpleSGT  at d_model=128, num_heads=2, num_encoder_layers=1
+#   big   → EnhancedSGT at d_model=128, num_heads=8, num_encoder_layers=2
+#           — matches the historic wandb run rxeolg7e (2025-05-26) which
+#           is "Model A" from Table 2. DO NOT MODIFY these architecture
+#           kwargs without explicit ask.
 from SimpleSGT import SimpleSGT
 from EnhancedSGT import EnhancedSGT
 import argparse
@@ -70,11 +67,9 @@ def parse_args():
     parser.add_argument('--model-size', type=str, default='big',
                         choices=['small', 'big'],
                         help='SGT variant: "small" = SimpleSGT '
-                             '(360,593 params at d_model=128, num_heads=2, '
-                             '1 transformer layer); '
-                             '"big" = EnhancedSGT (1,120,546 params at '
-                             'd_model=128, num_heads=4, num_encoder_layers=3 '
-                             '— EnhancedSGT class defaults, matches Model A).')
+                             '(d_model=128, num_heads=2, num_encoder_layers=1); '
+                             '"big" = EnhancedSGT (d_model=128, num_heads=8, '
+                             'num_encoder_layers=2) — matches Model A architecture.')
     # --- Gradient-accumulation knobs -------------------------------------
     # Target effective batch = num_GPUs × per_gpu_batch × accum_steps. The
     # historic 8-GPU training (wandb run rxeolg7e, R²=0.755) used
@@ -448,14 +443,10 @@ def _resolve_rebuttal_preset(args):
     --num-runs and per-gpu-batch-size to control parallelism; everything
     else is locked.
 
-    NOTE on big-model architecture:
-      The historic wandb run (rxeolg7e, 2025-05-26) logged num_heads=8,
-      num_layers=2 in its CLI args, but the model_parameters field shows
-      1,120,546 — which only matches EnhancedSGT's CLASS DEFAULTS
-      (num_heads=4, num_encoder_layers=3). The training code at the time
-      called `EnhancedSGT(d_model=hidden_size)` without forwarding the
-      args, so the defaults are what actually got used. We replicate that
-      here.
+    Architecture (DO NOT MODIFY without explicit ask):
+      big   → EnhancedSGT, num_heads=8, num_encoder_layers=2
+              (matches the historic wandb run rxeolg7e CLI args)
+      small → SimpleSGT, num_heads=2, num_encoder_layers=1
     """
     if not args.rebuttal:
         return args
@@ -469,12 +460,9 @@ def _resolve_rebuttal_preset(args):
     args.use_validation = True
     args.save_train_and_val = True
     if args.model_size == 'big':
-        # EnhancedSGT class defaults — these give the historic 1,120,546-param
-        # model that Model A v2 was built from.
-        args.num_heads = 4
-        args.num_layers = 3   # → EnhancedSGT(num_encoder_layers=3)
+        args.num_heads = 8
+        args.num_layers = 2
     else:
-        # SimpleSGT at d_model=128 (config.hidden_size) = 360,593 params.
         args.num_heads = 2
         args.num_layers = 1
     return args
