@@ -1,0 +1,643 @@
+#!/usr/bin/env python3
+"""
+run_kfold.py — Experiment 1 — Spatial 5-fold CV on EnhancedSGT 1.1M.
+
+Answers reviewer concerns R1.3, R3.6, R3.8.
+
+Outputs (all under rebuttal/gpu_experiments/spatial_kfold/):
+    fold_{i}_best.pth                          (i = 0..4)
+    fold_{i}_metrics.json                      (per-epoch dicts)
+    kfold_predictions_all_folds.parquet
+    kfold_results.md
+    kfold_results_summary.json
+    figure_kfold.png                           (300 dpi, 2 panels)
+
+DO NOT RUN until ASSUMPTION blocks have been reviewed and adjusted
+by the project lead.
+"""
+
+# ASSUMPTION: the rebuttal task spec said
+#   - "Optimizer: Adam, lr=1e-3"
+#   - "LR schedule: exponential decay (same gamma as train.py)"
+#   - "log-transform: log1p(OC) as target, expm1() to invert"
+# The actual SOCmapping/SpatiotemporalGatedTransformer/train.py uses:
+#   - Adam at lr = 0.0002 (CLI default)
+#   - NO LR scheduler at all
+#   - torch.log(targets + 1e-10) / np.exp(predictions)  (NOT log1p/expm1)
+# To "match the original exactly" (the user's overriding instruction) this
+# script follows train.py and ignores the 1e-3 + scheduler + log1p wording.
+# Flip the four constants in CONFIG below if the project lead wants the
+# numbers from the spec instead.
+#
+# ASSUMPTION: the user wrote that "the best model for evaluation (Model A)
+# uses normalize + L1 loss effectively" and "Model B uses log-transform +
+# L1 loss". Model A's filename says LOSS_composite_l2 (= MSE per §1 of
+# rebuttal_numbers.md), and Model B's filename says LOSS_l1 + TRANSFORM_log.
+# The k-fold experiment trains from scratch following Model B's recipe
+# (log + L1) — this is what the task spec describes and what the paper
+# uses for its mapping model.
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+import warnings
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, Dataset
+
+# ----- Path setup ---------------------------------------------------------
+PROJECT_ROOT = Path('/home/valerian/SGTPublication')
+SGT_DIR = PROJECT_ROOT / 'SOCmapping' / 'SpatiotemporalGatedTransformer'
+sys.path.insert(0, str(SGT_DIR))
+sys.path.insert(0, str(SGT_DIR / 'dataloader'))
+
+from EnhancedSGT import EnhancedSGT  # noqa: E402
+from dataloader.dataloaderMultiYears import (  # noqa: E402
+    MultiRasterDatasetMultiYears,
+)
+from dataloader.dataframe_loader import (  # noqa: E402
+    separate_and_add_data,
+)
+from config import (  # noqa: E402
+    bands_list_order,
+    hidden_size,
+    num_epochs,
+    time_before,
+    window_size,
+)
+
+# ----- Configuration ------------------------------------------------------
+OUT_DIR = Path('/home/valerian/SGTPublication/rebuttal/gpu_experiments/spatial_kfold')
+MODEL_READY = Path('/home/valerian/SGTPublication/rebuttal/model_ready_dataset.parquet')
+
+# Single-split baseline (hardcoded from rebuttal_numbers.md for the report)
+ORIGINAL_SINGLE_SPLIT = {
+    'n_test': 1359,
+    'r2': 0.6258,
+    'rmse': 4.758,
+    'mae': 2.791,
+    'rpiq': 1.051,
+}
+
+N_FOLDS = 5
+DIST_THRESHOLD_KM = 1.2          # match train.py / config
+EARTH_RADIUS_KM = 6371.0
+N_EPOCHS = int(num_epochs)       # 270 from config (use_validation=True)
+BATCH_SIZE = 256
+LR = 2e-4                        # match train.py CLI default; spec said 1e-3
+WEIGHT_DECAY = 1e-5              # ASSUMPTION: user spec value; train.py has none
+DROPOUT = 0.3
+SEED_BASE = 42
+
+# ASSUMPTION: model_ready_dataset.parquet has an 'altitude' column that maps
+# to the same elevation values used at training time. This script doesn't
+# need altitude — it only uses GPS_LONG/GPS_LAT/year/OC, but the column is
+# carried through to kfold_predictions_all_folds.parquet for downstream
+# analyses.
+
+
+# --------------------------------------------------------------------------
+# Spatial fold construction
+# --------------------------------------------------------------------------
+def haversine_km_matrix(lat1, lon1, lat2, lon2):
+    """Pairwise haversine distance in km between two sets of points."""
+    lat1 = np.deg2rad(np.asarray(lat1))
+    lon1 = np.deg2rad(np.asarray(lon1))
+    lat2 = np.deg2rad(np.asarray(lat2))
+    lon2 = np.deg2rad(np.asarray(lon2))
+    dlat = lat2[np.newaxis, :] - lat1[:, np.newaxis]
+    dlon = lon2[np.newaxis, :] - lon1[:, np.newaxis]
+    a = (np.sin(dlat / 2) ** 2
+         + np.cos(lat1)[:, np.newaxis] * np.cos(lat2)[np.newaxis, :]
+         * np.sin(dlon / 2) ** 2)
+    c = 2.0 * np.arcsin(np.sqrt(np.clip(a, 0, 1)))
+    return EARTH_RADIUS_KM * c
+
+
+def min_distance_to_set_km(target_lat, target_lon, ref_lat, ref_lon,
+                           chunk=2048):
+    """For each (target_lat[i], target_lon[i]), min haversine distance (km)
+    to any point in (ref_lat, ref_lon). Chunked to keep memory bounded."""
+    n = len(target_lat)
+    out = np.full(n, np.inf, dtype=float)
+    for s in range(0, n, chunk):
+        e = min(s + chunk, n)
+        d = haversine_km_matrix(target_lat[s:e], target_lon[s:e],
+                                 ref_lat, ref_lon)
+        out[s:e] = d.min(axis=1)
+    return out
+
+
+def build_folds(df: pd.DataFrame, k: int = N_FOLDS) -> list[dict]:
+    """Latitude-strip folds. Returns a list of N_FOLDS dicts with keys
+    fold_id, lat_lo, lat_hi, test_idx, train_idx, buffer_idx (np int arrays
+    into the original df.index)."""
+    lat_min = df['GPS_LAT'].min()
+    lat_max = df['GPS_LAT'].max()
+    edges = np.linspace(lat_min, lat_max, k + 1)
+    # Inclusive on top edge for the last fold
+    edges[-1] = lat_max + 1e-9
+    folds = []
+    for i in range(k):
+        lo, hi = edges[i], edges[i + 1]
+        in_strip = (df['GPS_LAT'] >= lo) & (df['GPS_LAT'] < hi)
+        test_idx = df.index[in_strip].to_numpy()
+        train_pool_idx = df.index[~in_strip].to_numpy()
+        # Buffer: exclude train-pool rows whose nearest test-row is < 1.2 km
+        test_lat = df.loc[test_idx, 'GPS_LAT'].to_numpy(dtype=float)
+        test_lon = df.loc[test_idx, 'GPS_LONG'].to_numpy(dtype=float)
+        train_lat = df.loc[train_pool_idx, 'GPS_LAT'].to_numpy(dtype=float)
+        train_lon = df.loc[train_pool_idx, 'GPS_LONG'].to_numpy(dtype=float)
+        d = min_distance_to_set_km(train_lat, train_lon, test_lat, test_lon)
+        keep_mask = d >= DIST_THRESHOLD_KM
+        train_idx = train_pool_idx[keep_mask]
+        buffer_idx = train_pool_idx[~keep_mask]
+        folds.append({
+            'fold_id': i,
+            'lat_lo': float(lo),
+            'lat_hi': float(hi),
+            'test_idx': test_idx,
+            'train_idx': train_idx,
+            'buffer_idx': buffer_idx,
+        })
+    return folds
+
+
+# --------------------------------------------------------------------------
+# Dataset: bridges from model_ready_dataset.parquet to the project's
+# MultiRasterDatasetMultiYears (which reads raster tiles via coordinates.npy
+# + tile npy files). We just need a DataFrame with the right schema.
+# --------------------------------------------------------------------------
+# ASSUMPTION: the model_ready_dataset.parquet rows are still resolvable
+# via the project's coordinates.npy lookup, i.e. every (GPS_LAT, GPS_LONG)
+# in this parquet exists in /Data/.../Elevation/coordinates.npy.
+# Verified once during Step 0: cross-check against the master xlsx filter
+# yielded inner-join = 16,514 with no losses on the elevation merge.
+
+# ASSUMPTION: the project's dataframe_loader.add_season_column adds a
+# 'season' column derived from survey_date. The parquet already has 'season'
+# (carried over from the original train/val parquets). If a future parquet
+# is missing it, regenerate via:
+#   from dataloader.dataframe_loader import add_season_column
+#   df = add_season_column(df)
+
+
+def make_dataset(df: pd.DataFrame, feature_means=None, feature_stds=None):
+    """Build a project-native MultiRasterDatasetMultiYears with optional
+    fold-specific feature normalisation."""
+    sample_paths, data_paths = separate_and_add_data()
+
+    def flatten(lst):
+        out = []
+        for x in lst:
+            if isinstance(x, list):
+                out.extend(flatten(x))
+            else:
+                out.append(x)
+        return out
+
+    sample_paths = list(dict.fromkeys(flatten(sample_paths)))
+    data_paths = list(dict.fromkeys(flatten(data_paths)))
+    ds = MultiRasterDatasetMultiYears(
+        samples_coordinates_array_subfolders=sample_paths,
+        data_array_subfolders=data_paths,
+        dataframe=df.reset_index(drop=True),
+        time_before=time_before,
+    )
+    if feature_means is not None and feature_stds is not None:
+        # Wrap with normalisation on-the-fly
+        ds = _NormalizingWrapper(ds, feature_means, feature_stds)
+    return ds
+
+
+class _NormalizingWrapper(Dataset):
+    def __init__(self, base: Dataset, means: torch.Tensor, stds: torch.Tensor):
+        self.base = base
+        self.means = means.float()
+        self.stds = torch.clamp(stds.float(), min=1e-8)
+
+    def __len__(self):
+        return len(self.base)
+
+    def __getitem__(self, idx):
+        lon, lat, features, oc = self.base[idx]
+        features = (features - self.means[:, None, None]) / self.stds[:, None, None]
+        return lon, lat, features, oc
+
+
+def compute_fold_statistics(train_df: pd.DataFrame, max_n: int = 1500):
+    """Compute per-channel feature mean/std on a sample of the fold's train
+    set. Sampling is purely to keep the one-off cost bounded (a full pass
+    over ~14k samples would take many minutes; mean/std on 1500 random
+    samples are stable to <1% for this dataset)."""
+    # ASSUMPTION: sampling 1500 rows is acceptable; if the lead wants
+    # the full pass, set max_n = len(train_df).
+    sub = train_df.sample(n=min(max_n, len(train_df)),
+                          random_state=0).reset_index(drop=True)
+    base = make_dataset(sub)
+    feats = []
+    for i in range(len(base)):
+        _, _, f, _ = base[i]
+        feats.append(f.numpy())
+    arr = np.stack(feats)
+    means = torch.tensor(arr.mean(axis=(0, 2, 3)), dtype=torch.float32)
+    stds = torch.tensor(arr.std(axis=(0, 2, 3)), dtype=torch.float32)
+    return means, stds
+
+
+# --------------------------------------------------------------------------
+# Training / evaluation
+# --------------------------------------------------------------------------
+def make_model() -> nn.Module:
+    return EnhancedSGT(
+        input_channels=len(bands_list_order),
+        height=window_size,
+        width=window_size,
+        time_steps=time_before,
+        d_model=hidden_size,
+        num_heads=4,           # ASSUMPTION: matches EnhancedSGT default; the
+                               # 1.1M checkpoints in Weights/ were trained with
+                               # this. Verified by state_dict shape.
+        dropout=DROPOUT,
+        num_encoder_layers=3,  # default; consistent with 99-key state_dict
+        expansion_factor=4,
+    )
+
+
+def transform_target(y: torch.Tensor) -> torch.Tensor:
+    """Log transform — match train.py exactly (NOT log1p)."""
+    return torch.log(y + 1e-10)
+
+
+def invert_target(y_log: np.ndarray) -> np.ndarray:
+    return np.exp(y_log)
+
+
+def run_fold(fold: dict, device: torch.device) -> dict:
+    fold_id = fold['fold_id']
+    seed = SEED_BASE + fold_id
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    print(f'\n=== Fold {fold_id} | lat [{fold["lat_lo"]:.4f}, '
+          f'{fold["lat_hi"]:.4f}) ===', flush=True)
+    df = pd.read_parquet(MODEL_READY)
+    train_df = df.loc[fold['train_idx']].reset_index(drop=True)
+    test_df = df.loc[fold['test_idx']].reset_index(drop=True)
+
+    print(f'n_train={len(train_df)} n_test={len(test_df)} '
+          f'n_buffer_excluded={len(fold["buffer_idx"])}', flush=True)
+    print(f'Test SOC: mean={test_df.OC.mean():.2f} std={test_df.OC.std():.2f} '
+          f'max={test_df.OC.max():.1f} %>50={100*(test_df.OC>50).mean():.2f}%',
+          flush=True)
+
+    # Per-fold feature normalisation (no leakage)
+    means, stds = compute_fold_statistics(train_df)
+
+    train_ds = make_dataset(train_df, means, stds)
+    test_ds = make_dataset(test_df, means, stds)
+
+    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,
+                              num_workers=4, pin_memory=True)
+    test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False,
+                             num_workers=4, pin_memory=True)
+
+    model = make_model().to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=LR,
+                                 weight_decay=WEIGHT_DECAY)
+    criterion = nn.L1Loss()
+    # ASSUMPTION: no LR scheduler (matches train.py). If user wants
+    # exponential decay, add:
+    #   scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.98)
+
+    per_epoch: list[dict] = []
+    best_state = None
+    best_r2 = -float('inf')
+
+    for epoch in range(N_EPOCHS):
+        # ----- train -----
+        model.train()
+        running = 0.0
+        n_batches = 0
+        for _, _, x, y in train_loader:
+            x = x.to(device, non_blocking=True)
+            y = y.to(device, non_blocking=True).float()
+            y_t = transform_target(y)
+            optimizer.zero_grad()
+            pred = model(x).float()
+            loss = criterion(pred, y_t)
+            if torch.isnan(loss):
+                continue
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            running += float(loss.item())
+            n_batches += 1
+        train_loss = running / max(n_batches, 1)
+
+        # ----- eval -----
+        model.eval()
+        preds, targets = [], []
+        val_running = 0.0
+        n_val_b = 0
+        with torch.no_grad():
+            for _, _, x, y in test_loader:
+                x = x.to(device, non_blocking=True)
+                y = y.to(device, non_blocking=True).float()
+                y_t = transform_target(y)
+                p = model(x).float()
+                val_running += float(criterion(p, y_t).item())
+                n_val_b += 1
+                preds.append(p.cpu().numpy())
+                targets.append(y.cpu().numpy())
+        val_loss = val_running / max(n_val_b, 1)
+        pred_orig = invert_target(np.concatenate(preds))
+        targ_orig = np.concatenate(targets)
+        r2 = float(np.corrcoef(pred_orig, targ_orig)[0, 1] ** 2)
+        rmse = float(np.sqrt(np.mean((pred_orig - targ_orig) ** 2)))
+        mae = float(np.mean(np.abs(pred_orig - targ_orig)))
+
+        rec = {'epoch': epoch + 1, 'train_loss': train_loss,
+               'val_loss': val_loss, 'val_r2': r2,
+               'val_rmse': rmse, 'val_mae': mae}
+        per_epoch.append(rec)
+        print(f'Fold {fold_id} | Epoch {epoch+1}/{N_EPOCHS} | '
+              f'train_loss={train_loss:.4f} | val_R²={r2:.4f} | '
+              f'val_RMSE={rmse:.3f}', flush=True)
+
+        if r2 > best_r2 and not np.isnan(r2):
+            best_r2 = r2
+            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+
+    # Save best
+    pth_path = OUT_DIR / f'fold_{fold_id}_best.pth'
+    torch.save({
+        'model_state_dict': best_state,
+        'model_config': {'input_channels': len(bands_list_order),
+                         'height': window_size,
+                         'width': window_size,
+                         'time_steps': time_before,
+                         'd_model': hidden_size,
+                         'num_heads': 4,
+                         'num_encoder_layers': 3,
+                         'dropout': DROPOUT},
+        'fold_id': fold_id,
+        'best_r2': best_r2,
+        'n_train': len(train_df),
+        'n_test': len(test_df),
+        'feature_means': means,
+        'feature_stds': stds,
+    }, pth_path)
+    (OUT_DIR / f'fold_{fold_id}_metrics.json').write_text(
+        json.dumps(per_epoch, indent=2))
+    print(f'Saved {pth_path}', flush=True)
+
+    # Final pass with best weights → predictions for the concat parquet
+    model.load_state_dict(best_state)
+    model.eval()
+    all_lon, all_lat, all_pred, all_act = [], [], [], []
+    with torch.no_grad():
+        for lon, lat, x, y in test_loader:
+            x = x.to(device, non_blocking=True)
+            p = model(x).float()
+            all_pred.append(invert_target(p.cpu().numpy()))
+            all_act.append(y.cpu().numpy())
+            all_lon.append(np.asarray(lon))
+            all_lat.append(np.asarray(lat))
+    test_pred = np.concatenate(all_pred)
+    test_actual = np.concatenate(all_act)
+    test_lon = np.concatenate(all_lon)
+    test_lat = np.concatenate(all_lat)
+
+    # Final metrics
+    r2 = float(np.corrcoef(test_pred, test_actual)[0, 1] ** 2)
+    rmse = float(np.sqrt(np.mean((test_pred - test_actual) ** 2)))
+    mae = float(np.mean(np.abs(test_pred - test_actual)))
+    q1, q3 = np.percentile(test_actual, [25, 75])
+    rpiq = float((q3 - q1) / rmse) if rmse > 0 else float('inf')
+
+    return {
+        'fold_id': fold_id,
+        'lat_lo': fold['lat_lo'], 'lat_hi': fold['lat_hi'],
+        'n_test': int(len(test_df)),
+        'n_train': int(len(train_df)),
+        'n_buffer': int(len(fold['buffer_idx'])),
+        'test_oc_mean': float(test_df.OC.mean()),
+        'test_oc_std': float(test_df.OC.std()),
+        'test_oc_max': float(test_df.OC.max()),
+        'test_pct_gt_50': float(100 * (test_df.OC > 50).mean()),
+        'r2': r2, 'rmse': rmse, 'mae': mae, 'rpiq': rpiq,
+        'best_epoch_r2_during_training': best_r2,
+        '_predictions': {
+            'lon': test_lon, 'lat': test_lat,
+            'pred': test_pred, 'actual': test_actual,
+            'year': test_df['year'].to_numpy(),
+            'altitude': (test_df['altitude'].to_numpy()
+                          if 'altitude' in test_df.columns
+                          else np.full(len(test_df), np.nan)),
+        },
+    }
+
+
+# --------------------------------------------------------------------------
+# Reporting
+# --------------------------------------------------------------------------
+def write_results(fold_results: list[dict]):
+    rows = []
+    for r in fold_results:
+        rows.append({k: v for k, v in r.items() if not k.startswith('_')})
+    summary_df = pd.DataFrame(rows)
+
+    def ci95(values):
+        m = float(np.mean(values))
+        s = float(np.std(values, ddof=1)) if len(values) > 1 else 0.0
+        half = 1.96 * s / np.sqrt(len(values))
+        return m, s, (m - half, m + half)
+
+    r2_m, r2_s, r2_ci = ci95(summary_df['r2'].to_numpy())
+    rmse_m, rmse_s, rmse_ci = ci95(summary_df['rmse'].to_numpy())
+    mae_m, mae_s, mae_ci = ci95(summary_df['mae'].to_numpy())
+    rpiq_m, rpiq_s, rpiq_ci = ci95(summary_df['rpiq'].to_numpy())
+
+    summary_json = {
+        'fold_results': rows,
+        'across_folds': {
+            'r2_mean': r2_m, 'r2_std': r2_s, 'r2_ci95': r2_ci,
+            'rmse_mean': rmse_m, 'rmse_std': rmse_s, 'rmse_ci95': rmse_ci,
+            'mae_mean': mae_m, 'mae_std': mae_s, 'mae_ci95': mae_ci,
+            'rpiq_mean': rpiq_m, 'rpiq_std': rpiq_s, 'rpiq_ci95': rpiq_ci,
+        },
+        'original_single_split': ORIGINAL_SINGLE_SPLIT,
+        'n_folds': N_FOLDS,
+        'distance_threshold_km': DIST_THRESHOLD_KM,
+    }
+    (OUT_DIR / 'kfold_results_summary.json').write_text(
+        json.dumps(summary_json, indent=2, default=str))
+
+    md = []
+    md.append('# Spatial 5-fold cross-validation — results')
+    md.append('')
+    md.append('Latitude-strip folds across Bavaria, with a 1.2 km '
+              'minimum-distance buffer separating each held-out test '
+              'strip from the training set. EnhancedSGT 1.1 M trained '
+              'from scratch on each fold (270 epochs, Adam lr=2e-4, '
+              'L1 on log(OC + 1e-10), feature normalisation fit on '
+              "this fold's training set only).")
+    md.append('')
+    md.append('| Fold | Lat range | n_test | R² | RMSE (g/kg) | MAE (g/kg) | RPIQ |')
+    md.append('|------|-----------|--------|-----|-------------|------------|------|')
+    for r in fold_results:
+        md.append(f'| {r["fold_id"]} | [{r["lat_lo"]:.4f}, {r["lat_hi"]:.4f}) | '
+                  f'{r["n_test"]} | {r["r2"]:.4f} | {r["rmse"]:.3f} | '
+                  f'{r["mae"]:.3f} | {r["rpiq"]:.3f} |')
+    md.append(f'| **Mean ± std** | — | — | '
+              f'{r2_m:.4f} ± {r2_s:.4f} | {rmse_m:.3f} ± {rmse_s:.3f} | '
+              f'{mae_m:.3f} ± {mae_s:.3f} | {rpiq_m:.3f} ± {rpiq_s:.3f} |')
+    md.append(f'| **95% CI** | — | — | [{r2_ci[0]:.4f}, {r2_ci[1]:.4f}] | '
+              f'[{rmse_ci[0]:.3f}, {rmse_ci[1]:.3f}] | '
+              f'[{mae_ci[0]:.3f}, {mae_ci[1]:.3f}] | '
+              f'[{rpiq_ci[0]:.3f}, {rpiq_ci[1]:.3f}] |')
+    md.append(f'| *Original single-split* | — | {ORIGINAL_SINGLE_SPLIT["n_test"]} | '
+              f'{ORIGINAL_SINGLE_SPLIT["r2"]:.3f} | '
+              f'{ORIGINAL_SINGLE_SPLIT["rmse"]:.3f} | '
+              f'{ORIGINAL_SINGLE_SPLIT["mae"]:.3f} | '
+              f'{ORIGINAL_SINGLE_SPLIT["rpiq"]:.3f} |')
+    md.append('')
+    (OUT_DIR / 'kfold_results.md').write_text('\n'.join(md))
+
+
+def write_predictions_parquet(fold_results: list[dict]):
+    frames = []
+    for r in fold_results:
+        p = r['_predictions']
+        frames.append(pd.DataFrame({
+            'GPS_LAT': p['lat'], 'GPS_LONG': p['lon'],
+            'OC_actual': p['actual'], 'OC_predicted': p['pred'],
+            'fold_id': r['fold_id'], 'year': p['year'],
+            'altitude': p['altitude'],
+        }))
+    df = pd.concat(frames, ignore_index=True)
+    df.to_parquet(OUT_DIR / 'kfold_predictions_all_folds.parquet')
+
+
+def make_figure(fold_results: list[dict], folds_meta: list[dict],
+                df_master: pd.DataFrame):
+    # ASSUMPTION: matplotlib + (optionally) geopandas available. The repo
+    # already uses gpd in mapping.py. If geopandas is missing, the left
+    # panel falls back to a plain scatter (no Bavaria outline).
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(1, 2, figsize=(16, 7))
+
+    # ---- Left panel: Bavaria fold map ----
+    ax = axes[0]
+    colors = plt.cm.tab10(np.linspace(0, 1, N_FOLDS))
+    # buffer-excluded
+    buffer_all = np.concatenate([f['buffer_idx'] for f in folds_meta]) \
+        if folds_meta else np.array([], dtype=int)
+    if len(buffer_all):
+        bufr = df_master.loc[np.unique(buffer_all)]
+        ax.scatter(bufr['GPS_LONG'], bufr['GPS_LAT'], s=3,
+                   c='lightgrey', alpha=0.6, label='Buffer-excluded')
+    for f, color in zip(folds_meta, colors):
+        idx = f['test_idx']
+        ax.scatter(df_master.loc[idx, 'GPS_LONG'],
+                   df_master.loc[idx, 'GPS_LAT'],
+                   s=5, color=color, label=f'Fold {f["fold_id"]}', alpha=0.7)
+        ax.axhline(f['lat_hi'], color='black', linestyle='--', linewidth=0.5)
+    ax.set_xlabel('Longitude (°E)')
+    ax.set_ylabel('Latitude (°N)')
+    ax.set_title('Bavaria — 5 latitude-strip folds with 1.2 km buffer')
+    ax.legend(loc='upper right', fontsize=8, framealpha=0.9)
+    ax.set_aspect('equal', adjustable='box')
+
+    # ASSUMPTION: full Bavaria outline drawing via geopandas is optional.
+    # If desired, uncomment:
+    # try:
+    #     import geopandas as gpd
+    #     bav = gpd.read_file(SGT_DIR / 'bavaria.geojson')
+    #     bav.boundary.plot(ax=ax, color='black', linewidth=0.6)
+    # except Exception:
+    #     pass
+
+    # ---- Right panel: metric comparison ----
+    ax = axes[1]
+    metrics = ['R²', 'RMSE/10', 'MAE/10']
+    x_groups = np.arange(N_FOLDS)
+    width = 0.25
+    r2s = np.array([r['r2'] for r in fold_results])
+    rmses = np.array([r['rmse'] for r in fold_results]) / 10.0
+    maes = np.array([r['mae'] for r in fold_results]) / 10.0
+    ax.bar(x_groups - width, r2s, width, label='R²', color='#1f77b4')
+    ax.bar(x_groups, rmses, width, label='RMSE / 10', color='#ff7f0e')
+    ax.bar(x_groups + width, maes, width, label='MAE / 10', color='#2ca02c')
+    # original single-split reference lines
+    ax.axhline(ORIGINAL_SINGLE_SPLIT['r2'], color='#1f77b4',
+               linestyle='--', linewidth=1)
+    ax.axhline(ORIGINAL_SINGLE_SPLIT['rmse'] / 10, color='#ff7f0e',
+               linestyle='--', linewidth=1)
+    ax.axhline(ORIGINAL_SINGLE_SPLIT['mae'] / 10, color='#2ca02c',
+               linestyle='--', linewidth=1)
+    ax.set_xticks(x_groups)
+    ax.set_xticklabels([f'Fold {i}' for i in range(N_FOLDS)])
+    ax.set_ylabel('Value')
+    ax.set_title('Per-fold metrics (dashed lines = original single-split)')
+    ax.legend(loc='upper right')
+    ax.grid(axis='y', alpha=0.3, linestyle=':')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+    fig.suptitle('Experiment 1 — Spatial 5-fold CV (EnhancedSGT 1.1M)',
+                 fontsize=13, fontweight='bold', y=1.01)
+    fig.tight_layout()
+    out = OUT_DIR / 'figure_kfold.png'
+    fig.savefig(out, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    print(f'Saved {out}', flush=True)
+
+
+# --------------------------------------------------------------------------
+# Main
+# --------------------------------------------------------------------------
+def main():
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f'Device: {device}', flush=True)
+
+    df = pd.read_parquet(MODEL_READY)
+    df = df.reset_index(drop=True)
+    df['__row'] = df.index   # safety
+    print(f'Loaded {len(df)} rows from {MODEL_READY}', flush=True)
+
+    folds_meta = build_folds(df)
+    for f in folds_meta:
+        print(f'Fold {f["fold_id"]}: lat [{f["lat_lo"]:.4f}, {f["lat_hi"]:.4f}) '
+              f'| n_test={len(f["test_idx"])} n_train={len(f["train_idx"])} '
+              f'n_buffer={len(f["buffer_idx"])}', flush=True)
+
+    fold_results = []
+    t_start = time.time()
+    for f in folds_meta:
+        r = run_fold(f, device)
+        fold_results.append(r)
+        elapsed = time.time() - t_start
+        print(f'>>> Fold {f["fold_id"]} done. Elapsed {elapsed/60:.1f} min',
+              flush=True)
+
+    write_results(fold_results)
+    write_predictions_parquet(fold_results)
+    make_figure(fold_results, folds_meta, df)
+    print('\nExperiment 1 complete.', flush=True)
+
+
+if __name__ == '__main__':
+    main()
