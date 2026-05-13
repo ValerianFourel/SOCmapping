@@ -4,6 +4,9 @@ __pycache__/
 *$py.class
 *.so
 *.zip
+.venv/
+venv/
+.env
 # Data files
 *.csv
 *.pkl
@@ -16,6 +19,9 @@ __pycache__/
 # Text and log files
 *.txt
 *.log
+# Exception: keep dependency / lock files
+!requirements*.txt
+!constraints*.txt
 
 # Model files
 *.pth

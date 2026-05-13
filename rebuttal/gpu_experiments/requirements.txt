@@ -1,0 +1,31 @@
+# Python dependencies for the Geoderma rebuttal GPU experiments.
+#
+# This file lists everything BUT PyTorch.  PyTorch + torchvision + torchaudio
+# are installed by setup_venv.sh because the right wheel depends on the host
+# CUDA version (cu117 / cu118 / cu121). See setup_venv.sh.
+#
+# Pinning rationale: these versions reproduce the venv at
+# /home/valerian/SGTPublication/SOCmapping/BaselinesXGBoostAndRF/.venv,
+# which is where Model A and Model B were trained and where the existing
+# CPU-side rebuttal scripts run cleanly. Loosening these pins is safe
+# minor-version-wise but verify by loading a checkpoint and running a
+# forward pass before launching either experiment.
+
+accelerate==1.12.0
+numpy==1.26.4
+pandas==2.3.3
+scikit-learn==1.7.2
+statsmodels==0.14.6
+matplotlib==3.10.7
+tqdm
+wandb
+openpyxl                  # required by pandas.read_excel for the LUCAS xlsx
+pyarrow                   # required for pandas.read_parquet / to_parquet
+
+# Experiment 2 only — GeoTIFF + UTM reprojection
+rasterio
+pyproj
+geopandas                 # optional: Bavaria outline overlay in plot_uncertainty.py
+
+# Optional dev / verification
+ipython
