@@ -383,12 +383,19 @@ def validation_check(lons, lats, mc_mean):
     # ASSUMPTION: the single-pass results live in one of these directories
     # as .npy chunks (running.py writes coordinates_*.npy + predictions_*.npy).
     # If a GeoTIFF version exists somewhere else, edit the search list.
+    # Resolve relative to SOC_CODE_DIR (the SOCmapping/ root) — and also
+    # check siblings of SOC_CODE_DIR for the residual_Maps_Bavaria_* dirs
+    # that live at the project root.
+    _PROJECT_ROOT = SOC_CODE_DIR.parent
     candidates = [
-        PROJECT_ROOT / 'SOCmapping' / 'Maps',
-        PROJECT_ROOT / 'SOCmapping' / 'SGT_Maps_MixedProcessing',
-        PROJECT_ROOT / 'SOCmapping' / 'SGT_Maps_Rescaled_NoTitles',
-        PROJECT_ROOT / 'SOCmapping' / 'AllResultsMappingTogether_June20th_2025',
-        PROJECT_ROOT / 'SOCmapping' / 'AllResultsMappingTogether_NoTitles_June20th_2025',
+        SOC_CODE_DIR / 'Maps',
+        SOC_CODE_DIR / 'SGT_Maps_MixedProcessing',
+        SOC_CODE_DIR / 'SGT_Maps_Rescaled_NoTitles',
+        SOC_CODE_DIR / 'AllResultsMappingTogether_June20th_2025',
+        SOC_CODE_DIR / 'AllResultsMappingTogether_NoTitles_June20th_2025',
+        _PROJECT_ROOT / 'residual_Maps_Bavaria_1milTFT',
+        _PROJECT_ROOT / 'residual_Maps_Bavaria_360kTFT',
+        _PROJECT_ROOT / 'residual_Maps_Bavaria_v3_2milSimpleTransformer',
     ]
     # Look for chunked .npy outputs
     pred_files = []
