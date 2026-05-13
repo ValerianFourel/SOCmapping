@@ -16,8 +16,13 @@ from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,NUM_EPOCHS_
                    DataYearly, SamplesCoordinates_Seasonally, bands_list_order,
                    MatrixCoordinates_1mil_Seasonally, DataSeasonally, window_size,
                    file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC, time_before)
+# SGT model variants — selected at runtime via --model-size:
+#   small → SimpleSGT (~50k params, 1 transformer layer, no BatchNorm)
+#   big   → EnhancedSGT (~1.12M params, 3 GRN blocks, BatchNorm). The
+#           historic wandb run (rxeolg7e, 2025-05-26, val R²=0.755) used
+#           the big variant — that's "Model A" from Table 2.
 from SimpleSGT import SimpleSGT
-# from EnhancedSGT import EnhancedSGT as SimpleSGT
+from EnhancedSGT import EnhancedSGT
 import argparse
 import contextlib
 from balancedDataset import create_validation_train_sets,create_balanced_dataset
@@ -48,6 +53,22 @@ def parse_args():
     parser.add_argument('--hidden_size', type=int, default=hidden_size, help='Hidden size for the model')
     parser.add_argument('--dropout_rate', type=float, default=0.3, help='Dropout rate for the model')
     parser.add_argument('--save_train_and_val', type=bool, default=False, help='Dropout rate for the model')
+    # --- Rebuttal / audited reproduction ---------------------------------
+    # When --rebuttal is set, the script overrides hyperparameters to the
+    # audited Model A v2 recipe (val proper R²=0.594, Pearson r²=0.626,
+    # RMSE=4.76, n=1,359 — see rebuttal/table_2_corrected.md) and routes
+    # outputs to rebuttal/audited_runs/SGT_<size>_audited_<ts>_<sha>/ with
+    # a lineage JSON. Use --model-size to pick the SGT variant.
+    parser.add_argument('--rebuttal', action='store_true',
+                        help='Lock audited Model-A-v2 hyperparameters, '
+                             'route outputs to rebuttal/audited_runs/, '
+                             'and write a provenance JSON for the rerun.')
+    parser.add_argument('--model-size', type=str, default='big',
+                        choices=['small', 'big'],
+                        help='SGT variant: "small" = SimpleSGT (~50k params, '
+                             'num_heads=2, 1 transformer layer); '
+                             '"big" = EnhancedSGT (~1.12M params, num_heads=8, '
+                             '2 transformer layers — Model A architecture).')
     # --- Gradient-accumulation knobs -------------------------------------
     # Target effective batch = num_GPUs × per_gpu_batch × accum_steps. The
     # historic 8-GPU training (wandb run rxeolg7e, R²=0.755) used
@@ -384,8 +405,94 @@ def save_metrics_to_file(args, wandb_runs_info, avg_metrics, min_distance_stats,
 
 import json 
 
+def build_sgt_model(args):
+    """Construct the SGT variant requested via --model-size.
+    Both classes share the same forward signature (B, C, H, W, T) → (B,).
+    """
+    if args.model_size == 'small':
+        # SimpleSGT signature: input_channels, height, width, time_steps,
+        # d_model, num_heads, dropout. No num_encoder_layers / expansion_factor.
+        return SimpleSGT(
+            input_channels=len(bands_list_order),
+            height=window_size,
+            width=window_size,
+            time_steps=time_before,
+            d_model=args.hidden_size,
+            num_heads=args.num_heads,
+            dropout=args.dropout_rate,
+        )
+    # 'big' — EnhancedSGT (Model A architecture)
+    return EnhancedSGT(
+        input_channels=len(bands_list_order),
+        height=window_size,
+        width=window_size,
+        time_steps=time_before,
+        d_model=args.hidden_size,
+        num_heads=args.num_heads,
+        dropout=args.dropout_rate,
+        num_encoder_layers=args.num_layers,
+        expansion_factor=4,
+    )
+
+
+def _resolve_rebuttal_preset(args):
+    """When --rebuttal is set, override hyperparameters to match the audited
+    Model A v2 recipe (val proper R²=0.594, Pearson r²=0.626, RMSE=4.76,
+    n=1359 — see rebuttal/table_2_corrected.md). The user can still pass
+    --num-runs and per-gpu-batch-size to control parallelism; everything
+    else is locked.
+    """
+    if not args.rebuttal:
+        return args
+    args.lr = 2e-4
+    args.dropout_rate = 0.3
+    args.loss_type = 'mse'
+    args.target_transform = 'normalize'
+    args.target_val_ratio = 0.08
+    args.distance_threshold = 1.2
+    args.target_fraction = 0.75
+    args.use_validation = True
+    args.save_train_and_val = True
+    if args.model_size == 'big':
+        args.num_heads = 8
+        args.num_layers = 2
+    else:
+        args.num_heads = 2
+        args.num_layers = 1
+    return args
+
+
+def _git_sha_short():
+    """Return short HEAD commit SHA from the current repo, or 'nogit' if
+    not available (so the script never crashes on a non-git checkout)."""
+    import subprocess as _sp
+    try:
+        out = _sp.check_output(['git', 'rev-parse', '--short', 'HEAD'],
+                               cwd=os.path.dirname(os.path.abspath(__file__)),
+                               stderr=_sp.DEVNULL, timeout=5).decode().strip()
+        return out or 'nogit'
+    except Exception:
+        return 'nogit'
+
+
+def _resolve_rebuttal_paths(args, timestamp):
+    """If --rebuttal is on, route output to rebuttal/audited_runs/ with a
+    strict naming convention: SGT_<size>_audited_<timestamp>_<sha>. Returns
+    (experiment_name, experiment_dir, git_sha)."""
+    git_sha = _git_sha_short()
+    if not args.rebuttal:
+        return None, None, git_sha
+    # Resolve rebuttal/ as a sibling of SpatiotemporalGatedTransformer/.
+    socmapping_root = Path(os.path.dirname(os.path.abspath(__file__))).parent
+    rebuttal_runs = socmapping_root / 'rebuttal' / 'audited_runs'
+    rebuttal_runs.mkdir(parents=True, exist_ok=True)
+    name = f'SGT_{args.model_size}_audited_{timestamp}_{git_sha}'
+    return name, str(rebuttal_runs / name), git_sha
+
+
 if __name__ == "__main__":
     args = parse_args()
+    args = _resolve_rebuttal_preset(args)
     # Set num_runs to 1 if use_validation is False
     if not args.use_validation:
         args.num_runs = 1
@@ -407,17 +514,23 @@ if __name__ == "__main__":
 
     # Create experiment folder with descriptive naming
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    experiment_name = (f"SGT_experiment_{timestamp}_"
-                      f"OC{MAX_OC}_"
-                      f"{TIME_BEGINNING}to{TIME_END}_"
-                      f"transform_{args.target_transform}_"
-                      f"loss_{args.loss_type}_"
-                      f"runs_{args.num_runs}_"
-                      f"lr_{args.lr}_"
-                      f"heads_{args.num_heads}_"
-                      f"layers_{args.num_layers}")
 
-    experiment_dir = os.path.join(args.output_dir, experiment_name)
+    # Rebuttal mode: short, structured name + dedicated rebuttal/audited_runs/
+    rebuttal_name, rebuttal_dir, GIT_SHA = _resolve_rebuttal_paths(args, timestamp)
+    if args.rebuttal:
+        experiment_name = rebuttal_name
+        experiment_dir = rebuttal_dir
+    else:
+        experiment_name = (f"SGT_experiment_{timestamp}_"
+                          f"OC{MAX_OC}_"
+                          f"{TIME_BEGINNING}to{TIME_END}_"
+                          f"transform_{args.target_transform}_"
+                          f"loss_{args.loss_type}_"
+                          f"runs_{args.num_runs}_"
+                          f"lr_{args.lr}_"
+                          f"heads_{args.num_heads}_"
+                          f"layers_{args.num_layers}")
+        experiment_dir = os.path.join(args.output_dir, experiment_name)
 
     # Create experiment configuration (available to all processes)
     experiment_config = {
@@ -434,6 +547,31 @@ if __name__ == "__main__":
             "num_epochs": num_epochs
         }
     }
+    # Rebuttal-only lineage block for audit trail
+    if args.rebuttal:
+        experiment_config["rebuttal_audited"] = True
+        experiment_config["git_sha"] = GIT_SHA
+        experiment_config["model_size"] = args.model_size
+        experiment_config["model_class"] = (
+            "EnhancedSGT" if args.model_size == 'big' else "SimpleSGT")
+        experiment_config["audited_hyperparameters"] = {
+            "lr": args.lr, "dropout_rate": args.dropout_rate,
+            "loss_type": args.loss_type, "target_transform": args.target_transform,
+            "target_val_ratio": args.target_val_ratio,
+            "distance_threshold": args.distance_threshold,
+            "target_fraction": args.target_fraction,
+            "num_heads": args.num_heads, "num_layers": args.num_layers,
+            "num_runs": args.num_runs, "num_epochs": num_epochs,
+            "per_gpu_batch_size": args.per_gpu_batch_size,
+            "effective_batch_size": EFFECTIVE_BATCH,
+            "accum_steps": ACCUM_STEPS, "num_processes": NUM_PROCESSES,
+        }
+        experiment_config["lineage"] = (
+            "Reproduces Model A v2 (residualModels1mil_normalize_composite_l2_v2/) "
+            "which achieved val proper R²=0.594, Pearson r²=0.626, RMSE=4.76 g/kg, "
+            "bias=+1.13 g/kg, n_val=1,359 at commit 8dce131 (wandb run rxeolg7e). "
+            "See rebuttal/table_2_corrected.md for the corrected metric and "
+            "rebuttal/proper_r2_all_projects_FULL.md for the full leaderboard.")
 
     if accelerator.is_main_process:
         os.makedirs(experiment_dir, exist_ok=True)
@@ -444,6 +582,27 @@ if __name__ == "__main__":
         with open(config_file, 'w') as f:
             json.dump(experiment_config, f, indent=2)
         print(f"Experiment configuration saved to: {config_file}")
+
+        # Rebuttal-only README pinning the lineage in human-readable form
+        if args.rebuttal:
+            readme_path = os.path.join(experiment_dir, "README.md")
+            with open(readme_path, 'w') as f:
+                f.write(f"# {experiment_name}\n\n")
+                f.write(f"- **Timestamp:** {timestamp}\n")
+                f.write(f"- **Git SHA:** `{GIT_SHA}`\n")
+                f.write(f"- **Model size:** `{args.model_size}` "
+                        f"(`{experiment_config['model_class']}`)\n")
+                f.write(f"- **Hyperparameters:** locked by `--rebuttal` to the "
+                        f"audited Model A v2 recipe\n")
+                f.write(f"- **Num GPUs / accum / effective batch:** "
+                        f"{NUM_PROCESSES} × {args.per_gpu_batch_size} × "
+                        f"{ACCUM_STEPS} = {EFFECTIVE_BATCH}\n\n")
+                f.write(f"## Lineage\n\n{experiment_config['lineage']}\n\n")
+                f.write(f"## Re-run command\n\n```bash\n"
+                        f"accelerate launch --num_processes {NUM_PROCESSES} "
+                        f"train.py --rebuttal --model-size {args.model_size} "
+                        f"--num-runs {args.num_runs}\n```\n")
+            print(f"Rebuttal README written to: {readme_path}")
 
     # Initialize lists to store metrics and best metrics across runs
     all_runs_metrics = []
@@ -610,15 +769,13 @@ if __name__ == "__main__":
         if accelerator.is_main_process:
             print(f"Run {run + 1} Size of the first batch: {first_batch_size}")
 
-        # Initialize model
-        model = SimpleSGT(
-            input_channels=len(bands_list_order),
-            height=window_size,
-            width=window_size,
-            time_steps=time_before,
-            d_model=args.hidden_size
-        )
-        print("The number of parameters:", model.count_parameters())
+        # Initialize model (variant selected by --model-size; defaults to 'big'
+        # = EnhancedSGT, Model A architecture). build_sgt_model() respects
+        # the --rebuttal preset overrides applied earlier.
+        model = build_sgt_model(args)
+        print(f"Model variant: {type(model).__name__} "
+              f"(--model-size={args.model_size}); "
+              f"parameters: {model.count_parameters():,}")
 
         if accelerator.is_main_process:
             wandb_run.summary["model_parameters"] = model.count_parameters()
@@ -671,7 +828,14 @@ if __name__ == "__main__":
 
         # Save model for this run
         if accelerator.is_main_process and best_model_state is not None:
-            run_model_path = os.path.join(models_dir, f'SGT_model_run_{run+1}_R2_{best_r2:.4f}.pth')
+            # In rebuttal mode use a short, structured filename so all 4 runs
+            # land cleanly side-by-side in audited_runs/<exp>/models/ .
+            if args.rebuttal:
+                pth_name = (f'SGT_{args.model_size}_audited_run{run+1}_'
+                            f'R2_{best_r2:.4f}.pth')
+            else:
+                pth_name = f'SGT_model_run_{run+1}_R2_{best_r2:.4f}.pth'
+            run_model_path = os.path.join(models_dir, pth_name)
 
             # Save model with metadata
             model_with_run_metadata = {
@@ -680,12 +844,19 @@ if __name__ == "__main__":
                 'best_r2': best_r2,
                 'best_metrics': best_metrics,
                 'experiment_name': experiment_name,
+                'rebuttal_audited': bool(args.rebuttal),
+                'git_sha': GIT_SHA,
+                'model_class': type(model).__name__,
+                'model_size': args.model_size,
                 'model_config': {
                     'input_channels': len(bands_list_order),
                     'height': window_size,
                     'width': window_size,
                     'time_steps': time_before,
-                    'd_model': args.hidden_size
+                    'd_model': args.hidden_size,
+                    'num_heads': args.num_heads,
+                    'num_layers': args.num_layers,
+                    'dropout': args.dropout_rate,
                 },
                 'normalization_stats': {
                     'feature_means': feature_means,
