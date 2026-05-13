@@ -5,6 +5,7 @@ from pathlib import Path
 import argparse
 from balancedDataset import create_validation_train_sets
 from scipy.stats import gaussian_kde
+from matplotlib.collections import PolyCollection
 
 class SOCRidgePlot:
     def __init__(self, output_dir='figures'):
@@ -63,17 +64,19 @@ class SOCRidgePlot:
         # Calculate global range for consistent x-axis
         global_min = data['OC'].min()
         global_max = data['OC'].max()
-        x_range = np.linspace(global_min - 3, global_max + 3, 1500)
+        x_range = np.linspace(global_min - 3, global_max + 3, 500)  # Reduced from 1500
         
-        # Beautiful PROFESSIONAL color palette - cooler tones
-        colors = plt.cm.viridis(np.linspace(0.2, 0.95, len(years)))
+        # VIRIDIS colormap for SOC gradient (0-150 g/kg)
+        cmap = plt.cm.viridis
         
-        # TIGHTER vertical spacing for compact 3D effect
-        spacing = 0.6
+        # Normalize SOC values from 0-150 to [0, 1] for colormap
+        soc_norm = np.clip((x_range - 0) / (150 - 0), 0, 1)
+        
+        # INCREASED vertical spacing to prevent text overlap
+        spacing = 0.75
         
         # 3D PERSPECTIVE PARAMETERS
-        # Perspective scaling: curves further back appear smaller
-        perspective_strength = 0.15  # How much curves shrink with distance
+        perspective_strength = 0.15
         
         # Plot from bottom to top (oldest to newest)
         for i, year in enumerate(years):
@@ -87,7 +90,6 @@ class SOCRidgePlot:
             density = density / density.max() * 0.9 * spacing
             
             # PERSPECTIVE TRANSFORMATION
-            # Curves further back (higher i) are compressed horizontally
             depth_factor = 1.0 - (i / len(years)) * perspective_strength
             
             # Apply perspective: compress x-range from center
@@ -100,20 +102,42 @@ class SOCRidgePlot:
             # Vertical offset for this year
             y_offset = i * spacing
             
-            # Create 3D shadow effect by adding darker offset layer
+            # Create 3D shadow effect
             shadow_offset = -0.02
             ax.fill_between(x_range_perspective, y_offset + shadow_offset, 
                            y_offset + density_perspective + shadow_offset, 
                            color='black', alpha=0.15, zorder=len(years)-i-0.5)
             
-            # Main density curve with gradient effect
-            ax.fill_between(x_range_perspective, y_offset, y_offset + density_perspective, 
-                           color=colors[i], alpha=0.85, 
-                           edgecolor='white', linewidth=2.5, zorder=len(years)-i)
+            # FAST GRADIENT METHOD: Use PolyCollection with facecolors
+            # Create vertices for the filled area
+            verts = []
+            colors = []
             
-            # Add darker edge on top for 3D depth
+            for j in range(len(x_range_perspective) - 1):
+                # Create a quad (4 vertices) for each segment
+                x0, x1 = x_range_perspective[j], x_range_perspective[j+1]
+                y0, y1 = y_offset, y_offset + density_perspective[j]
+                y2 = y_offset + density_perspective[j+1]
+                
+                # Quad vertices: bottom-left, bottom-right, top-right, top-left
+                verts.append([(x0, y0), (x1, y0), (x1, y2), (x0, y1)])
+                
+                # Color based on SOC value
+                color = cmap(soc_norm[j])
+                colors.append(color)
+            
+            # Create PolyCollection for fast rendering
+            poly = PolyCollection(verts, facecolors=colors, edgecolors='none', 
+                                 alpha=0.85, zorder=len(years)-i)
+            ax.add_collection(poly)
+            
+            # Add white edge on top for definition
             ax.plot(x_range_perspective, y_offset + density_perspective, 
-                   color='black', linewidth=1.5, alpha=0.5, zorder=len(years)-i+0.1)
+                   color='white', linewidth=2.5, alpha=0.9, zorder=len(years)-i+0.05)
+            
+            # Add subtle darker edge on bottom
+            ax.plot(x_range_perspective, [y_offset]*len(x_range_perspective), 
+                   color='black', linewidth=1.5, alpha=0.3, zorder=len(years)-i+0.1)
             
             # Calculate statistics
             year_mean = float(year_data.mean())
@@ -124,51 +148,54 @@ class SOCRidgePlot:
             mean_perspective = x_center + (year_mean - x_center) * depth_factor
             median_perspective = x_center + (year_median - x_center) * depth_factor
             
-            # MEAN marker OUTSIDE at bottom (BLUE diamond) - well below the baseline
+            # MEAN marker (BLUE diamond)
             ax.scatter(mean_perspective, y_offset - 0.12, s=140, marker='D', 
                       color='#2E86DE', edgecolors='white', linewidths=2, 
                       zorder=len(years)+15, alpha=0.95)
             
-            # MEDIAN marker OUTSIDE at bottom (RED circle) - well below the baseline
+            # MEDIAN marker (RED circle)
             ax.scatter(median_perspective, y_offset - 0.12, s=140, marker='o', 
                       color='#EE5A6F', edgecolors='white', linewidths=2, 
                       zorder=len(years)+15, alpha=0.95)
             
-            # Year label - ONLY ONCE, on the left, SMALLER text
+            # Year label
             left_edge_perspective = x_center + (global_min - 4 - x_center) * depth_factor
-            ax.text(left_edge_perspective, y_offset + 0.45*spacing, f'{year}', 
-                   fontsize=11, fontweight='bold', va='center', ha='right',
-                   color='#2c3e50',
-                   bbox=dict(boxstyle='round,pad=0.3', facecolor='white', 
-                            edgecolor=colors[i], linewidth=2, alpha=0.95))
             
-            # Statistics on the right: Median and N - SMALLER text
+            # Get color for year label based on median SOC value
+            median_norm = np.clip((year_median - 0) / (150 - 0), 0, 1)
+            year_color = cmap(median_norm)
+            
+            ax.text(left_edge_perspective, y_offset + 0.45*spacing, f'{year}', 
+                   fontsize=16, fontweight='bold', va='center', ha='right',
+                   color='#2c3e50',
+                   bbox=dict(boxstyle='round,pad=0.5', facecolor='white', 
+                            edgecolor=year_color, linewidth=2, alpha=0.95))
+            
+            # Statistics on the right - M and n ON THE SAME LINE
             right_edge_perspective = x_center + (global_max + 4 - x_center) * depth_factor
-            stats_text = f'M={year_median:.1f}\nn={n_samples}'
+            stats_text = f'M={year_median:.1f}  n={n_samples}'
             ax.text(right_edge_perspective, y_offset + 0.45*spacing, stats_text, 
-                   fontsize=9, fontweight='bold', va='center', ha='left',
+                   fontsize=13, fontweight='bold', va='center', ha='left',
                    color='#2c3e50', family='monospace',
-                   bbox=dict(boxstyle='round,pad=0.3', facecolor='lightyellow', 
-                            edgecolor=colors[i], linewidth=1.2, alpha=0.9))
+                   bbox=dict(boxstyle='round,pad=0.6', facecolor='lightyellow', 
+                            edgecolor=year_color, linewidth=1.2, alpha=0.9))
         
-        # Styling - SMALLER text
-        ax.set_xlabel('SOC (g/kg)', fontweight='bold', fontsize=14, labelpad=10, color='#2c3e50')
-        ax.set_ylabel('Year', fontweight='bold', fontsize=14, labelpad=10, color='#2c3e50')
+        # Styling
+        ax.set_xlabel('SOC (g/kg)', fontweight='bold', fontsize=18, labelpad=10, color='#2c3e50')
+        ax.set_ylabel('Year', fontweight='bold', fontsize=18, labelpad=10, color='#2c3e50')
         
-        # NO TITLE as requested
-        
-        # DEZOOM - Set limits with more space to see everything clearly
+        # Set limits
         ax.set_xlim(global_min - 10, global_max + 10)
-        ax.set_ylim(-0.45, len(years) * spacing + 0.25)  # Extra space below for legend
+        ax.set_ylim(-0.45, len(years) * spacing + 0.25)
         
-        # Clean up y-axis - remove ticks since we have labels
+        # Clean up y-axis
         ax.set_yticks([])
         
-        # Subtle grid only on x-axis
+        # Grid
         ax.grid(True, alpha=0.2, linestyle=':', axis='x', zorder=0, color='gray')
         ax.grid(False, axis='y')
         
-        # Legend BELOW the horizontal axis - MUCH SMALLER markers
+        # Legend
         legend_elements = [
             plt.Line2D([0], [0], marker='D', color='w', markerfacecolor='#2E86DE', 
                       markersize=6, markeredgewidth=1.5, markeredgecolor='white', 
@@ -177,26 +204,25 @@ class SOCRidgePlot:
                       markersize=6, markeredgewidth=1.5, markeredgecolor='white', 
                       label='Median', linestyle='None')
         ]
-        # Position legend BELOW x-axis using bbox_to_anchor
-        legend = ax.legend(handles=legend_elements, loc='upper center', fontsize=10, 
+        legend = ax.legend(handles=legend_elements, loc='upper center', fontsize=13, 
                           framealpha=0.98, edgecolor='#2c3e50', fancybox=True, 
                           shadow=True, borderpad=0.6, ncol=2,
-                          bbox_to_anchor=(0.5, -0.08))  # Below the axis
+                          bbox_to_anchor=(0.5, -0.08))
         legend.get_frame().set_linewidth(1.5)
         
-        # Remove spines for cleaner look
+        # Remove spines
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         ax.spines['left'].set_visible(False)
         ax.spines['bottom'].set_linewidth(2.5)
         ax.spines['bottom'].set_color('#2c3e50')
         
-        # Thicker tick marks - SMALLER text
-        ax.tick_params(axis='x', labelsize=11, width=2, length=6, color='#2c3e50')
+        # Tick marks
+        ax.tick_params(axis='x', labelsize=14, width=2, length=6, color='#2c3e50')
         
         plt.tight_layout()
         
-        # Save with higher DPI for quality
+        # Save
         output_path = self.output_dir / 'soc_ridge_plot.png'
         plt.savefig(output_path, dpi=350, bbox_inches='tight', facecolor='#f8f9fa')
         print(f"\n✓ Saved: {output_path}")
@@ -206,7 +232,9 @@ class SOCRidgePlot:
         print("\n" + "="*70)
         print("INTERPRETATION:")
         print("="*70)
-        print(f"• Each colored layer = SOC distribution for one year")
+        print(f"• Each layer = SOC distribution for one year")
+        print(f"• Color gradient: BLUE (0 g/kg) → GREEN → YELLOW (150 g/kg)")
+        print(f"• Same color scale across all years for comparison")
         print(f"• Wider areas = higher density of samples at that SOC value")
         print(f"• Blue diamonds (◆) = mean, Red circles (●) = median at bottom")
         print(f"• 3D perspective: layers recede into distance")

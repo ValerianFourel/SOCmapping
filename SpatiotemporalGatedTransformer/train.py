@@ -30,51 +30,12 @@ os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
 torch.distributed.init_process_group(backend='nccl', timeout=datetime.timedelta(minutes=20))
 
 
-# Uncomment and use this composite loss function if desired
-def composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
-    """Composite loss combining L1 and scaled chi-squared loss"""
-    errors = targets - outputs
-    l1_loss = torch.mean(torch.abs(errors))
-
-    squared_errors = errors ** 2
-    chi2_unscaled = (1/4) * squared_errors * torch.exp(-squared_errors / (2 * sigma))
-    chi2_unscaled_mean = torch.mean(chi2_unscaled)
-
-    chi2_unscaled_mean = torch.clamp(chi2_unscaled_mean, min=1e-8)
-    scale_factor = l1_loss / chi2_unscaled_mean
-    chi2_scaled = scale_factor * chi2_unscaled_mean
-
-    return alpha * l1_loss + (1 - alpha) * chi2_scaled
-
-
-def composite_l2_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
-    """Composite loss combining L2 and scaled chi-squared loss"""
-    errors = targets - outputs
-
-    # L2 loss: mean squared error
-    l2_loss = torch.mean(errors ** 2)
-
-    # Standard chi-squared loss: errors^2 / sigma^2
-    chi2_loss = torch.mean((errors ** 2) / (sigma ** 2))
-
-    # Ensure chi2_loss is not too small to avoid division issues
-    chi2_loss = torch.clamp(chi2_loss, min=1e-8)
-
-    # Scale chi2_loss to match the magnitude of l2_loss
-    scale_factor = l2_loss / chi2_loss
-    chi2_scaled = scale_factor * chi2_loss
-
-    # Combine the losses with the weighting factor alpha
-    return alpha * l2_loss + (1 - alpha) * chi2_scaled
-
-
 def parse_args():
     parser = argparse.ArgumentParser(description='Train SimpleSGT model with customizable parameters')
     parser.add_argument('--lr', type=float, default=0.0002, help='Learning rate')
     parser.add_argument('--num_heads', type=int, default=NUM_HEADS, help='Number of attention heads')
     parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of transformer layers')
-    parser.add_argument('--loss_type', type=str, default='l1', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
-    parser.add_argument('--loss_alpha', type=float, default=0.5, help='Weight for L1 loss in composite loss (if used)')
+    parser.add_argument('--loss_type', type=str, default='l1', choices=['l1', 'mse'], help='Type of loss function')
     parser.add_argument('--target_transform', type=str, default='normalize', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
     parser.add_argument('--use_validation',  type=bool, default=True, help='Whether to use validation set')
     parser.add_argument('--output-dir', type=str, default='output', help='Output directory')
@@ -89,13 +50,8 @@ def parse_args():
     return parser.parse_args()
 
 def train_model(model, train_loader, val_loader,target_mean,target_std, num_epochs=num_epochs, accelerator=None, lr=0.001,
-                loss_type='l1', loss_alpha=0.5, target_transform='none', min_r2=0.5, use_validation=True):
-    # Define loss function based on loss_type
-    if loss_type == 'composite_l1':
-        criterion = lambda outputs, targets: composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=loss_alpha)
-    elif loss_type == 'composite_l2':
-        criterion = lambda outputs, targets: composite_l2_chi2_loss(outputs, targets, sigma=3.0, alpha=loss_alpha)
-    elif loss_type == 'l1':
+                loss_type='l1', target_transform='none', min_r2=0.5, use_validation=True):
+    if loss_type == 'l1':
         criterion = nn.L1Loss()
     elif loss_type == 'mse':
         criterion = nn.MSELoss()
@@ -468,7 +424,6 @@ if __name__ == "__main__":
                     "num_layers": args.num_layers,
                     "dropout_rate": args.dropout_rate,
                     "loss_type": args.loss_type,
-                    "loss_alpha": args.loss_alpha,
                     "target_transform": args.target_transform,
                     "use_validation": args.use_validation
                 }
@@ -614,7 +569,6 @@ if __name__ == "__main__":
             accelerator=accelerator,
             lr=args.lr,
             loss_type=args.loss_type,
-            loss_alpha=args.loss_alpha,
             target_transform=args.target_transform,
             min_r2=0.40,
             use_validation=args.use_validation,
@@ -783,7 +737,6 @@ if __name__ == "__main__":
                     'TIME_END': TIME_END,
                     'target_transform': args.target_transform,
                     'loss_type': args.loss_type,
-                    'loss_alpha': args.loss_alpha,
                     'learning_rate': args.lr,
                     'num_heads': args.num_heads,
                     'num_layers': args.num_layers,

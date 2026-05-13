@@ -14,7 +14,7 @@ from datetime import datetime
 import matplotlib.colors as mcolors
 
 # Initialize the Earth Engine API
-ee.Initialize()
+ee.Initialize(project="sgtmodel")
 
 # Dictionary of class values and their descriptions with BOLD, CONTRASTING colors
 class_dict = {
@@ -61,8 +61,8 @@ def process_batch(batch_data):
     batch_idx, coords_batch, batch_size = batch_data
 
     try:
-        # Re-initialize EE for each process
-        ee.Initialize()
+        # Re-initialize EE for each process with project parameter
+        ee.Initialize(project="sgtmodel")
 
         # Load WorldCover image
         worldcover = ee.ImageCollection("ESA/WorldCover/v100") \
@@ -100,15 +100,16 @@ def process_batch(batch_data):
         error_msg = f"Error in batch {batch_idx}: {str(e)}"
         return batch_idx, [None] * len(coords_batch), error_msg
 
-def create_landcover_visualization(coordinates, landcover_values, bavaria_boundary, save_path):
+def create_landcover_visualization(coordinates, landcover_values, bavaria_boundary, save_path, point_area_km2=1.0):
     """
-    Create and save land cover map visualization of Bavaria with HIGHLY VISIBLE POINTS.
+    Create and save land cover map visualization of Bavaria with RESEARCH PAPER QUALITY.
 
     Parameters:
     coordinates (numpy.array): Array of coordinates (latitude, longitude)
     landcover_values (numpy.array): Array of land cover class values
     bavaria_boundary (GeoDataFrame): Bavaria boundary geometry
     save_path (str): Directory path where the images should be saved
+    point_area_km2 (float): Area represented by each point in km² (default: 1.0 km²)
     """
 
     # Get current timestamp
@@ -124,6 +125,11 @@ def create_landcover_visualization(coordinates, landcover_values, bavaria_bounda
 
     print(f"Valid land cover samples: {len(valid_values)}")
 
+    # Check if we have any valid data
+    if len(valid_values) == 0:
+        print("❌ No valid land cover data retrieved! Check Earth Engine authentication and permissions.")
+        return
+
     # Get Bavaria bounds for proper aspect ratio
     bounds = bavaria_boundary.total_bounds
     min_lon, min_lat, max_lon, max_lat = bounds
@@ -136,14 +142,17 @@ def create_landcover_visualization(coordinates, landcover_values, bavaria_bounda
     print(f"Bavaria bounds: Lon {min_lon:.2f}-{max_lon:.2f}, Lat {min_lat:.2f}-{max_lat:.2f}")
     print(f"Aspect ratio (lon/lat): {aspect_ratio:.2f}")
 
-    # Create the plot with PROPER RECTANGULAR SHAPE for Bavaria
-    fig, ax = plt.subplots(figsize=(18, 12), dpi=300)  # Made wider for Bavaria's shape
+    # Create the plot with RESEARCH PAPER QUALITY - wider to accommodate legend
+    fig = plt.figure(figsize=(24, 14), dpi=300)  # Much wider for external legend
     fig.patch.set_facecolor('white')
+    
+    # Create axes with space for external legend on the right
+    ax = plt.axes([0.08, 0.10, 0.65, 0.80])  # [left, bottom, width, height] - reduced width for legend space
 
     # Plot Bavaria boundary with thick, dark border
     bavaria_boundary.boundary.plot(ax=ax, linewidth=4, edgecolor='black', alpha=1.0)
 
-    # Create scatter plot for each land cover class with MUCH LARGER, VISIBLE POINTS
+    # Create scatter plot for each land cover class with VISIBLE POINTS
     unique_classes = np.unique(valid_values)
     print(f"Found land cover classes: {unique_classes}")
 
@@ -162,88 +171,107 @@ def create_landcover_visualization(coordinates, landcover_values, bavaria_bounda
             class_coords = valid_coords[mask]
 
             if len(class_coords) > 0:
-                # MUCH LARGER, MORE VISIBLE POINTS
+                # Calculate area in km²
+                area_km2 = len(class_coords) * point_area_km2
+                
+                # VISIBLE POINTS with clear borders
                 ax.scatter(class_coords[:, 1], class_coords[:, 0], 
                           c=class_dict[class_val]['color'], 
-                          s=3.0,  # INCREASED from 0.5 to 3.0
-                          alpha=0.9,  # INCREASED opacity
-                          edgecolors='white',  # WHITE BORDER for contrast
-                          linewidths=0.1,  # Thin white border
-                          label=f"{class_dict[class_val]['name']} ({int(class_val)}) - {len(class_coords):,} pts")
+                          s=3.0,
+                          alpha=0.9,
+                          edgecolors='white',
+                          linewidths=0.1,
+                          label=f"{class_dict[class_val]['name']} - ~{area_km2:,.0f} km²")
         else:
             # Handle unknown classes
             mask = valid_values == class_val
             class_coords = valid_coords[mask]
             if len(class_coords) > 0:
+                area_km2 = len(class_coords) * point_area_km2
+                
                 ax.scatter(class_coords[:, 1], class_coords[:, 0], 
                           c='darkgray', 
-                          s=3.0,  # INCREASED size
-                          alpha=0.9,  # INCREASED opacity
+                          s=3.0,
+                          alpha=0.9,
                           edgecolors='black',
                           linewidths=0.1,
-                          label=f"Unknown ({int(class_val)}) - {len(class_coords):,} pts")
+                          label=f"Unknown ({int(class_val)}) - ~{area_km2:,.0f} km²")
 
     # Set PROPER limits to show Bavaria nicely
     ax.set_xlim(min_lon - 0.02, max_lon + 0.02)
     ax.set_ylim(min_lat - 0.02, max_lat + 0.02)
 
-    # Set plot properties with LARGER FONTS
-    ax.set_xlabel('Longitude', fontsize=16, fontweight='bold')
-    ax.set_ylabel('Latitude', fontsize=16, fontweight='bold')
-    ax.set_title('Land Cover Classification - Bavaria (ESA WorldCover 2020)\n', 
-                fontsize=20, fontweight='bold', pad=20)
+    # RESEARCH PAPER QUALITY text - MUCH LARGER FONTS
+    ax.set_xlabel('Longitude (°)', fontsize=24, fontweight='bold', labelpad=12)
+    ax.set_ylabel('Latitude (°)', fontsize=24, fontweight='bold', labelpad=12)
+    ax.set_title('Land Cover Classification - Bavaria (ESA WorldCover 2020)', 
+                fontsize=28, fontweight='bold', pad=25)
 
-    # Add BETTER legend with smaller font to fit more classes
-    legend = ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=10, 
-                      markerscale=2.0,  # Make legend markers bigger
-                      frameon=True, fancybox=True, shadow=True)
-    legend.set_title('Land Cover Classes (with point counts)', prop={'size': 12, 'weight': 'bold'})
+    # LARGER tick labels for research paper quality
+    ax.tick_params(axis='both', which='major', labelsize=20, width=1.5, length=8)
+
+    # Add EXTERNAL LEGEND on the right side - RESEARCH PAPER QUALITY
+    legend = ax.legend(
+        bbox_to_anchor=(1.05, 1.0),  # Position outside plot area on the right
+        loc='upper left',
+        fontsize=16,  # Large, readable font
+        markerscale=3.0,  # Make legend markers much bigger
+        frameon=True,
+        fancybox=True,
+        shadow=True,
+        borderpad=1.2,  # More padding inside legend box
+        labelspacing=1.0,  # More space between legend entries
+        handletextpad=1.0,  # More space between marker and text
+        title_fontsize=18
+    )
+    legend.set_title('Land Cover Classes\n(Estimated Area)', 
+                    prop={'size': 18, 'weight': 'bold'})
     legend.get_frame().set_facecolor('white')
-    legend.get_frame().set_alpha(0.95)
+    legend.get_frame().set_alpha(0.98)
+    legend.get_frame().set_linewidth(2.0)  # Thicker frame for legend
 
-    # DO NOT force equal aspect - let Bavaria show its natural elongated shape
-    # ax.set_aspect('equal')  # REMOVED THIS LINE
+    # Add subtle grid with RESEARCH PAPER appropriate style
+    ax.grid(True, alpha=0.25, linestyle='--', linewidth=1.0, color='gray')
 
-    # Add subtle grid
-    ax.grid(True, alpha=0.2, linestyle='--', linewidth=0.5)
+    # Save the plot with HIGH QUALITY for research papers
+    output_file = os.path.join(save_path, f'bavaria_landcover_PAPER_{timestamp}.png')
+    plt.savefig(output_file, dpi=300, bbox_inches='tight', facecolor='white', pad_inches=0.2)
+    print(f"Saved RESEARCH PAPER quality land cover map: {output_file}")
 
-    # Make tick labels larger
-    ax.tick_params(axis='both', which='major', labelsize=12)
+    # Also save as PDF for publication quality
+    pdf_file = os.path.join(save_path, f'bavaria_landcover_PAPER_{timestamp}.pdf')
+    plt.savefig(pdf_file, format='pdf', bbox_inches='tight', facecolor='white', pad_inches=0.2)
+    print(f"Saved PUBLICATION quality land cover map (PDF): {pdf_file}")
 
-    # Adjust layout to prevent legend cutoff
-    plt.tight_layout()
+    # Also save as EPS for LaTeX documents
+    eps_file = os.path.join(save_path, f'bavaria_landcover_PAPER_{timestamp}.eps')
+    plt.savefig(eps_file, format='eps', bbox_inches='tight', facecolor='white', pad_inches=0.2)
+    print(f"Saved EPS for LaTeX: {eps_file}")
 
-    # Save the plot with HIGH QUALITY
-    output_file = os.path.join(save_path, f'bavaria_landcover_VISIBLE_{timestamp}.png')
-    plt.savefig(output_file, dpi=300, bbox_inches='tight', facecolor='white')
-    print(f"Saved HIGHLY VISIBLE land cover map: {output_file}")
-
-    # Also save as PDF for highest quality
-    pdf_file = os.path.join(save_path, f'bavaria_landcover_VISIBLE_{timestamp}.pdf')
-    plt.savefig(pdf_file, format='pdf', bbox_inches='tight', facecolor='white')
-    print(f"Saved VISIBLE land cover map (PDF): {pdf_file}")
-
-    plt.show()
+    plt.close()
 
     # Create ENHANCED class statistics
-    create_enhanced_class_statistics(valid_values, save_path, timestamp, bavaria_boundary)
+    create_enhanced_class_statistics(valid_values, point_area_km2, save_path, timestamp, bavaria_boundary)
 
-def create_enhanced_class_statistics(landcover_values, save_path, timestamp, bavaria_boundary):
-    """Create and save ENHANCED statistics about land cover classes."""
+def create_enhanced_class_statistics(landcover_values, point_area_km2, save_path, timestamp, bavaria_boundary):
+    """Create and save ENHANCED statistics about land cover classes with RESEARCH PAPER QUALITY."""
 
     # Count occurrences of each class
     unique, counts = np.unique(landcover_values, return_counts=True)
 
-    # Calculate percentages
+    # Calculate percentages and areas
     total_points = len(landcover_values)
     percentages = (counts / total_points) * 100
+    
+    # Calculate areas based on point_area_km2
+    areas_km2 = counts * point_area_km2
 
-    # Estimate Bavaria's area for density calculations
+    # Estimate Bavaria's area for reference
     bavaria_area_km2 = bavaria_boundary.to_crs('EPSG:3857').area.iloc[0] / 1e6  # Convert to km²
 
     # Create ENHANCED statistics DataFrame
     stats_data = []
-    for class_val, count, percentage in zip(unique, counts, percentages):
+    for class_val, count, percentage, area_km2 in zip(unique, counts, percentages, areas_km2):
         if class_val in class_dict:
             class_name = class_dict[class_val]['name']
             color = class_dict[class_val]['color']
@@ -256,76 +284,110 @@ def create_enhanced_class_statistics(landcover_values, save_path, timestamp, bav
             'Class_Name': class_name,
             'Color': color,
             'Point_Count': count,
-            'Percentage': round(percentage, 2),
-            'Density_per_km2': round(count / bavaria_area_km2, 1),
-            'Est_Coverage_km2': round((percentage/100) * bavaria_area_km2, 1)
+            'Area_km2': round(area_km2, 1),
+            'Percentage': round(percentage, 2)
         })
 
     stats_df = pd.DataFrame(stats_data)
-    stats_df = stats_df.sort_values('Point_Count', ascending=False)
+    
+    # Only sort if we have data
+    if len(stats_df) > 0:
+        stats_df = stats_df.sort_values('Area_km2', ascending=False)
 
     # Save ENHANCED statistics
-    stats_file = os.path.join(save_path, f'bavaria_landcover_ENHANCED_stats_{timestamp}.csv')
+    stats_file = os.path.join(save_path, f'bavaria_landcover_PAPER_stats_{timestamp}.csv')
     stats_df.to_csv(stats_file, index=False)
-    print(f"Saved ENHANCED statistics: {stats_file}")
+    print(f"Saved RESEARCH PAPER statistics: {stats_file}")
 
     # Print statistics
     print("\n" + "="*80)
-    print("ENHANCED LAND COVER STATISTICS FOR BAVARIA")
+    print("RESEARCH PAPER QUALITY LAND COVER STATISTICS FOR BAVARIA")
     print("="*80)
     print(f"Total sample points: {total_points:,}")
-    print(f"Bavaria area: ~{bavaria_area_km2:,.0f} km²")
+    print(f"Point area: {point_area_km2} km² per point")
+    print(f"Total mapped area: ~{total_points * point_area_km2:,.0f} km²")
+    print(f"Bavaria total area: ~{bavaria_area_km2:,.0f} km²")
     print("-"*80)
     for _, row in stats_df.head(10).iterrows():  # Show top 10
-        print(f"{row['Class_Name']:25} | {row['Point_Count']:7,} pts ({row['Percentage']:5.1f}%) | ~{row['Est_Coverage_km2']:6,.0f} km²")
+        print(f"{row['Class_Name']:25} | {row['Point_Count']:7,} pts | ~{row['Area_km2']:10,.0f} km² ({row['Percentage']:5.1f}%)")
 
-    # Create BETTER pie chart with enhanced visuals
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10), dpi=300)
+    # Only create charts if we have data
+    if len(stats_df) == 0:
+        print("⚠️  No data to create charts")
+        return
+
+    # Create RESEARCH PAPER QUALITY charts
+    fig = plt.figure(figsize=(24, 12), dpi=300)
     fig.patch.set_facecolor('white')
+    
+    # Create two subplots with proper spacing
+    ax1 = plt.subplot(1, 2, 1)
+    ax2 = plt.subplot(1, 2, 2)
 
-    # Enhanced pie chart
+    # Enhanced pie chart with RESEARCH PAPER fonts
     colors = [row['Color'] for _, row in stats_df.iterrows()]
-    labels = [f"{row['Class_Name']}\n{row['Point_Count']:,} pts" for _, row in stats_df.iterrows()]
-    sizes = [row['Point_Count'] for _, row in stats_df.iterrows()]
+    labels = [f"{row['Class_Name']}" for _, row in stats_df.iterrows()]
+    sizes = [row['Area_km2'] for _, row in stats_df.iterrows()]
 
     wedges, texts, autotexts = ax1.pie(sizes, labels=None, colors=colors, autopct='%1.1f%%',
-                                      startangle=90, textprops={'fontsize': 10, 'fontweight': 'bold'})
+                                      startangle=90, 
+                                      textprops={'fontsize': 16, 'fontweight': 'bold'},
+                                      pctdistance=0.85)
 
-    ax1.set_title(f'Land Cover Distribution - Bavaria\n{total_points:,} Sample Points', 
-                 fontsize=16, fontweight='bold', pad=20)
+    # Make percentage text more visible
+    for autotext in autotexts:
+        autotext.set_color('white')
+        autotext.set_fontweight('bold')
+        autotext.set_fontsize(16)
 
-    # Enhanced bar chart
+    ax1.set_title(f'Land Cover Distribution - Bavaria\n~{total_points * point_area_km2:,.0f} km² Mapped', 
+                 fontsize=24, fontweight='bold', pad=25)
+
+    # Add legend for pie chart - outside on the right
+    ax1.legend(wedges, labels, loc='center left', bbox_to_anchor=(1.0, 0.5),
+              fontsize=16, frameon=True, shadow=True, 
+              title='Land Cover Classes', title_fontsize=18)
+
+    # Enhanced bar chart with RESEARCH PAPER fonts
     y_pos = np.arange(len(stats_df))
-    bars = ax2.barh(y_pos, stats_df['Percentage'], color=colors, alpha=0.8, 
-                   edgecolor='black', linewidth=0.5)
+    bars = ax2.barh(y_pos, stats_df['Area_km2'], color=colors, alpha=0.85, 
+                   edgecolor='black', linewidth=1.5)
 
     ax2.set_yticks(y_pos)
-    ax2.set_yticklabels([f"{row['Class_Name']}\n({row['Point_Count']:,} pts)" 
-                        for _, row in stats_df.iterrows()], fontsize=10)
-    ax2.set_xlabel('Percentage of Total Points (%)', fontsize=14, fontweight='bold')
-    ax2.set_title('Detailed Breakdown by Point Count', fontsize=16, fontweight='bold')
+    ax2.set_yticklabels([f"{row['Class_Name']}" for _, row in stats_df.iterrows()], 
+                        fontsize=16, fontweight='medium')
+    ax2.set_xlabel('Area (km²)', fontsize=22, fontweight='bold', labelpad=12)
+    ax2.set_title('Detailed Breakdown by Area', fontsize=24, fontweight='bold', pad=20)
 
-    # Add percentage labels on bars
-    for i, (bar, pct, count) in enumerate(zip(bars, stats_df['Percentage'], stats_df['Point_Count'])):
-        ax2.text(bar.get_width() + 0.5, bar.get_y() + bar.get_height()/2, 
-                f'{pct:.1f}%\n({count:,})', ha='left', va='center', 
-                fontweight='bold', fontsize=9)
+    # Add area and percentage labels on bars - LARGER FONT
+    for i, (bar, area, pct) in enumerate(zip(bars, stats_df['Area_km2'], stats_df['Percentage'])):
+        ax2.text(bar.get_width() + max(stats_df['Area_km2']) * 0.01, 
+                bar.get_y() + bar.get_height()/2, 
+                f'{area:,.0f} km²\n({pct:.1f}%)', 
+                ha='left', va='center', 
+                fontweight='bold', fontsize=14)
 
-    ax2.grid(axis='x', alpha=0.3, linestyle='--')
-    ax2.set_xlim(0, max(stats_df['Percentage']) * 1.2)
+    ax2.grid(axis='x', alpha=0.3, linestyle='--', linewidth=1.0)
+    ax2.set_xlim(0, max(stats_df['Area_km2']) * 1.25)  # More space for labels
+    ax2.tick_params(axis='both', which='major', labelsize=16)
 
     plt.tight_layout()
 
-    # Save ENHANCED charts
-    chart_file = os.path.join(save_path, f'bavaria_landcover_ENHANCED_charts_{timestamp}.png')
+    # Save RESEARCH PAPER QUALITY charts
+    chart_file = os.path.join(save_path, f'bavaria_landcover_PAPER_charts_{timestamp}.png')
     plt.savefig(chart_file, dpi=300, bbox_inches='tight', facecolor='white')
-    print(f"Saved ENHANCED charts: {chart_file}")
+    print(f"Saved RESEARCH PAPER quality charts: {chart_file}")
 
-    plt.show()
+    # Save as PDF for publication
+    pdf_chart_file = os.path.join(save_path, f'bavaria_landcover_PAPER_charts_{timestamp}.pdf')
+    plt.savefig(pdf_chart_file, format='pdf', bbox_inches='tight', facecolor='white')
+    print(f"Saved PUBLICATION quality charts (PDF): {pdf_chart_file}")
+
+    plt.close()
 
 def main():
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Extract and visualize land cover for Bavaria with HIGHLY VISIBLE POINTS')
+    parser = argparse.ArgumentParser(description='Extract and visualize land cover for Bavaria - RESEARCH PAPER QUALITY')
     parser.add_argument('--start', type=int, default=0, 
                         help='Start index (default: 0)')
     parser.add_argument('--end', type=int, default=None, 
@@ -334,10 +396,12 @@ def main():
                         help='Batch size for Earth Engine requests (default: 500)')
     parser.add_argument('--workers', type=int, default=None,
                         help='Number of worker processes (default: number of CPU cores)')
-    parser.add_argument('--output-dir', type=str, default='./bavaria_landcover_VISIBLE',
-                        help='Output directory (default: ./bavaria_landcover_VISIBLE)')
+    parser.add_argument('--output-dir', type=str, default='./bavaria_landcover_PAPER',
+                        help='Output directory (default: ./bavaria_landcover_PAPER)')
+    parser.add_argument('--point-area', type=float, default=1.0,
+                        help='Area represented by each point in km² (default: 1.0)')
     parser.add_argument('--coordinates-path', type=str, 
-                        default="/home/vfourel/SOCProject/SOCmapping/BaselinesXGBoostAndRF/RandomForestFinalResults2023/coordinates_1mil_rf.npy",
+                        default="/home/valerian/SGTPublication/Weights-ResidualsModels-MappingInference-SOCmapping/BaselinesXGBoostAndRF/RandomForestFinalResults2023/coordinates_1mil_rf.npy",
                         help='Path to coordinates file')
 
     args = parser.parse_args()
@@ -367,6 +431,7 @@ def main():
     print(f"🔄 Processing coordinates from index {args.start} to {end_idx}")
     print(f"📊 Total coordinates to process: {len(coordinates):,}")
     print(f"📦 Batch size: {args.batch_size}")
+    print(f"📏 Point area: {args.point_area} km² per point")
 
     # Determine number of workers
     num_workers = args.workers if args.workers else cpu_count()
@@ -409,6 +474,14 @@ def main():
             print(f"  {error}")
         if len(errors) > 3:
             print(f"  ... and {len(errors) - 3} more errors")
+        
+        # Check if ALL batches failed
+        valid_count = sum(1 for val in all_landcover_values if val is not None)
+        if valid_count == 0:
+            print("\n❌ ALL BATCHES FAILED! This is likely an Earth Engine authentication issue.")
+            print("💡 Please check your Earth Engine project permissions.")
+            print(f"   Project ID: sgtmodel")
+            return
 
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
@@ -426,13 +499,14 @@ def main():
     print(f"💾 Saved coordinates: {coords_file}")
     print(f"💾 Saved landcover values: {landcover_file}")
 
-    # Create HIGHLY VISIBLE visualizations
-    print("🎨 Creating HIGHLY VISIBLE visualizations...")
-    create_landcover_visualization(coordinates, all_landcover_values, bavaria_boundary, args.output_dir)
+    # Create RESEARCH PAPER QUALITY visualizations
+    print("🎨 Creating RESEARCH PAPER QUALITY visualizations...")
+    create_landcover_visualization(coordinates, all_landcover_values, bavaria_boundary, 
+                                   args.output_dir, args.point_area)
 
     print(f"\n✅ Processing complete!")
     print(f"📁 Results saved in: {args.output_dir}")
-    print("🔍 Points are now MUCH MORE VISIBLE!")
+    print("📄 RESEARCH PAPER QUALITY figures generated (PNG, PDF, and EPS formats)!")
 
 if __name__ == "__main__":
     main()

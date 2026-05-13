@@ -160,8 +160,8 @@ class Simple3DAnalyzer:
         print(f"  (Delete this file to force re-fetch from API)")
 
     def make_3d_plot(self):
-        """Create pretty 3D scatter plot with discrete years and planar fit"""
-        print("\nCreating 3D plot...")
+        """Create RESEARCH PAPER QUALITY 3D scatter plot with ABSOLUTE MAXIMUM YEAR SPACING"""
+        print("\nCreating RESEARCH PAPER QUALITY 3D plot with MAXIMUM year spacing...")
         
         data = self.full_df[['year', 'altitude', 'OC']].dropna()
         
@@ -231,27 +231,27 @@ class Simple3DAnalyzer:
         print(f"\nAt year {first_year} (first year, year_centered=0):")
         print(f"  Base SOC ≈ {intercept:.2f} g/kg (at mean altitude)")
         
-        # Create figure with gridspec - MORE space for text box (fully outside)
+        # MAXIMUM EFFORT: EXTRA EXTRA WIDE figure to give years MAXIMUM horizontal space
         from matplotlib.gridspec import GridSpec
         
-        fig = plt.figure(figsize=(20, 12))
-        gs = GridSpec(1, 2, width_ratios=[1.2, 3.5], wspace=0.15)
+        # EXTREMELY WIDE figure for absolute maximum year spacing
+        fig = plt.figure(figsize=(38, 14), dpi=300)  # INCREASED from 32 to 38 inches!
+        fig.patch.set_facecolor('white')
         
-        # Text box in left panel (FULLY outside and independent)
-        ax_text = fig.add_subplot(gs[0])
-        ax_text.axis('off')  # Hide axes
+        # GridSpec: Maximum width ratio for plot
+        gs = GridSpec(1, 2, width_ratios=[4.5, 0.8], wspace=0.10)  # Even more width for plot, tighter overall
         
-        # 3D plot in right panel - completely separate
-        ax = fig.add_subplot(gs[1], projection='3d')
+        # 3D plot in left panel with MAXIMUM YEAR AXIS SPACE
+        ax = fig.add_subplot(gs[0], projection='3d')
         
         # Remove background grid and panes for cleaner look
         ax.xaxis.pane.fill = False
         ax.yaxis.pane.fill = False
         ax.zaxis.pane.fill = False
-        ax.xaxis.pane.set_edgecolor('w')
-        ax.yaxis.pane.set_edgecolor('w')
-        ax.zaxis.pane.set_edgecolor('w')
-        ax.grid(False)
+        ax.xaxis.pane.set_edgecolor('lightgray')
+        ax.yaxis.pane.set_edgecolor('lightgray')
+        ax.zaxis.pane.set_edgecolor('lightgray')
+        ax.grid(True, alpha=0.15, linestyle='--', linewidth=0.5)
         
         # Set white background
         ax.xaxis.pane.set_alpha(0)
@@ -277,15 +277,15 @@ class Simple3DAnalyzer:
                                 cmap='viridis', 
                                 vmin=data['OC'].min(),
                                 vmax=data['OC'].max(),
-                                s=35, 
-                                alpha=0.7,
+                                s=50,
+                                alpha=0.75,
                                 edgecolors='black',
-                                linewidth=0.2)
+                                linewidth=0.3)
         
         # Add colorbar for SOC
-        cbar = plt.colorbar(scatter, ax=ax, pad=0.1, shrink=0.7)
-        cbar.set_label('SOC (g/kg)', fontweight='bold', fontsize=12)
-        cbar.ax.tick_params(labelsize=10)
+        cbar = plt.colorbar(scatter, ax=ax, pad=0.02, shrink=0.62, aspect=22)  # Closer to plot
+        cbar.set_label('SOC (g/kg)', fontweight='bold', fontsize=20, labelpad=10)
+        cbar.ax.tick_params(labelsize=18, width=1.5, length=8)
         
         # Create mesh for plane (using centered years)
         year_range = np.linspace(0, data['year_centered'].max(), 10)
@@ -298,55 +298,91 @@ class Simple3DAnalyzer:
         
         # Plot plane with subtle styling
         ax.plot_surface(year_grid_actual, alt_grid, soc_grid, 
-                       alpha=0.15, color='crimson', 
+                       alpha=0.18, color='crimson', 
                        edgecolor='none', antialiased=True)
         
         # Add subtle wireframe on plane
         ax.plot_wireframe(year_grid_actual, alt_grid, soc_grid,
-                         alpha=0.1, color='darkred', linewidth=0.5)
+                         alpha=0.12, color='darkred', linewidth=0.6)
         
-        # Labels with better styling
-        ax.set_xlabel('\nYear', fontweight='bold', fontsize=14, labelpad=10)
-        ax.set_ylabel('\nAltitude (m)', fontweight='bold', fontsize=14, labelpad=10)
-        ax.set_zlabel('\nSOC (g/kg)', fontweight='bold', fontsize=14, labelpad=10)
+        # ABSOLUTE MAXIMUM EFFORT: HUGE padding for year axis labels
+        ax.set_xlabel('\n\n\n\nYear', fontweight='bold', fontsize=28, labelpad=50)  # 4 newlines, labelpad=50!
+        ax.set_ylabel('\nAltitude (m)', fontweight='bold', fontsize=28, labelpad=25)
+        ax.set_zlabel('\nSOC (g/kg)', fontweight='bold', fontsize=28, labelpad=25)
         
-        # No title - cleaner look
+        # ABSOLUTE MAXIMUM tick padding for years
+        ax.tick_params(axis='x', labelsize=20, pad=25, width=1.8, length=10)  # pad=25 (was 20)!
+        ax.tick_params(axis='y', labelsize=20, pad=12, width=1.8, length=10)
+        ax.tick_params(axis='z', labelsize=20, pad=12, width=1.8, length=10)
         
-        # Set discrete year ticks
-        ax.set_xticks(years_unique[::2])  # Show every other year
-        ax.set_xticklabels(years_unique[::2], fontsize=10)
+        # Show FEWER years for even MORE spacing - every 3rd year!
+        year_step = 3 if len(years_unique) > 6 else 2  # Show every 3rd year if we have many years
+        ax.set_xticks(years_unique[::year_step])
+        ax.set_xticklabels(years_unique[::year_step], fontsize=20, fontweight='medium', rotation=0)
         
-        # PERFECT VIEW: Years horizontal in front, 10° turn for altitude
-        # elev=10: Looking slightly from above (10 degrees from eye level)
-        # azim=10: Only 10 degree rotation to see altitude spread
-        ax.view_init(elev=10, azim=10)
+        # MAXIMUM margins on year axis - 15% instead of 10%!
+        year_margin = (years_unique[-1] - years_unique[0]) * 0.15  # INCREASED from 0.10 to 0.15!
+        alt_margin = (data['altitude'].max() - data['altitude'].min()) * 0.05
+        soc_margin = (data['OC'].max() - data['OC'].min()) * 0.05
         
-        # Add text box in dedicated left panel (FULLY OUTSIDE and INDEPENDENT)
-        textstr = (f'Plane Equation:\n'
-                  f'SOC = {intercept:.2f} + {year_coef:.3f}×(Year-{first_year})\n'
-                  f'      + {alt_coef:.4f}×Altitude\n\n'
+        ax.set_xlim(years_unique[0] - year_margin, years_unique[-1] + year_margin)
+        ax.set_ylim(data['altitude'].min() - alt_margin, data['altitude'].max() + alt_margin)
+        ax.set_zlim(data['OC'].min() - soc_margin, data['OC'].max() + soc_margin)
+        
+        # Optimized view angle - more frontal to spread years horizontally
+        ax.view_init(elev=12, azim=5)  # REDUCED azim from 8 to 5 for more frontal view
+        
+        # Pull back camera more to see full year axis spread
+        ax.dist = 10.5  # REDUCED from 10.8 to see more
+        
+        # RESEARCH PAPER QUALITY: Create EXTERNAL LEGEND in right panel
+        ax_legend = fig.add_subplot(gs[1])
+        ax_legend.axis('off')  # Hide axes
+        
+        # Create simplified text for legend box
+        textstr = (f'Regression Plane:\n'
+                  f'━━━━━━━━━━━━━━━\n'
+                  f'SOC = {intercept:.2f}\n'
+                  f'    + {year_coef:.3f}×Year\n'
+                  f'    + {alt_coef:.4f}×Altitude\n\n'
                   f'R² = {r2:.3f}\n\n'
-                  f'Statistical Significance:\n'
-                  f'  Intercept: {sig_stars(p_intercept)} (p={p_intercept:.2e})\n'
-                  f'  Year:      {sig_stars(p_year)} (p={p_year:.2e})\n'
-                  f'  Altitude:  {sig_stars(p_alt)} (p={p_alt:.2e})\n\n'
-                  f'*** p<0.001, ** p<0.01, * p<0.05\n\n'
-                  f'Interpretation:\n'
-                  f'  • Base ({first_year}): {intercept:.2f} g/kg\n'
-                  f'  • Δ/year: +{year_coef:.3f} g/kg\n'
-                  f'  • Δ/meter: +{alt_coef:.4f} g/kg')
+                  f'Effects:\n'
+                  f'━━━━━━━━━━━━━━━\n'
+                  f'Year: {sig_stars(p_year)}\n'
+                  f'Altitude: {sig_stars(p_alt)}\n\n'
+                  f'*** p < 0.001\n'
+                  f'**  p < 0.01\n'
+                  f'*   p < 0.05')
         
-        props = dict(boxstyle='round', facecolor='white', alpha=0.98, edgecolor='black', linewidth=2)
-        # Place in DEDICATED left panel, fully visible
-        ax_text.text(0.5, 0.5, textstr, transform=ax_text.transAxes, fontsize=10,
-                    verticalalignment='center', horizontalalignment='center', 
-                    bbox=props, family='monospace')
+        # RESEARCH PAPER QUALITY: Readable legend box with bigger text
+        props = dict(boxstyle='round,pad=1.5', facecolor='white',
+                    alpha=0.98, edgecolor='black', linewidth=2.5)
         
-        # Save (GridSpec handles layout automatically)
-        output_path = self.output_dir / 'simple_3d_soc_plot.png'
-        plt.savefig(output_path, bbox_inches='tight', dpi=300, facecolor='white')
-        print(f"\n✓ Saved: {output_path}")
-        plt.show()
+        ax_legend.text(0.05, 0.98, textstr, 
+                      transform=ax_legend.transAxes, 
+                      fontsize=22,
+                      verticalalignment='top', 
+                      horizontalalignment='left', 
+                      bbox=props, 
+                      family='monospace',
+                      linespacing=1.8)
+        
+        # Save with high quality for research paper
+        output_path = self.output_dir / 'simple_3d_soc_plot_PAPER.png'
+        plt.savefig(output_path, bbox_inches='tight', dpi=300, facecolor='white', pad_inches=0.3)
+        print(f"\n✓ Saved RESEARCH PAPER quality plot: {output_path}")
+        
+        # Also save as PDF for publication
+        output_pdf = self.output_dir / 'simple_3d_soc_plot_PAPER.pdf'
+        plt.savefig(output_pdf, format='pdf', bbox_inches='tight', facecolor='white', pad_inches=0.3)
+        print(f"✓ Saved PDF for publication: {output_pdf}")
+        
+        # Also save as EPS for LaTeX
+        output_eps = self.output_dir / 'simple_3d_soc_plot_PAPER.eps'
+        plt.savefig(output_eps, format='eps', bbox_inches='tight', facecolor='white', pad_inches=0.3)
+        print(f"✓ Saved EPS for LaTeX: {output_eps}")
+        
+        plt.close()
         
         # Additional analysis
         print(f"\n{'='*60}")
@@ -372,7 +408,7 @@ class Simple3DAnalyzer:
 
 if __name__ == "__main__":
     print("="*60)
-    print("Simple 3D SOC Analysis")
+    print("RESEARCH PAPER QUALITY - Simple 3D SOC Analysis")
     print("="*60)
     
     analyzer = Simple3DAnalyzer()
@@ -382,5 +418,5 @@ if __name__ == "__main__":
     analyzer.make_3d_plot()
     
     print("\n" + "="*60)
-    print("✓ Done!")
+    print("✓ Done! RESEARCH PAPER QUALITY figures generated")
     print("="*60)

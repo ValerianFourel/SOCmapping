@@ -22,11 +22,11 @@ from config import (
 )
 from dataframe_loader import filter_dataframe, separate_and_add_data
 
-# Set style for beautiful plots
+# Set style for publication-quality plots
 plt.style.use('default')
 sns.set_palette("husl")
 
-# Custom color palette
+# Custom color palette - optimized for publication
 COLORS = {
     'primary': '#2E86AB',
     'secondary': '#A23B72', 
@@ -34,31 +34,65 @@ COLORS = {
     'success': '#00B4A6',
     'warning': '#F77E21',
     'background': '#F8F9FA',
-    'text': '#2D3436',
-    'grid': '#DDD6FE',
+    'text': '#000000',  # Pure black for maximum readability
+    'grid': '#CCCCCC',
     'training': '#3B82F6',
     'validation': '#EF4444',
     'fit': '#10B981'
 }
 
 def setup_plot_style():
-    """Setup consistent plot styling"""
+    """Setup publication-quality plot styling with large, readable text"""
     plt.rcParams.update({
+        # Font settings - significantly larger for publication
         'font.family': 'sans-serif',
-        'font.sans-serif': ['DejaVu Sans', 'Arial', 'sans-serif'],
-        'font.size': 11,
-        'axes.titlesize': 16,
-        'axes.labelsize': 12,
-        'xtick.labelsize': 10,
-        'ytick.labelsize': 10,
-        'legend.fontsize': 11,
-        'figure.titlesize': 18,
+        'font.sans-serif': ['Arial', 'DejaVu Sans', 'Helvetica', 'sans-serif'],
+        'font.size': 16,  # Base font size increased from 11
+        'axes.titlesize': 24,  # Increased from 16
+        'axes.labelsize': 20,  # Increased from 12
+        'xtick.labelsize': 16,  # Increased from 10
+        'ytick.labelsize': 16,  # Increased from 10
+        'legend.fontsize': 16,  # Increased from 11
+        'figure.titlesize': 28,  # Increased from 18
+        
+        # Line and marker sizes
+        'lines.linewidth': 2.5,
+        'lines.markersize': 8,
+        'patch.linewidth': 2.0,
+        
+        # Axes settings
+        'axes.linewidth': 1.5,
         'axes.spines.top': False,
         'axes.spines.right': False,
         'axes.grid': True,
-        'grid.alpha': 0.3,
-        'grid.linewidth': 0.5,
-        'axes.axisbelow': True
+        'grid.alpha': 0.4,
+        'grid.linewidth': 1.0,
+        'axes.axisbelow': True,
+        'axes.labelweight': 'bold',
+        'axes.titleweight': 'bold',
+        
+        # Tick settings
+        'xtick.major.width': 1.5,
+        'ytick.major.width': 1.5,
+        'xtick.major.size': 7,
+        'ytick.major.size': 7,
+        'xtick.minor.size': 4,
+        'ytick.minor.size': 4,
+        
+        # Legend settings
+        'legend.framealpha': 0.95,
+        'legend.edgecolor': 'black',
+        'legend.fancybox': True,
+        'legend.shadow': False,
+        'legend.frameon': True,
+        'legend.borderpad': 0.6,
+        'legend.labelspacing': 0.6,
+        
+        # Figure settings
+        'figure.dpi': 300,
+        'savefig.dpi': 300,
+        'savefig.bbox': 'tight',
+        'savefig.pad_inches': 0.1,
     })
 
 def vectorized_haversine(lon1, lat1, lon2, lat2, device='cpu'):
@@ -149,7 +183,7 @@ def fit_exponential_family(data):
     return best_dist, best_params, best_dist_name
 
 def create_spatial_distribution_plot(subset_df, remaining_df, save_path, iteration=0):
-    """Create a beautiful spatial distribution plot"""
+    """Create a publication-quality spatial distribution plot"""
     setup_plot_style()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
@@ -162,54 +196,62 @@ def create_spatial_distribution_plot(subset_df, remaining_df, save_path, iterati
     else:
         bavaria = gpd.read_file(bavaria_file)
 
-    fig, ax = plt.subplots(figsize=(12, 10), dpi=300, facecolor='white')
+    fig, ax = plt.subplots(figsize=(14, 12), dpi=300, facecolor='white')
     
-    # Plot Bavaria boundary with style
-    bavaria.boundary.plot(ax=ax, color=COLORS['text'], linewidth=2, alpha=0.8)
+    # Plot Bavaria boundary with enhanced styling
+    bavaria.boundary.plot(ax=ax, color=COLORS['text'], linewidth=2.5, alpha=1.0)
     bavaria.plot(ax=ax, color=COLORS['background'], alpha=0.3, edgecolor='none')
     
-    # Plot points with beautiful styling
+    # Plot points with enhanced visibility for publication
     scatter_train = ax.scatter(
         remaining_df['GPS_LONG'], remaining_df['GPS_LAT'], 
         c=COLORS['training'], 
-        s=25, 
+        s=50,  # Increased from 25
         alpha=0.7, 
         edgecolors='white',
-        linewidth=0.5,
-        label=f'Training Set (n={len(remaining_df)})'
+        linewidth=1.0,  # Increased from 0.5
+        label=f'Training Set (n={len(remaining_df)})',
+        zorder=2
     )
     
     scatter_val = ax.scatter(
         subset_df['GPS_LONG'], subset_df['GPS_LAT'], 
         c=COLORS['validation'], 
-        s=35, 
-        alpha=0.8,
+        s=70,  # Increased from 35
+        alpha=0.85,
         edgecolors='white',
-        linewidth=0.8,
+        linewidth=1.2,  # Increased from 0.8
         label=f'Validation Set (n={len(subset_df)})',
-        marker='s'
+        marker='s',
+        zorder=3
     )
     
-    # Styling
-    ax.set_title(f'Spatial Distribution Analysis', 
-                fontsize=20, fontweight='bold', pad=20, color=COLORS['text'])
-    ax.set_xlabel('Longitude (°E)', fontsize=14, fontweight='600')
-    ax.set_ylabel('Latitude (°N)', fontsize=14, fontweight='600')
+    # Enhanced title and labels
+    ax.set_title('Spatial Distribution Analysis', 
+                fontsize=26, fontweight='bold', pad=25, color=COLORS['text'])
+    ax.set_xlabel('Longitude (°E)', fontsize=22, fontweight='bold', labelpad=10)
+    ax.set_ylabel('Latitude (°N)', fontsize=22, fontweight='bold', labelpad=10)
     
-    # Legend with custom styling
+    # Enhanced legend
     legend = ax.legend(loc='upper right', frameon=True, fancybox=True, 
-                      shadow=True, framealpha=0.95, edgecolor='none')
+                      shadow=False, framealpha=0.95, edgecolor='black',
+                      fontsize=18, markerscale=1.5, borderpad=1.0,
+                      handletextpad=1.0, labelspacing=1.0)
     legend.get_frame().set_facecolor('white')
+    legend.get_frame().set_linewidth(1.5)
     
-    # Grid styling
-    ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+    # Enhanced grid
+    ax.grid(True, alpha=0.4, linestyle='--', linewidth=1.0, color=COLORS['grid'])
     ax.set_axisbelow(True)
     
-    # Remove top and right spines
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-    ax.spines['left'].set_color(COLORS['grid'])
-    ax.spines['bottom'].set_color(COLORS['grid'])
+    # Enhanced spines
+    ax.spines['left'].set_color(COLORS['text'])
+    ax.spines['bottom'].set_color(COLORS['text'])
+    ax.spines['left'].set_linewidth(1.5)
+    ax.spines['bottom'].set_linewidth(1.5)
+    
+    # Enhanced tick parameters
+    ax.tick_params(axis='both', which='major', labelsize=18, width=1.5, length=7, color=COLORS['text'])
     
     plt.tight_layout()
     filename = f'01_spatial_distribution_{timestamp}_iter{iteration}.png'
@@ -219,7 +261,7 @@ def create_spatial_distribution_plot(subset_df, remaining_df, save_path, iterati
     print(f"✓ Saved: {filename}")
 
 def create_distance_distribution_plot(subset_df, remaining_df, save_path, iteration=0, device='cpu'):
-    """Create a beautiful distance distribution plot"""
+    """Create a publication-quality distance distribution plot"""
     setup_plot_style()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
@@ -230,11 +272,11 @@ def create_distance_distribution_plot(subset_df, remaining_df, save_path, iterat
         print("No valid distances to plot")
         return
     
-    fig, ax = plt.subplots(figsize=(12, 8), dpi=300, facecolor='white')
+    fig, ax = plt.subplots(figsize=(14, 10), dpi=300, facecolor='white')
     
-    # Create histogram with gradient effect
-    n, bins, patches = ax.hist(distances, bins=40, density=True, alpha=0.7, 
-                              color=COLORS['success'], edgecolor='white', linewidth=0.8)
+    # Create histogram with enhanced visibility
+    n, bins, patches = ax.hist(distances, bins=40, density=True, alpha=0.75, 
+                              color=COLORS['success'], edgecolor='white', linewidth=1.2)
     
     # Apply gradient coloring to bars
     for i, p in enumerate(patches):
@@ -242,26 +284,32 @@ def create_distance_distribution_plot(subset_df, remaining_df, save_path, iterat
         p.set_facecolor(gradient_color)
         p.set_alpha(0.8)
     
-    
-    # Statistics annotation
+    # Statistics annotation with larger text
     stats_text = f"""Statistics:
-    Mean: {np.mean(distances):.2f} km
-    Median: {np.median(distances):.2f} km
-    Std: {np.std(distances):.2f} km
-    Min: {np.min(distances):.2f} km
-    Max: {np.max(distances):.2f} km"""
+Mean: {np.mean(distances):.2f} km
+Median: {np.median(distances):.2f} km
+Std: {np.std(distances):.2f} km
+Min: {np.min(distances):.2f} km
+Max: {np.max(distances):.2f} km"""
     
-    ax.text(0.98, 0.98, stats_text, transform=ax.transAxes, 
-            bbox=dict(boxstyle="round,pad=0.5", facecolor='white', alpha=0.9, edgecolor=COLORS['grid']),
-            verticalalignment='top', horizontalalignment='right', fontsize=10,
-            fontfamily='monospace')
+    ax.text(0.97, 0.97, stats_text, transform=ax.transAxes, 
+            bbox=dict(boxstyle="round,pad=0.8", facecolor='white', alpha=0.95, 
+                     edgecolor=COLORS['text'], linewidth=1.5),
+            verticalalignment='top', horizontalalignment='right', 
+            fontsize=18, fontfamily='monospace', fontweight='normal')
     
-    ax.set_title(f'Minimum Distance Distribution', 
-                fontsize=20, fontweight='bold', pad=20, color=COLORS['text'])
-    ax.set_xlabel('Distance (km)', fontsize=14, fontweight='600')
-    ax.set_ylabel('Density', fontsize=14, fontweight='600')
+    # Enhanced title and labels
+    ax.set_title('Minimum Distance Distribution', 
+                fontsize=26, fontweight='bold', pad=25, color=COLORS['text'])
+    ax.set_xlabel('Distance (km)', fontsize=22, fontweight='bold', labelpad=10)
+    ax.set_ylabel('Density', fontsize=22, fontweight='bold', labelpad=10)
     
-
+    # Enhanced grid and spines
+    ax.grid(True, alpha=0.4, linestyle='--', linewidth=1.0, color=COLORS['grid'])
+    ax.spines['left'].set_linewidth(1.5)
+    ax.spines['bottom'].set_linewidth(1.5)
+    ax.tick_params(axis='both', which='major', labelsize=18, width=1.5, length=7)
+    
     plt.tight_layout()
     filename = f'02_distance_distribution_{timestamp}_iter{iteration}.png'
     plt.savefig(os.path.join(save_path, filename), bbox_inches='tight', 
@@ -270,65 +318,101 @@ def create_distance_distribution_plot(subset_df, remaining_df, save_path, iterat
     print(f"✓ Saved: {filename}")
 
 def create_oc_distribution_plot(subset_df, remaining_df, save_path, iteration=0):
-    """Create a beautiful OC distribution comparison plot"""
+    """Create a publication-quality OC distribution comparison plot"""
     setup_plot_style()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), dpi=300, facecolor='white',
-                                   gridspec_kw={'height_ratios': [3, 1], 'hspace': 0.3})
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 16), dpi=300, facecolor='white',
+                                   gridspec_kw={'height_ratios': [2, 1.5], 'hspace': 0.35})
     
-    # Main histogram plot
+    # Main histogram plot with enhanced visibility
     bins = np.histogram_bin_edges(np.concatenate([remaining_df['OC'], subset_df['OC']]), bins=35)
     
     ax1.hist(remaining_df['OC'].values, bins=bins, density=True, alpha=0.7, 
              color=COLORS['training'], label=f'Training Set (n={len(remaining_df)})',
-             edgecolor='white', linewidth=0.5)
+             edgecolor='white', linewidth=1.0)
     ax1.hist(subset_df['OC'].values, bins=bins, density=True, alpha=0.8, 
              color=COLORS['validation'], label=f'Validation Set (n={len(subset_df)})',
-             edgecolor='white', linewidth=0.5)
+             edgecolor='white', linewidth=1.0)
     
-    # Add KDE overlays
+    # Add KDE overlays with enhanced line width
     if len(remaining_df['OC']) > 1:
         kde_train = gaussian_kde(remaining_df['OC'].values)
         x_range = np.linspace(min(remaining_df['OC'].min(), subset_df['OC'].min()),
                              max(remaining_df['OC'].max(), subset_df['OC'].max()), 200)
         ax1.plot(x_range, kde_train(x_range), color=COLORS['training'], 
-                linewidth=3, alpha=0.9, linestyle='--')
+                linewidth=4, alpha=0.95, linestyle='--')
     
     if len(subset_df['OC']) > 1:
         kde_val = gaussian_kde(subset_df['OC'].values)
         ax1.plot(x_range, kde_val(x_range), color=COLORS['validation'], 
-                linewidth=3, alpha=0.9, linestyle='--')
+                linewidth=4, alpha=0.95, linestyle='--')
     
-    ax1.set_title(f'Organic Carbon (OC) Distribution Comparison', 
-                 fontsize=20, fontweight='bold', pad=20, color=COLORS['text'])
-    ax1.set_ylabel('Density', fontsize=14, fontweight='600')
-    ax1.legend(loc='upper right', frameon=True, fancybox=True, shadow=True)
+    # Enhanced title and labels
+    ax1.set_title('Organic Carbon (OC) Distribution Comparison', 
+                 fontsize=26, fontweight='bold', pad=25, color=COLORS['text'])
+    ax1.set_ylabel('Density', fontsize=22, fontweight='bold', labelpad=10)
     
-    # Box plot comparison
+    # Enhanced legend
+    legend1 = ax1.legend(loc='upper right', frameon=True, fancybox=True, 
+                        shadow=False, framealpha=0.95, edgecolor='black',
+                        fontsize=18, borderpad=1.0, labelspacing=1.0)
+    legend1.get_frame().set_linewidth(1.5)
+    
+    ax1.grid(True, alpha=0.4, linestyle='--', linewidth=1.0, color=COLORS['grid'])
+    ax1.tick_params(axis='both', which='major', labelsize=18, width=1.5, length=7)
+    ax1.spines['left'].set_linewidth(1.5)
+    ax1.spines['bottom'].set_linewidth(1.5)
+    
+    # Enhanced box plot comparison - elegant and easy to read
     data_to_plot = [remaining_df['OC'].values, subset_df['OC'].values]
     labels = ['Training', 'Validation']
     colors = [COLORS['training'], COLORS['validation']]
     
     bp = ax2.boxplot(data_to_plot, labels=labels, patch_artist=True, 
-                     showfliers=True, flierprops=dict(marker='o', markersize=3, alpha=0.6))
+                     showfliers=True, 
+                     flierprops=dict(marker='o', markersize=4, alpha=0.5, 
+                                   markeredgecolor=COLORS['text'], markerfacecolor='none',
+                                   markeredgewidth=1.0),
+                     widths=0.25,  # Much narrower boxes - THIN!
+                     boxprops=dict(linewidth=2.0),
+                     whiskerprops=dict(linewidth=2.0),
+                     capprops=dict(linewidth=2.0),
+                     medianprops=dict(linewidth=3.0))
     
     for patch, color in zip(bp['boxes'], colors):
         patch.set_facecolor(color)
-        patch.set_alpha(0.7)
-        patch.set_edgecolor('white')
-        patch.set_linewidth(1.5)
+        patch.set_alpha(0.65)
+        patch.set_edgecolor(COLORS['text'])
+        patch.set_linewidth(2.0)
     
-    for element in ['whiskers', 'caps', 'medians']:
-        for item in bp[element]:
-            item.set_color(COLORS['text'])
-            item.set_linewidth(2)
+    for whisker in bp['whiskers']:
+        whisker.set_color(COLORS['text'])
+        whisker.set_linewidth(2.0)
+        whisker.set_linestyle('-')
     
-    ax2.set_ylabel('OC Value', fontsize=12, fontweight='600')
-    ax2.grid(True, axis='y', alpha=0.3)
+    for cap in bp['caps']:
+        cap.set_color(COLORS['text'])
+        cap.set_linewidth(2.0)
+        cap.set_xdata(cap.get_xdata() + [-0.1, 0.1])  # Narrow caps to match thin boxes
+    
+    for median in bp['medians']:
+        median.set_color(COLORS['text'])
+        median.set_linewidth(3.0)
+    
+    ax2.set_ylabel('OC Value', fontsize=20, fontweight='bold', labelpad=10)
+    ax2.grid(True, axis='y', alpha=0.4, linestyle='--', linewidth=1.0, color=COLORS['grid'])
+    ax2.tick_params(axis='both', which='major', labelsize=18, width=1.5, length=7)
+    ax2.spines['left'].set_linewidth(1.5)
+    ax2.spines['bottom'].set_linewidth(1.5)
+    
+    # Set y-limits to make boxes LONG and THIN - much more vertical space
+    y_max = max(remaining_df['OC'].max(), subset_df['OC'].max())
+    ax2.set_ylim(-10, y_max * 1.25)  # Much more vertical range for long, thin appearance
     
     # Shared x-axis label
-    fig.text(0.5, 0.02, 'Organic Carbon (OC) Value', ha='center', fontsize=14, fontweight='600')
+    fig.text(0.5, 0.02, 'Organic Carbon (OC) Value', ha='center', 
+            fontsize=22, fontweight='bold')
     
     plt.tight_layout()
     filename = f'03_oc_distribution_{timestamp}_iter{iteration}.png'
@@ -338,28 +422,28 @@ def create_oc_distribution_plot(subset_df, remaining_df, save_path, iteration=0)
     print(f"✓ Saved: {filename}")
 
 def create_oc_histogram_kde_combined_plot(subset_df, remaining_df, save_path, iteration=0):
-    """Create a beautiful combined histogram and KDE plot for OC distribution"""
+    """Create a publication-quality combined histogram and KDE plot"""
     setup_plot_style()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
-    fig, ax = plt.subplots(figsize=(14, 9), dpi=300, facecolor='white')
+    fig, ax = plt.subplots(figsize=(16, 11), dpi=300, facecolor='white')
     
-    # Determine common bins for both datasets
+    # Determine common bins
     bins = np.histogram_bin_edges(
         np.concatenate([remaining_df['OC'], subset_df['OC']]), 
         bins=40
     )
     
-    # Plot histograms with transparency
-    ax.hist(remaining_df['OC'].values, bins=bins, density=True, alpha=0.5, 
+    # Plot histograms with enhanced visibility
+    ax.hist(remaining_df['OC'].values, bins=bins, density=True, alpha=0.55, 
             color=COLORS['training'], label=f'Training Histogram (n={len(remaining_df)})',
-            edgecolor='white', linewidth=0.8)
+            edgecolor='white', linewidth=1.0)
     
-    ax.hist(subset_df['OC'].values, bins=bins, density=True, alpha=0.5, 
+    ax.hist(subset_df['OC'].values, bins=bins, density=True, alpha=0.55, 
             color=COLORS['validation'], label=f'Validation Histogram (n={len(subset_df)})',
-            edgecolor='white', linewidth=0.8)
+            edgecolor='white', linewidth=1.0)
     
-    # Calculate and plot KDE overlays
+    # Calculate and plot KDE overlays with enhanced line width
     x_range = np.linspace(
         min(remaining_df['OC'].min(), subset_df['OC'].min()),
         max(remaining_df['OC'].max(), subset_df['OC'].max()), 
@@ -370,69 +454,75 @@ def create_oc_histogram_kde_combined_plot(subset_df, remaining_df, save_path, it
         kde_train = gaussian_kde(remaining_df['OC'].values)
         ax.plot(x_range, kde_train(x_range), 
                 color=COLORS['training'], 
-                linewidth=3.5, 
+                linewidth=4.5,  # Increased from 3.5
                 alpha=0.95,
-                label=f'Training KDE',
+                label='Training KDE',
                 linestyle='-')
-        # Add subtle fill under KDE
         ax.fill_between(x_range, kde_train(x_range), 
-                        alpha=0.15, color=COLORS['training'])
+                        alpha=0.2, color=COLORS['training'])
     
     if len(subset_df['OC']) > 1:
         kde_val = gaussian_kde(subset_df['OC'].values)
         ax.plot(x_range, kde_val(x_range), 
                 color=COLORS['validation'], 
-                linewidth=3.5, 
+                linewidth=4.5,  # Increased from 3.5
                 alpha=0.95,
-                label=f'Validation KDE',
+                label='Validation KDE',
                 linestyle='-')
-        # Add subtle fill under KDE
         ax.fill_between(x_range, kde_val(x_range), 
-                        alpha=0.15, color=COLORS['validation'])
+                        alpha=0.2, color=COLORS['validation'])
     
-    # Add statistics box
+    # Enhanced statistics boxes with larger text
     train_stats = f"""Training Statistics:
-    Mean: {remaining_df['OC'].mean():.3f}
-    Median: {remaining_df['OC'].median():.3f}
-    Std: {remaining_df['OC'].std():.3f}
-    Min: {remaining_df['OC'].min():.3f}
-    Max: {remaining_df['OC'].max():.3f}"""
+Mean: {remaining_df['OC'].mean():.3f}
+Median: {remaining_df['OC'].median():.3f}
+Std: {remaining_df['OC'].std():.3f}
+Min: {remaining_df['OC'].min():.3f}
+Max: {remaining_df['OC'].max():.3f}"""
     
     val_stats = f"""Validation Statistics:
-    Mean: {subset_df['OC'].mean():.3f}
-    Median: {subset_df['OC'].median():.3f}
-    Std: {subset_df['OC'].std():.3f}
-    Min: {subset_df['OC'].min():.3f}
-    Max: {subset_df['OC'].max():.3f}"""
+Mean: {subset_df['OC'].mean():.3f}
+Median: {subset_df['OC'].median():.3f}
+Std: {subset_df['OC'].std():.3f}
+Min: {subset_df['OC'].min():.3f}
+Max: {subset_df['OC'].max():.3f}"""
     
-    # Position stats boxes
+    # Position stats boxes with larger font
     ax.text(0.02, 0.98, train_stats, transform=ax.transAxes, 
-            bbox=dict(boxstyle="round,pad=0.5", facecolor=COLORS['training'], 
-                     alpha=0.15, edgecolor=COLORS['training'], linewidth=2),
+            bbox=dict(boxstyle="round,pad=0.8", facecolor=COLORS['training'], 
+                     alpha=0.15, edgecolor=COLORS['training'], linewidth=2.5),
             verticalalignment='top', horizontalalignment='left', 
-            fontsize=9, fontfamily='monospace', color=COLORS['text'])
+            fontsize=15, fontfamily='monospace', color=COLORS['text'],
+            fontweight='normal')
     
     ax.text(0.98, 0.98, val_stats, transform=ax.transAxes, 
-            bbox=dict(boxstyle="round,pad=0.5", facecolor=COLORS['validation'], 
-                     alpha=0.15, edgecolor=COLORS['validation'], linewidth=2),
+            bbox=dict(boxstyle="round,pad=0.8", facecolor=COLORS['validation'], 
+                     alpha=0.15, edgecolor=COLORS['validation'], linewidth=2.5),
             verticalalignment='top', horizontalalignment='right', 
-            fontsize=9, fontfamily='monospace', color=COLORS['text'])
+            fontsize=15, fontfamily='monospace', color=COLORS['text'],
+            fontweight='normal')
     
-    # Styling
+    # Enhanced title and labels
     ax.set_title('Organic Carbon Distribution: Histogram & KDE Analysis', 
-                fontsize=20, fontweight='bold', pad=20, color=COLORS['text'])
-    ax.set_xlabel('Organic Carbon (OC) Value', fontsize=14, fontweight='600')
-    ax.set_ylabel('Density', fontsize=14, fontweight='600')
+                fontsize=26, fontweight='bold', pad=25, color=COLORS['text'])
+    ax.set_xlabel('Organic Carbon (OC) Value', fontsize=22, fontweight='bold', labelpad=10)
+    ax.set_ylabel('Density', fontsize=22, fontweight='bold', labelpad=10)
     
-    # Legend with custom styling
+    # Enhanced legend
     legend = ax.legend(loc='upper center', frameon=True, fancybox=True, 
-                      shadow=True, framealpha=0.95, edgecolor='none',
-                      ncol=2, bbox_to_anchor=(0.5, -0.08))
+                      shadow=False, framealpha=0.95, edgecolor='black',
+                      ncol=2, bbox_to_anchor=(0.5, -0.08), fontsize=18,
+                      borderpad=1.0, labelspacing=1.0, columnspacing=2.0,
+                      handlelength=2.5)
     legend.get_frame().set_facecolor('white')
+    legend.get_frame().set_linewidth(1.5)
     
-    # Grid styling
-    ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5, axis='y')
+    # Enhanced grid and spines
+    ax.grid(True, alpha=0.4, linestyle='--', linewidth=1.0, axis='y', color=COLORS['grid'])
     ax.set_axisbelow(True)
+    ax.spines['left'].set_linewidth(1.5)
+    ax.spines['bottom'].set_linewidth(1.5)
+    ax.tick_params(axis='both', which='major', labelsize=18, width=1.5, length=7)
     
     plt.tight_layout()
     filename = f'05_oc_histogram_kde_combined_{timestamp}_iter{iteration}.png'
@@ -442,62 +532,74 @@ def create_oc_histogram_kde_combined_plot(subset_df, remaining_df, save_path, it
     print(f"✓ Saved: {filename}")
 
 def create_kde_comparison_plot(subset_df, remaining_df, full_df, best_dist, best_params, dist_name, save_path, iteration=0):
-    """Create a beautiful KDE vs fitted distribution comparison plot"""
+    """Create a publication-quality KDE vs fitted distribution comparison plot"""
     setup_plot_style()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), dpi=300, facecolor='white',
-                                   gridspec_kw={'height_ratios': [3, 1], 'hspace': 0.3})
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 12), dpi=300, facecolor='white',
+                                   gridspec_kw={'height_ratios': [3, 1], 'hspace': 0.35})
     
     # Main comparison plot
     oc_range = np.linspace(max(0, min(full_df['OC'].min(), subset_df['OC'].min())), 
                           max(full_df['OC'].max(), subset_df['OC'].max()), 300)
     
-    # KDE plots with beautiful styling
+    # KDE plots with enhanced styling
     if len(subset_df['OC']) > 1:
         kde_val = gaussian_kde(subset_df['OC'].values)
-        ax1.plot(oc_range, kde_val(oc_range), color=COLORS['validation'], linewidth=3, 
-                label=f'Validation KDE (n={len(subset_df)})', alpha=0.9)
-        ax1.fill_between(oc_range, kde_val(oc_range), alpha=0.2, color=COLORS['validation'])
+        ax1.plot(oc_range, kde_val(oc_range), color=COLORS['validation'], 
+                linewidth=4, label=f'Validation KDE (n={len(subset_df)})', alpha=0.95)
+        ax1.fill_between(oc_range, kde_val(oc_range), alpha=0.25, color=COLORS['validation'])
 
     if len(remaining_df['OC']) > 1:
         kde_train = gaussian_kde(remaining_df['OC'].values)
-        ax1.plot(oc_range, kde_train(oc_range), color=COLORS['training'], linewidth=3, 
-                label=f'Training KDE (n={len(remaining_df)})', alpha=0.9)
-        ax1.fill_between(oc_range, kde_train(oc_range), alpha=0.2, color=COLORS['training'])
+        ax1.plot(oc_range, kde_train(oc_range), color=COLORS['training'], 
+                linewidth=4, label=f'Training KDE (n={len(remaining_df)})', alpha=0.95)
+        ax1.fill_between(oc_range, kde_train(oc_range), alpha=0.25, color=COLORS['training'])
 
-    # Plot fitted distribution
+    # Plot fitted distribution with enhanced line width
     dist_params = list(best_params.values())
     if best_dist == beta:
-        # Scale oc_range for Beta distribution
         data_min, data_max = full_df['OC'].min(), full_df['OC'].max()
         scaled_range = (oc_range - data_min) / (data_max - data_min)
         dist_pdf = best_dist.pdf(scaled_range, *dist_params[:2], loc=0, scale=1) / (data_max - data_min)
     else:
         dist_pdf = best_dist.pdf(oc_range, *dist_params)
     
-    ax1.plot(oc_range, dist_pdf, color=COLORS['fit'], linewidth=4, 
-            label=f'{dist_name} Fit', alpha=0.9, linestyle='--')
+    ax1.plot(oc_range, dist_pdf, color=COLORS['fit'], linewidth=5,  # Increased from 4
+            label=f'{dist_name} Fit', alpha=0.95, linestyle='--')
 
+    # Enhanced title and labels
     ax1.set_title(f'Distribution Comparison: KDE vs {dist_name} Fit', 
-                 fontsize=20, fontweight='bold', pad=20, color=COLORS['text'])
-    ax1.set_ylabel('Density', fontsize=14, fontweight='600')
-    ax1.legend(loc='upper right', frameon=True, fancybox=True, shadow=True, framealpha=0.95)
+                 fontsize=26, fontweight='bold', pad=25, color=COLORS['text'])
+    ax1.set_ylabel('Density', fontsize=22, fontweight='bold', labelpad=10)
     
-
+    # Enhanced legend
+    legend1 = ax1.legend(loc='upper right', frameon=True, fancybox=True, 
+                        shadow=False, framealpha=0.95, edgecolor='black',
+                        fontsize=18, borderpad=1.0, labelspacing=1.0)
+    legend1.get_frame().set_linewidth(1.5)
     
-    # Residuals plot
+    ax1.grid(True, alpha=0.4, linestyle='--', linewidth=1.0, color=COLORS['grid'])
+    ax1.tick_params(axis='both', which='major', labelsize=18, width=1.5, length=7)
+    ax1.spines['left'].set_linewidth(1.5)
+    ax1.spines['bottom'].set_linewidth(1.5)
+    
+    # Enhanced residuals plot
     if len(subset_df['OC']) > 1:
         kde_val_interp = kde_val(oc_range)
         residuals = kde_val_interp - dist_pdf
-        ax2.plot(oc_range, residuals, color=COLORS['accent'], linewidth=2, alpha=0.8)
-        ax2.fill_between(oc_range, residuals, alpha=0.3, color=COLORS['accent'])
-        ax2.axhline(y=0, color=COLORS['text'], linestyle='-', alpha=0.5, linewidth=1)
-        ax2.set_ylabel('Residuals\n(KDE - Fit)', fontsize=12, fontweight='600')
-        ax2.grid(True, alpha=0.3)
+        ax2.plot(oc_range, residuals, color=COLORS['accent'], linewidth=3, alpha=0.9)
+        ax2.fill_between(oc_range, residuals, alpha=0.35, color=COLORS['accent'])
+        ax2.axhline(y=0, color=COLORS['text'], linestyle='-', alpha=0.6, linewidth=2)
+        ax2.set_ylabel('Residuals\n(KDE - Fit)', fontsize=20, fontweight='bold', labelpad=10)
+        ax2.grid(True, alpha=0.4, linestyle='--', linewidth=1.0, color=COLORS['grid'])
+        ax2.tick_params(axis='both', which='major', labelsize=18, width=1.5, length=7)
+        ax2.spines['left'].set_linewidth(1.5)
+        ax2.spines['bottom'].set_linewidth(1.5)
 
     # Shared x-axis label
-    fig.text(0.5, 0.02, 'Organic Carbon (OC) Value', ha='center', fontsize=14, fontweight='600')
+    fig.text(0.5, 0.02, 'Organic Carbon (OC) Value', ha='center', 
+            fontsize=22, fontweight='bold')
     
     plt.tight_layout()
     filename = f'04_kde_comparison_{timestamp}_iter{iteration}.png'
@@ -507,20 +609,20 @@ def create_kde_comparison_plot(subset_df, remaining_df, full_df, best_dist, best
     print(f"✓ Saved: {filename}")
 
 def create_visualizations(subset_df, remaining_df, full_df, best_dist, best_params, dist_name, save_path, iteration=0, device='cpu'):
-    """Create all five separate visualization plots"""
+    """Create all five separate publication-quality visualization plots"""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     os.makedirs(save_path, exist_ok=True)
     
-    print(f"\n🎨 Creating beautiful visualizations for iteration {iteration}...")
+    print(f"\n🎨 Creating publication-quality visualizations for iteration {iteration}...")
     
     # Create each plot separately
     create_spatial_distribution_plot(subset_df, remaining_df, save_path, iteration)
     create_distance_distribution_plot(subset_df, remaining_df, save_path, iteration, device)
     create_oc_distribution_plot(subset_df, remaining_df, save_path, iteration)
     create_kde_comparison_plot(subset_df, remaining_df, full_df, best_dist, best_params, dist_name, save_path, iteration)
-    create_oc_histogram_kde_combined_plot(subset_df, remaining_df, save_path, iteration)  # NEW PLOT
+    create_oc_histogram_kde_combined_plot(subset_df, remaining_df, save_path, iteration)
     
-    print(f"✨ All visualizations saved to: {save_path}")
+    print(f"✨ All publication-quality visualizations saved to: {save_path}")
 
 def create_optimized_subset(df, best_dist, best_params, dist_name, target_val_ratio=0.08, output_dir='ImagesOutput', device='cpu', distance_threshold=1.4):
     if df.empty:
@@ -554,7 +656,7 @@ def create_optimized_subset(df, best_dist, best_params, dist_name, target_val_ra
             # Rescale Beta samples to OC range
             dist_samples = oc_min + (oc_max - oc_min) * dist_samples
         else:
-            dist_samples = oc_min + (oc_max - oc_min) * (dist_samples - np.min(dist_samples)) / (np.max(dist_samples) - np.min(dist_samples))  # Scale to OC range
+            dist_samples = oc_min + (oc_max - oc_min) * (dist_samples - np.min(dist_samples)) / (np.max(dist_samples) - np.min(dist_samples))
 
         # Assign weights based on fitted distribution's PDF
         oc_values = df['OC'].values
@@ -630,7 +732,7 @@ def create_optimized_subset(df, best_dist, best_params, dist_name, target_val_ra
     return validation_df, training_df
 
 def main():
-    parser = argparse.ArgumentParser(description='Enhanced validation set creation with beautiful visualizations')
+    parser = argparse.ArgumentParser(description='Publication-quality validation set creation with enhanced visualizations')
     parser.add_argument('--output-dir', type=str, default='ImagesOutput', help='Output directory')
     parser.add_argument('--target-val-ratio', type=float, default=0.08, help='Target validation ratio')
     parser.add_argument('--use-gpu', action='store_true', help='Use GPU')
@@ -644,8 +746,6 @@ def main():
     # Load and filter dataframe
     print("📂 Loading dataset...")
     df = pd.read_excel(file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC)
-
-
 
     df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
 
@@ -701,7 +801,7 @@ def main():
         f.write(f"Distribution parameters: {summary['distribution_parameters']}\n")
         f.write(f"Minimum distance between sets: {summary['min_distance_km']:.2f} km\n")
 
-    print(f"\n✨ All done! Results saved to {args.output_dir}")
+    print(f"\n✨ All done! Publication-quality results saved to {args.output_dir}")
 
 if __name__ == "__main__":
     main()

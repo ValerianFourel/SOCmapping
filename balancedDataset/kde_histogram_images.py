@@ -26,17 +26,17 @@ COLORS = {
 }
 
 def setup_plot_style():
-    """Setup consistent plot styling"""
+    """Setup RESEARCH PAPER QUALITY plot styling with LARGE fonts"""
     plt.rcParams.update({
         'font.family': 'sans-serif',
         'font.sans-serif': ['DejaVu Sans', 'Arial', 'sans-serif'],
-        'font.size': 11,
-        'axes.titlesize': 16,
-        'axes.labelsize': 12,
-        'xtick.labelsize': 10,
-        'ytick.labelsize': 10,
-        'legend.fontsize': 10,
-        'figure.titlesize': 18,
+        'font.size': 20,           # INCREASED from 11 to 20
+        'axes.titlesize': 32,      # INCREASED from 16 to 32
+        'axes.labelsize': 26,      # INCREASED from 12 to 26
+        'xtick.labelsize': 22,     # INCREASED from 10 to 22
+        'ytick.labelsize': 22,     # INCREASED from 10 to 22
+        'legend.fontsize': 20,     # INCREASED from 10 to 20
+        'figure.titlesize': 34,    # INCREASED from 18 to 34
     })
 
 def create_combined_histogram_kde_plot(data, column_name='OC', 
@@ -46,7 +46,7 @@ def create_combined_histogram_kde_plot(data, column_name='OC',
                                        filename='soc_histogram_kde_combined.png',
                                        n_bins=150):
     """
-    Create a combined histogram and KDE plot
+    Create a combined histogram and KDE plot with RESEARCH PAPER QUALITY formatting
     
     Parameters:
     -----------
@@ -86,46 +86,57 @@ def create_combined_histogram_kde_plot(data, column_name='OC',
     max_val = np.max(values)
     n_samples = len(values)
     
-    # Create figure
-    fig, ax = plt.subplots(figsize=(14, 9), dpi=300, facecolor='white')
+    # Create figure - LARGER for research paper
+    fig, ax = plt.subplots(figsize=(18, 12), dpi=300, facecolor='white')  # INCREASED from (14, 9)
     
     # Create histogram with more bins
     n, bins, patches = ax.hist(values, bins=n_bins, density=True, alpha=0.6, 
                                color=COLORS['histogram'], edgecolor='white', 
-                               linewidth=0.5, label='Histogram')
+                               linewidth=0.8, label='Histogram')  # Thicker edges
     
     # Create and plot KDE
     kde = gaussian_kde(values)
     x_range = np.linspace(min_val, max_val, 500)
     kde_values = kde(x_range)
     
-    ax.plot(x_range, kde_values, color=COLORS['kde_fill'], linewidth=3.5, 
+    ax.plot(x_range, kde_values, color=COLORS['kde_fill'], linewidth=4.5,  # THICKER from 3.5 to 4.5
             alpha=0.95, label='KDE', linestyle='-')
     ax.fill_between(x_range, kde_values, alpha=0.2, color=COLORS['kde_fill'])
     
-    # Add mean and median lines
-    ax.axvline(mean_val, color=COLORS['mean'], linestyle='--', linewidth=2.5, 
+    # Add mean and median lines - THICKER
+    ax.axvline(mean_val, color=COLORS['mean'], linestyle='--', linewidth=3.5,  # INCREASED from 2.5 to 3.5
                label=f'Mean: {mean_val:.1f}', alpha=0.8)
-    ax.axvline(median_val, color=COLORS['median'], linestyle='--', linewidth=2.5, 
+    ax.axvline(median_val, color=COLORS['median'], linestyle='--', linewidth=3.5,  # INCREASED from 2.5 to 3.5
                label=f'Median: {median_val:.1f}', alpha=0.8)
     
-    # Styling
-    ax.set_title(title, fontsize=20, fontweight='bold', pad=20, color=COLORS['text'])
-    ax.set_xlabel(xlabel, fontsize=14, fontweight='600')
-    ax.set_ylabel('Density', fontsize=14, fontweight='600')
+    # Styling - RESEARCH PAPER QUALITY with LARGER fonts
+    ax.set_title(title, fontsize=32, fontweight='bold', pad=30, color=COLORS['text'])  # INCREASED from 20
+    ax.set_xlabel(xlabel, fontsize=26, fontweight='bold', labelpad=15)  # INCREASED from 14, added labelpad
+    ax.set_ylabel('Density', fontsize=26, fontweight='bold', labelpad=15)  # INCREASED from 14, added labelpad
     
-    # Legend
+    # Legend - LARGER and more prominent
     legend = ax.legend(loc='upper right', frameon=True, fancybox=True, 
-                      shadow=True, framealpha=0.95, edgecolor='none')
+                      shadow=True, framealpha=0.98, edgecolor='black',
+                      fontsize=22,  # EXPLICIT large font size
+                      borderpad=1.2,  # More padding
+                      labelspacing=1.0,  # More spacing between entries
+                      handlelength=2.5,  # Longer lines in legend
+                      handleheight=1.2)  # Taller legend markers
     legend.get_frame().set_facecolor('white')
+    legend.get_frame().set_linewidth(2.0)  # Thicker frame
     
-    # Grid
-    ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5, axis='y')
+    # Grid - slightly more prominent
+    ax.grid(True, alpha=0.3, linestyle='--', linewidth=1.0, axis='y')  # Thicker grid
     ax.set_axisbelow(True)
     
-    # Remove top and right spines
+    # Thicker spines for remaining axes
+    ax.spines['bottom'].set_linewidth(1.5)
+    ax.spines['left'].set_linewidth(1.5)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
+    
+    # Larger tick marks
+    ax.tick_params(axis='both', which='major', labelsize=22, width=1.5, length=8, pad=10)
     
     plt.tight_layout()
     
@@ -136,11 +147,25 @@ def create_combined_histogram_kde_plot(data, column_name='OC',
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     full_filename = f"{filename.replace('.png', '')}_{timestamp}.png"
     
+    # Save as PNG
     plt.savefig(output_path / full_filename, bbox_inches='tight', 
-                facecolor='white', edgecolor='none', dpi=300)
+                facecolor='white', edgecolor='none', dpi=300, pad_inches=0.3)
+    
+    # ALSO save as PDF for publication
+    pdf_filename = full_filename.replace('.png', '.pdf')
+    plt.savefig(output_path / pdf_filename, format='pdf', bbox_inches='tight', 
+                facecolor='white', edgecolor='none', pad_inches=0.3)
+    
+    # ALSO save as EPS for LaTeX
+    eps_filename = full_filename.replace('.png', '.eps')
+    plt.savefig(output_path / eps_filename, format='eps', bbox_inches='tight', 
+                facecolor='white', edgecolor='none', pad_inches=0.3)
+    
     plt.close()
     
-    print(f"✓ Plot saved: {output_path / full_filename}")
+    print(f"✓ PNG saved: {output_path / full_filename}")
+    print(f"✓ PDF saved: {output_path / pdf_filename}")
+    print(f"✓ EPS saved: {output_path / eps_filename}")
     print(f"\n📊 Statistics Summary:")
     print(f"  Samples: {n_samples:,}")
     print(f"  Number of bins: {n_bins}")
@@ -156,7 +181,7 @@ def main():
     """
     Main function - loads data using the same process as the original script
     """
-    parser = argparse.ArgumentParser(description='Create combined histogram and KDE plot for SOC distribution')
+    parser = argparse.ArgumentParser(description='Create RESEARCH PAPER QUALITY combined histogram and KDE plot')
     parser.add_argument('--output-dir', type=str, default='ImagesOutput', help='Output directory')
     parser.add_argument('--title', type=str, default='SOC Distribution (Bavaria, 0-150 g/kg)', 
                        help='Plot title')
@@ -183,7 +208,7 @@ def main():
     print(f"   OC range: {df['OC'].min():.2f} - {df['OC'].max():.2f}")
     
     # Create the combined plot
-    print(f"\n🎨 Creating combined histogram and KDE plot with {args.bins} bins...")
+    print(f"\n🎨 Creating RESEARCH PAPER QUALITY histogram and KDE plot with {args.bins} bins...")
     create_combined_histogram_kde_plot(
         data=df,
         column_name=args.column,
@@ -194,7 +219,8 @@ def main():
         n_bins=args.bins
     )
     
-    print(f"\n✨ All done! Plot saved to {args.output_dir}")
+    print(f"\n✨ All done! RESEARCH PAPER QUALITY plots saved to {args.output_dir}")
+    print(f"   Formats: PNG (300 DPI), PDF (publication), EPS (LaTeX)")
 
 if __name__ == "__main__":
     main()

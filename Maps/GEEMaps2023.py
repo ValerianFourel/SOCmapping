@@ -4,6 +4,8 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
+from matplotlib_scalebar.scalebar import ScaleBar
 import rasterio
 import requests
 from shapely.geometry import shape
@@ -81,6 +83,45 @@ def get_band_info(collection_id, band_name):
 def create_custom_colormap(colors):
     return LinearSegmentedColormap.from_list('custom', colors, N=256)
 
+# Function to add beautiful north arrow
+def add_north_arrow(ax, x=0.96, y=0.08, arrow_length=0.05, fontsize=24):
+    """Add an elegant north arrow with shadow to the map - bottom right position"""
+    # Shadow arrow (slightly offset)
+    shadow = FancyArrowPatch(
+        (x-0.002, y+0.002), (x-0.002, y + arrow_length+0.002),
+        transform=ax.transAxes,
+        arrowstyle='->,head_width=0.40,head_length=0.8',
+        color='gray',
+        linewidth=2.5,
+        alpha=0.3,
+        zorder=98
+    )
+    ax.add_patch(shadow)
+    
+    # Main arrow with white background
+    bg_circle = plt.Circle((x, y + arrow_length/2), 0.030, transform=ax.transAxes,
+                           color='white', alpha=0.9, zorder=99)
+    ax.add_patch(bg_circle)
+    
+    # Main arrow - pointing up from bottom
+    arrow = FancyArrowPatch(
+        (x, y), (x, y + arrow_length),
+        transform=ax.transAxes,
+        arrowstyle='->,head_width=0.40,head_length=0.8',
+        color='#2C3E50',
+        linewidth=2.5,
+        zorder=100
+    )
+    ax.add_patch(arrow)
+    
+    # N label with shadow
+    ax.text(x-0.002, y + arrow_length + 0.012-0.002, 'N', transform=ax.transAxes, 
+            ha='center', va='bottom', fontsize=fontsize, fontweight='bold',
+            color='gray', alpha=0.3, zorder=98)
+    ax.text(x, y + arrow_length + 0.012, 'N', transform=ax.transAxes, 
+            ha='center', va='bottom', fontsize=fontsize, fontweight='bold',
+            color='#2C3E50', zorder=100)
+
 # Function to export GeoTIFF
 def export_geotiff(image, scale_factor, output_path):
     """Export image as GeoTIFF with proper parameters"""
@@ -96,7 +137,7 @@ def export_geotiff(image, scale_factor, output_path):
         file_per_band=False
     )
 
-# Function to visualize with boundary overlay
+# Function to visualize with enhanced styling and professional cartographic elements
 def visualize(geotiff_path, collection_info, boundary_coords, output_path):
     with rasterio.open(geotiff_path) as src:
         data = src.read(1)
@@ -111,51 +152,98 @@ def visualize(geotiff_path, collection_info, boundary_coords, output_path):
         # Calculate aspect ratio from actual data dimensions
         data_aspect = width / height
         
-        # Create figure with aspect ratio matching the data
-        fig_width = 8
-        fig_height = fig_width / data_aspect + 1.5  # Add space for colorbar
+        # Create figure with aspect ratio matching the data - larger for better quality
+        # Increased bottom margin to accommodate colorbar and label without clashing
+        fig_width = 10
+        fig_height = fig_width / data_aspect + 2.5  # Increased from 2 to 2.5 for more space
         
-        fig = plt.figure(figsize=(fig_width, fig_height))
+        fig = plt.figure(figsize=(fig_width, fig_height), facecolor='white')
         
-        # Calculate axes position to fit data properly
+        # Calculate axes position to fit data properly with margins
+        # Adjusted to provide more space at bottom for colorbar
         map_height = (fig_width / data_aspect) / fig_height
-        ax = plt.axes([0.05, 0.15, 0.9, map_height * 0.95])
+        ax = plt.axes([0.08, 0.15, 0.84, map_height * 0.85])  # Increased bottom margin from 0.12 to 0.15
 
+        # Use better colormap or custom colors
         cmap = plt.get_cmap(collection_info['colormap']) if 'colormap' in collection_info else create_custom_colormap(collection_info['custom_colors'])
         im = ax.imshow(data, cmap=cmap, aspect='equal', interpolation='bilinear', 
                        extent=[bounds.left, bounds.right, bounds.bottom, bounds.top])
 
-        # Plot Bavaria boundary - THINNER line
+        # Transform Bavaria boundary from lat/lon to UTM
+        from pyproj import Transformer
+        transformer = Transformer.from_crs("EPSG:4326", projection, always_xy=True)
+        
         for coords in boundary_coords:
             lons, lats = coords[:, 0], coords[:, 1]
-            
-            # Transform coordinates from lat/lon to the projection
-            from pyproj import Transformer
-            transformer = Transformer.from_crs("EPSG:4326", projection, always_xy=True)
             x_coords, y_coords = transformer.transform(lons, lats)
-            
-            ax.plot(x_coords, y_coords, color='black', linewidth=0.6, linestyle='-', zorder=10, alpha=0.8)
+            # Double-line boundary with white outline for contrast
+            ax.plot(x_coords, y_coords, color='white', linewidth=2.5, linestyle='-', zorder=9, alpha=0.9)
+            ax.plot(x_coords, y_coords, color='#2C3E50', linewidth=1.2, linestyle='-', zorder=10, alpha=0.95)
 
-        # Remove all axes borders and frames
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        ax.spines['bottom'].set_visible(False)
-        ax.spines['left'].set_visible(False)
+        # No grid - clean canvas look
+        ax.grid(False)
         
+        # Set up the axes with proper labels
         ax.set_xlim(bounds.left, bounds.right)
         ax.set_ylim(bounds.bottom, bounds.top)
-        ax.set_xticks([])
-        ax.set_yticks([])
-        ax.set_title(f"{collection_info['name'].replace('_', ' ')} - Bavaria Region 2023", 
-                     fontsize=14, pad=10)
+        
+        # Add styled axis labels for UTM coordinates - LARGER FONT
+        ax.set_xlabel('Easting (m)', fontsize=23, fontweight='medium', color='#2C3E50', labelpad=10)
+        ax.set_ylabel('Northing (m)', fontsize=23, fontweight='medium', color='#2C3E50', labelpad=10)
+        
+        # Configure tick labels with better formatting - LARGER FONT
+        ax.tick_params(axis='both', which='major', labelsize=16, length=6, width=1.0, 
+                       colors='#2C3E50', direction='out')
+        
+        # Format ticks for UTM (in meters) - show in thousands
+        from matplotlib.ticker import FuncFormatter
+        def format_coord(x, pos):
+            return f'{x/1000:.0f}k'
+        
+        ax.xaxis.set_major_formatter(FuncFormatter(format_coord))
+        ax.yaxis.set_major_formatter(FuncFormatter(format_coord))
+        
+        # Styled axes borders - thicker frame for canvas effect
+        for spine in ax.spines.values():
+            spine.set_linewidth(2.0)
+            spine.set_color('#2C3E50')
+            spine.set_alpha(0.9)
+        
+        # NO TITLE - removed for clean individual maps
 
-        # Thin colorbar just below the map
-        cbar_ax = fig.add_axes([0.15, 0.08, 0.7, 0.012])
+        # Scale bar with professional styling - LARGER FONT
+        scalebar = ScaleBar(
+            dx=1,  # 1 meter per map unit in UTM
+            units='m',
+            location='lower left',
+            length_fraction=0.15,
+            width_fraction=0.015,
+            box_alpha=0.85,
+            color='#2C3E50',
+            box_color='white',
+            font_properties={'size': 13, 'weight': 'medium'},
+            sep=5,
+            frameon=True,
+            pad=0.5,
+            border_pad=0.5
+        )
+        ax.add_artist(scalebar)
+        
+        # North arrow in BOTTOM RIGHT - LARGER FONT
+        add_north_arrow(ax, x=0.96, y=0.08, arrow_length=0.05, fontsize=24)
+
+        # Elegant colorbar with better positioning and increased spacing
+        cbar_ax = fig.add_axes([0.15, 0.05, 0.7, 0.020])  # Moved down slightly from 0.06 to 0.05
         cbar = plt.colorbar(im, cax=cbar_ax, orientation='horizontal')
-        cbar.set_label(collection_info['units'], fontsize=11)
-        cbar.ax.tick_params(labelsize=9)
+        cbar.set_label(collection_info['units'], fontsize=26, fontweight='medium',
+                      color='#2C3E50', labelpad=15)  # Increased labelpad from 10 to 15
+        cbar.ax.tick_params(labelsize=16, colors='#2C3E50', length=5, width=1.0)
+        cbar.outline.set_linewidth(1.2)
+        cbar.outline.set_edgecolor('#2C3E50')
+        cbar.outline.set_alpha(0.8)
 
-        plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
+        plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white', 
+                   edgecolor='none', pad_inches=0.1)
         plt.close()
 
 # Function to create collage
@@ -173,22 +261,24 @@ def create_collage(image_paths, output_path):
     n_cols = 3
     n_rows = 2
     
-    # Calculate collage dimensions
+    # Calculate collage dimensions with some padding
     max_width = max(widths)
     max_height = max(heights)
     
-    collage_width = max_width * n_cols
-    collage_height = max_height * n_rows
+    padding = 20  # pixels between images
     
-    # Create new image
-    collage = Image.new('RGB', (collage_width, collage_height), 'white')
+    collage_width = max_width * n_cols + padding * (n_cols + 1)
+    collage_height = max_height * n_rows + padding * (n_rows + 1)
     
-    # Paste images in 3x2 grid
+    # Create new image with light gray background
+    collage = Image.new('RGB', (collage_width, collage_height), '#F8F9FA')
+    
+    # Paste images in 3x2 grid with padding
     for idx, img in enumerate(images):
         row = idx // n_cols
         col = idx % n_cols
-        x = col * max_width + (max_width - img.width) // 2  # Center horizontally
-        y = row * max_height + (max_height - img.height) // 2  # Center vertically
+        x = padding + col * (max_width + padding) + (max_width - img.width) // 2
+        y = padding + row * (max_height + padding) + (max_height - img.height) // 2
         collage.paste(img, (x, y))
     
     # Save collage

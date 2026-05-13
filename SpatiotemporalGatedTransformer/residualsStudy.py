@@ -20,11 +20,28 @@ from config import (TIME_BEGINNING, TIME_END, MAX_OC,
                    NUM_HEADS, NUM_LAYERS, hidden_size, bands_list_order, 
                    window_size, time_before)
 
+# Set publication-quality font sizes and styling globally
+plt.rcParams.update({
+    'font.size': 18,           # Base font size
+    'axes.titlesize': 24,      # Title font size
+    'axes.labelsize': 22,      # Axis label font size
+    'xtick.labelsize': 18,     # X-axis tick labels
+    'ytick.labelsize': 18,     # Y-axis tick labels
+    'legend.fontsize': 18,     # Legend font size
+    'figure.titlesize': 26,    # Figure title
+    'font.family': 'sans-serif',
+    'font.sans-serif': ['Arial', 'DejaVu Sans', 'Helvetica'],
+    'axes.linewidth': 2.0,     # Thicker axis lines
+    'grid.linewidth': 1.2,     # Thicker grid lines
+    'lines.linewidth': 2.5,    # Thicker plot lines
+    'lines.markersize': 8,     # Larger markers
+})
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Analyze SimpleSGT model residuals and generate visualizations')
-    parser.add_argument('--model-path', type=str, default='/home/vfourel/SOCProject/SOCmapping/TemporalFusionTransformer/TFT360kparams_OC150_2007to2023_transform_normalize_loss_l1/models/TFT_model_BEST_OVERALL_run_4_R2_0.6195.pth', help='Path to the trained model .pth file')
-    parser.add_argument('--data-path', type=str, default='/home/vfourel/SOCProject/SOCmapping/TemporalFusionTransformer/TFT360kparams_OC150_2007to2023_transform_normalize_loss_l1/data/train_val_data_run_4.parquet', help='Path to the parquet file containing train/val data')
-    parser.add_argument('--stats-path', type=str, default='/home/vfourel/SOCProject/SOCmapping/TemporalFusionTransformer/TFT360kparams_OC150_2007to2023_transform_normalize_loss_l1/data/normalization_stats_run_4.pkl', help='Path to normalization stats pickle file')
+    parser.add_argument('--model-path', type=str, default='/home/valerian/SGTPublication/Weights-ResidualsModels-MappingInference-SOCmapping/TemporalFusionTransformer/residualModels360k_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_TRANSFORM_none_LOSS_composite_l2/TFT_model_BEST_OVERALL_from_run_3_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_TRANSFORM_none_LOSS_composite_l2_R2_0.5173.pth', help='Path to the trained model .pth file')
+    parser.add_argument('--data-path', type=str, default='/home/valerian/SGTPublication/Weights-ResidualsModels-MappingInference-SOCmapping/TemporalFusionTransformer/residualModels360k_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_TRANSFORM_none_LOSS_composite_l2/train_val_data_run_3_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_TRANSFORM_none_LOSS_composite_l2.parquet', help='Path to the parquet file containing train/val data')
+    parser.add_argument('--stats-path', type=str, default='/home/valerian/SGTPublication/Weights-ResidualsModels-MappingInference-SOCmapping/TemporalFusionTransformer/residualModels360k_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_TRANSFORM_none_LOSS_composite_l2/normalization_stats_run_3_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_TRANSFORM_none_LOSS_composite_l2.pkl', help='Path to normalization stats pickle file')
     parser.add_argument('--output-dir', type=str, default='residual_analysis', help='Directory to save output visualizations')
     parser.add_argument('--batch-size', type=int, default=256, help='Batch size for inference')
     parser.add_argument('--use-gpu', action='store_true', default=True, help='Use GPU for inference')
@@ -143,68 +160,79 @@ def create_visualizations(train_results, val_results, output_dir):
     os.makedirs(output_dir, exist_ok=True)
 
     # 1. Scatter plot of predicted vs actual for both train and val
-    plt.figure(figsize=(12, 10))
+    plt.figure(figsize=(14, 12))
     plt.scatter(train_results['targets'], train_results['predictions'], 
-                alpha=0.5, label=f'Training (R² = {train_results["metrics"]["r2"]:.4f})')
+                alpha=0.5, s=50, label=f'Training (R² = {train_results["metrics"]["r2"]:.4f})')
     plt.scatter(val_results['targets'], val_results['predictions'], 
-                alpha=0.5, label=f'Validation (R² = {val_results["metrics"]["r2"]:.4f})')
+                alpha=0.5, s=50, label=f'Validation (R² = {val_results["metrics"]["r2"]:.4f})')
 
     # Add perfect prediction line
     min_val = min(np.min(train_results['targets']), np.min(val_results['targets']))
     max_val = max(np.max(train_results['targets']), np.max(val_results['targets']))
-    plt.plot([min_val, max_val], [min_val, max_val], 'k--', label='Perfect prediction')
+    plt.plot([min_val, max_val], [min_val, max_val], 'k--', linewidth=3, label='Perfect prediction')
 
-    plt.xlabel('Actual Organic Carbon')
-    plt.ylabel('Predicted Organic Carbon')
-    plt.title('Predicted vs Actual Organic Carbon')
-    plt.legend()
+    plt.xlabel('Actual Organic Carbon', labelpad=12)
+    plt.ylabel('Predicted Organic Carbon', labelpad=12)
+    plt.title('Predicted vs Actual Organic Carbon', pad=20, weight='bold')
+    plt.legend(framealpha=0.9)
     plt.grid(True, alpha=0.3)
+    plt.tick_params(axis='both', which='major', labelsize=18, pad=8, width=2.0, length=6)
     plt.savefig(os.path.join(output_dir, 'predicted_vs_actual.png'), dpi=300, bbox_inches='tight')
     plt.close()
 
     # 2. Residual histogram for train and validation
-    fig, axes = plt.subplots(1, 2, figsize=(15, 6))
+    fig, axes = plt.subplots(1, 2, figsize=(18, 7))
 
-    sns.histplot(train_results['metrics']['residuals'], kde=True, ax=axes[0])
-    axes[0].set_title(f'Training Residuals (Mean: {train_results["metrics"]["mean_residual"]:.4f})')
-    axes[0].set_xlabel('Residual (Actual - Predicted)')
+    sns.histplot(train_results['metrics']['residuals'], kde=True, ax=axes[0], bins=30)
+    axes[0].set_title(f'Training Residuals (Mean: {train_results["metrics"]["mean_residual"]:.4f})', 
+                     pad=15, weight='bold')
+    axes[0].set_xlabel('Residual (Actual - Predicted)', labelpad=12)
+    axes[0].set_ylabel('Count', labelpad=12)
     axes[0].grid(True, alpha=0.3)
+    axes[0].tick_params(axis='both', which='major', labelsize=18, pad=8, width=2.0, length=6)
 
-    sns.histplot(val_results['metrics']['residuals'], kde=True, ax=axes[1])
-    axes[1].set_title(f'Validation Residuals (Mean: {val_results["metrics"]["mean_residual"]:.4f})')
-    axes[1].set_xlabel('Residual (Actual - Predicted)')
+    sns.histplot(val_results['metrics']['residuals'], kde=True, ax=axes[1], bins=30)
+    axes[1].set_title(f'Validation Residuals (Mean: {val_results["metrics"]["mean_residual"]:.4f})', 
+                     pad=15, weight='bold')
+    axes[1].set_xlabel('Residual (Actual - Predicted)', labelpad=12)
+    axes[1].set_ylabel('Count', labelpad=12)
     axes[1].grid(True, alpha=0.3)
+    axes[1].tick_params(axis='both', which='major', labelsize=18, pad=8, width=2.0, length=6)
 
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, 'residual_histograms.png'), dpi=300, bbox_inches='tight')
     plt.close()
 
     # 3. Residuals vs predicted values
-    plt.figure(figsize=(12, 10))
+    plt.figure(figsize=(14, 12))
     plt.scatter(train_results['predictions'], train_results['metrics']['residuals'], 
-                alpha=0.5, label='Training')
+                alpha=0.5, s=50, label='Training')
     plt.scatter(val_results['predictions'], val_results['metrics']['residuals'], 
-                alpha=0.5, label='Validation')
-    plt.axhline(y=0, color='k', linestyle='--')
-    plt.xlabel('Predicted Organic Carbon')
-    plt.ylabel('Residual (Actual - Predicted)')
-    plt.title('Residuals vs Predicted Values')
-    plt.legend()
+                alpha=0.5, s=50, label='Validation')
+    plt.axhline(y=0, color='k', linestyle='--', linewidth=3)
+    plt.xlabel('Predicted Organic Carbon', labelpad=12)
+    plt.ylabel('Residual (Actual - Predicted)', labelpad=12)
+    plt.title('Residuals vs Predicted Values', pad=20, weight='bold')
+    plt.legend(framealpha=0.9)
     plt.grid(True, alpha=0.3)
+    plt.tick_params(axis='both', which='major', labelsize=18, pad=8, width=2.0, length=6)
     plt.savefig(os.path.join(output_dir, 'residuals_vs_predicted.png'), dpi=300, bbox_inches='tight')
     plt.close()
 
     # 4. Spatial distribution of residuals
-    plt.figure(figsize=(15, 12))
+    plt.figure(figsize=(16, 14))
     sc = plt.scatter(val_results['longitudes'], val_results['latitudes'], 
                c=val_results['metrics']['residuals'], cmap='coolwarm', 
-               alpha=0.7, s=30, vmin=-2*np.std(val_results['metrics']['residuals']), 
+               alpha=0.7, s=40, vmin=-2*np.std(val_results['metrics']['residuals']), 
                vmax=2*np.std(val_results['metrics']['residuals']))
-    plt.colorbar(sc, label='Residual')
-    plt.xlabel('Longitude')
-    plt.ylabel('Latitude')
-    plt.title('Spatial Distribution of Validation Residuals')
+    cbar = plt.colorbar(sc, label='Residual')
+    cbar.ax.tick_params(labelsize=18, width=2.0, length=6, pad=8)
+    cbar.set_label('Residual', fontsize=22, labelpad=15)
+    plt.xlabel('Longitude', labelpad=12)
+    plt.ylabel('Latitude', labelpad=12)
+    plt.title('Spatial Distribution of Validation Residuals', pad=20, weight='bold')
     plt.grid(True, alpha=0.3)
+    plt.tick_params(axis='both', which='major', labelsize=18, pad=8, width=2.0, length=6)
     plt.savefig(os.path.join(output_dir, 'spatial_residuals.png'), dpi=300, bbox_inches='tight')
     plt.close()
 
@@ -237,14 +265,24 @@ def create_visualizations(train_results, val_results, output_dir):
     train_binned_residuals, train_bin_centers, train_bin_counts, train_mean_residuals, train_std_residuals = create_oc_bins(
         train_results['targets'], train_results['predictions'], train_results['metrics']['residuals'])
 
-    plt.figure(figsize=(15, 8))
-    plt.boxplot(train_binned_residuals, labels=[f"{c:.2f}\n(n={n})" for c, n in zip(train_bin_centers, train_bin_counts)])
-    plt.axhline(y=0, color='r', linestyle='--')
-    plt.xlabel('Organic Carbon Bins')
-    plt.ylabel('Residuals')
-    plt.title('Distribution of Training Residuals by Organic Carbon Content Bins')
+    plt.figure(figsize=(16, 9))
+    bp = plt.boxplot(train_binned_residuals, labels=[f"{c:.2f}\n(n={n})" for c, n in zip(train_bin_centers, train_bin_counts)],
+                     patch_artist=True)
+    for patch in bp['boxes']:
+        patch.set_linewidth(2)
+    for whisker in bp['whiskers']:
+        whisker.set_linewidth(2)
+    for cap in bp['caps']:
+        cap.set_linewidth(2)
+    for median in bp['medians']:
+        median.set_linewidth(3)
+    plt.axhline(y=0, color='r', linestyle='--', linewidth=3)
+    plt.xlabel('Organic Carbon Bins', labelpad=12)
+    plt.ylabel('Residuals', labelpad=12)
+    plt.title('Distribution of Training Residuals by Organic Carbon Content Bins', pad=20, weight='bold')
     plt.grid(True, alpha=0.3)
     plt.xticks(rotation=45)
+    plt.tick_params(axis='both', which='major', labelsize=18, pad=8, width=2.0, length=6)
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, 'train_residuals_by_oc_bins.png'), dpi=300, bbox_inches='tight')
     plt.close()
@@ -253,45 +291,62 @@ def create_visualizations(train_results, val_results, output_dir):
     val_binned_residuals, val_bin_centers, val_bin_counts, val_mean_residuals, val_std_residuals = create_oc_bins(
         val_results['targets'], val_results['predictions'], val_results['metrics']['residuals'])
 
-    plt.figure(figsize=(15, 8))
-    plt.boxplot(val_binned_residuals, labels=[f"{c:.2f}\n(n={n})" for c, n in zip(val_bin_centers, val_bin_counts)])
-    plt.axhline(y=0, color='r', linestyle='--')
-    plt.xlabel('Organic Carbon Bins')
-    plt.ylabel('Residuals')
-    plt.title('Distribution of Validation Residuals by Organic Carbon Content Bins')
+    plt.figure(figsize=(16, 9))
+    bp = plt.boxplot(val_binned_residuals, labels=[f"{c:.2f}\n(n={n})" for c, n in zip(val_bin_centers, val_bin_counts)],
+                     patch_artist=True)
+    for patch in bp['boxes']:
+        patch.set_linewidth(2)
+    for whisker in bp['whiskers']:
+        whisker.set_linewidth(2)
+    for cap in bp['caps']:
+        cap.set_linewidth(2)
+    for median in bp['medians']:
+        median.set_linewidth(3)
+    plt.axhline(y=0, color='r', linestyle='--', linewidth=3)
+    plt.xlabel('Organic Carbon Bins', labelpad=12)
+    plt.ylabel('Residuals', labelpad=12)
+    plt.title('Distribution of Validation Residuals by Organic Carbon Content Bins', pad=20, weight='bold')
     plt.grid(True, alpha=0.3)
     plt.xticks(rotation=45)
+    plt.tick_params(axis='both', which='major', labelsize=18, pad=8, width=2.0, length=6)
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, 'val_residuals_by_oc_bins.png'), dpi=300, bbox_inches='tight')
     plt.close()
 
     # 5c. Line plot of mean residuals by bin
-    plt.figure(figsize=(12, 8))
+    plt.figure(figsize=(14, 9))
     plt.errorbar(train_bin_centers, train_mean_residuals, yerr=train_std_residuals, 
-                 fmt='o-', capsize=5, label='Training')
+                 fmt='o-', capsize=8, capthick=2, linewidth=2.5, markersize=10, label='Training')
     plt.errorbar(val_bin_centers, val_mean_residuals, yerr=val_std_residuals, 
-                 fmt='o-', capsize=5, label='Validation')
-    plt.axhline(y=0, color='k', linestyle='--')
-    plt.xlabel('Organic Carbon Bin Center')
-    plt.ylabel('Mean Residual ± Std Dev')
-    plt.title('Mean Residuals by Organic Carbon Content')
-    plt.legend()
+                 fmt='o-', capsize=8, capthick=2, linewidth=2.5, markersize=10, label='Validation')
+    plt.axhline(y=0, color='k', linestyle='--', linewidth=3)
+    plt.xlabel('Organic Carbon Bin Center', labelpad=12)
+    plt.ylabel('Mean Residual ± Std Dev', labelpad=12)
+    plt.title('Mean Residuals by Organic Carbon Content', pad=20, weight='bold')
+    plt.legend(framealpha=0.9)
     plt.grid(True, alpha=0.3)
+    plt.tick_params(axis='both', which='major', labelsize=18, pad=8, width=2.0, length=6)
     plt.savefig(os.path.join(output_dir, 'mean_residuals_by_oc_bins.png'), dpi=300, bbox_inches='tight')
     plt.close()
 
     # 6. QQ plot for residuals
-    fig, axes = plt.subplots(1, 2, figsize=(15, 6))
+    fig, axes = plt.subplots(1, 2, figsize=(18, 7))
 
     # Training QQ plot
     stats.probplot(train_results['metrics']['residuals'], dist="norm", plot=axes[0])
-    axes[0].set_title('Training Residuals Q-Q Plot')
+    axes[0].set_title('Training Residuals Q-Q Plot', pad=15, weight='bold')
     axes[0].grid(True, alpha=0.3)
+    axes[0].tick_params(axis='both', which='major', labelsize=18, pad=8, width=2.0, length=6)
+    axes[0].set_xlabel('Theoretical Quantiles', labelpad=12)
+    axes[0].set_ylabel('Sample Quantiles', labelpad=12)
 
     # Validation QQ plot
     stats.probplot(val_results['metrics']['residuals'], dist="norm", plot=axes[1])
-    axes[1].set_title('Validation Residuals Q-Q Plot')
+    axes[1].set_title('Validation Residuals Q-Q Plot', pad=15, weight='bold')
     axes[1].grid(True, alpha=0.3)
+    axes[1].tick_params(axis='both', which='major', labelsize=18, pad=8, width=2.0, length=6)
+    axes[1].set_xlabel('Theoretical Quantiles', labelpad=12)
+    axes[1].set_ylabel('Sample Quantiles', labelpad=12)
 
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, 'residuals_qq_plot.png'), dpi=300, bbox_inches='tight')
@@ -300,7 +355,7 @@ def create_visualizations(train_results, val_results, output_dir):
     # 7. Heat map of predictions vs actual values
     def create_heatmap(preds, actuals, title, filename):
         # Create 2D histogram (heatmap)
-        plt.figure(figsize=(10, 10))
+        plt.figure(figsize=(12, 12))
 
         # Define bins for both axes
         bins = np.linspace(min(np.min(preds), np.min(actuals)), 
@@ -308,12 +363,15 @@ def create_visualizations(train_results, val_results, output_dir):
                           30)
 
         plt.hist2d(actuals, preds, bins=[bins, bins], cmap='viridis', norm=plt.cm.colors.LogNorm())
-        plt.colorbar(label='Count')
-        plt.plot([bins[0], bins[-1]], [bins[0], bins[-1]], 'r--')
-        plt.xlabel('Actual Organic Carbon')
-        plt.ylabel('Predicted Organic Carbon')
-        plt.title(title)
+        cbar = plt.colorbar(label='Count')
+        cbar.ax.tick_params(labelsize=18, width=2.0, length=6, pad=8)
+        cbar.set_label('Count', fontsize=22, labelpad=15)
+        plt.plot([bins[0], bins[-1]], [bins[0], bins[-1]], 'r--', linewidth=3)
+        plt.xlabel('Actual Organic Carbon', labelpad=12)
+        plt.ylabel('Predicted Organic Carbon', labelpad=12)
+        plt.title(title, pad=20, weight='bold')
         plt.grid(False)
+        plt.tick_params(axis='both', which='major', labelsize=18, pad=8, width=2.0, length=6)
         plt.savefig(os.path.join(output_dir, filename), dpi=300, bbox_inches='tight')
         plt.close()
 
@@ -348,34 +406,41 @@ def create_visualizations(train_results, val_results, output_dir):
     train_rel_errors = np.clip(train_rel_errors, 0, 1000)  # Cap at 1000% error
     val_rel_errors = np.clip(val_rel_errors, 0, 1000)
 
-    fig, axes = plt.subplots(1, 2, figsize=(15, 6))
+    fig, axes = plt.subplots(1, 2, figsize=(18, 7))
 
     sns.histplot(train_rel_errors, kde=True, ax=axes[0], bins=30)
-    axes[0].set_title(f'Training Relative Errors % (Median: {np.nanmedian(train_rel_errors):.2f}%)')
-    axes[0].set_xlabel('Relative Error (%)') 
+    axes[0].set_title(f'Training Relative Errors % (Median: {np.nanmedian(train_rel_errors):.2f}%)', 
+                     pad=15, weight='bold')
+    axes[0].set_xlabel('Relative Error (%)', labelpad=12) 
+    axes[0].set_ylabel('Count', labelpad=12)
     axes[0].set_xlim(0, min(300, np.nanpercentile(train_rel_errors, 95)))
     axes[0].grid(True, alpha=0.3)
+    axes[0].tick_params(axis='both', which='major', labelsize=18, pad=8, width=2.0, length=6)
 
     sns.histplot(val_rel_errors, kde=True, ax=axes[1], bins=30)
-    axes[1].set_title(f'Validation Relative Errors % (Median: {np.nanmedian(val_rel_errors):.2f}%)')
-    axes[1].set_xlabel('Relative Error (%)')
+    axes[1].set_title(f'Validation Relative Errors % (Median: {np.nanmedian(val_rel_errors):.2f}%)', 
+                     pad=15, weight='bold')
+    axes[1].set_xlabel('Relative Error (%)', labelpad=12)
+    axes[1].set_ylabel('Count', labelpad=12)
     axes[1].set_xlim(0, min(300, np.nanpercentile(val_rel_errors, 95)))
     axes[1].grid(True, alpha=0.3)
+    axes[1].tick_params(axis='both', which='major', labelsize=18, pad=8, width=2.0, length=6)
 
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, 'relative_errors.png'), dpi=300, bbox_inches='tight')
     plt.close()
 
     # 10. Plot relative errors vs actual OC content
-    plt.figure(figsize=(12, 8))
-    plt.scatter(train_results['targets'], train_rel_errors, alpha=0.5, label='Training')
-    plt.scatter(val_results['targets'], val_rel_errors, alpha=0.5, label='Validation')
-    plt.xlabel('Actual Organic Carbon')
-    plt.ylabel('Relative Error (%)')
-    plt.title('Relative Errors vs Actual Organic Carbon')
+    plt.figure(figsize=(14, 10))
+    plt.scatter(train_results['targets'], train_rel_errors, alpha=0.5, s=50, label='Training')
+    plt.scatter(val_results['targets'], val_rel_errors, alpha=0.5, s=50, label='Validation')
+    plt.xlabel('Actual Organic Carbon', labelpad=12)
+    plt.ylabel('Relative Error (%)', labelpad=12)
+    plt.title('Relative Errors vs Actual Organic Carbon', pad=20, weight='bold')
     plt.ylim(0, min(300, max(np.nanpercentile(train_rel_errors, 95), np.nanpercentile(val_rel_errors, 95))))
-    plt.legend()
+    plt.legend(framealpha=0.9)
     plt.grid(True, alpha=0.3)
+    plt.tick_params(axis='both', which='major', labelsize=18, pad=8, width=2.0, length=6)
     plt.savefig(os.path.join(output_dir, 'relative_errors_vs_oc.png'), dpi=300, bbox_inches='tight')
     plt.close()
 
@@ -398,25 +463,29 @@ def create_visualizations(train_results, val_results, output_dir):
             bin_rel_errors = val_rel_errors[bin_mask]
             binned_rel_errors.append(np.median(bin_rel_errors))
 
-    plt.figure(figsize=(12, 8))
-    plt.bar(bin_centers_uncertainty, binned_uncertainty, width=(val_bin_centers[1] - val_bin_centers[0])*0.8, alpha=0.6, label='Std Dev of Residuals')
-    plt.plot(bin_centers_uncertainty, binned_rel_errors, 'ro-', label='Median Relative Error (%)')
-    plt.xlabel('Organic Carbon Content')
-    plt.ylabel('Uncertainty / Error')
-    plt.title('Prediction Uncertainty by Organic Carbon Content')
-    plt.legend()
+    plt.figure(figsize=(14, 9))
+    plt.bar(bin_centers_uncertainty, binned_uncertainty, width=(val_bin_centers[1] - val_bin_centers[0])*0.8, 
+            alpha=0.6, label='Std Dev of Residuals', edgecolor='black', linewidth=1.5)
+    plt.plot(bin_centers_uncertainty, binned_rel_errors, 'ro-', linewidth=2.5, markersize=10, 
+             label='Median Relative Error (%)')
+    plt.xlabel('Organic Carbon Content', labelpad=12)
+    plt.ylabel('Uncertainty / Error', labelpad=12)
+    plt.title('Prediction Uncertainty by Organic Carbon Content', pad=20, weight='bold')
+    plt.legend(framealpha=0.9)
     plt.grid(True, alpha=0.3)
+    plt.tick_params(axis='both', which='major', labelsize=18, pad=8, width=2.0, length=6)
     plt.savefig(os.path.join(output_dir, 'prediction_uncertainty.png'), dpi=300, bbox_inches='tight')
     plt.close()
 
     # 12. SGT-specific: Time-based error analysis
-    plt.figure(figsize=(10, 6))
-    plt.hist(val_results['metrics']['residuals'], bins=30, alpha=0.7, color='blue')
-    plt.axvline(0, color='red', linestyle='--')
-    plt.xlabel('Residual (Actual - Predicted)')
-    plt.ylabel('Frequency')
-    plt.title('Distribution of Temporal Fusion Transformer Residuals')
+    plt.figure(figsize=(12, 8))
+    plt.hist(val_results['metrics']['residuals'], bins=30, alpha=0.7, color='blue', edgecolor='black', linewidth=1.5)
+    plt.axvline(0, color='red', linestyle='--', linewidth=3)
+    plt.xlabel('Residual (Actual - Predicted)', labelpad=12)
+    plt.ylabel('Frequency', labelpad=12)
+    plt.title('Distribution of Temporal Fusion Transformer Residuals', pad=20, weight='bold')
     plt.grid(True, alpha=0.3)
+    plt.tick_params(axis='both', which='major', labelsize=18, pad=8, width=2.0, length=6)
     plt.savefig(os.path.join(output_dir, 'SGT_residual_distribution.png'), dpi=300, bbox_inches='tight')
     plt.close()
 
