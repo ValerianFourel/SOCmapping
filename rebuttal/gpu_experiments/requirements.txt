@@ -21,6 +21,7 @@ tqdm
 wandb
 openpyxl                  # required by pandas.read_excel for the LUCAS xlsx
 pyarrow                   # required for pandas.read_parquet / to_parquet
+huggingface_hub[hf_transfer]  # for upload_to_hf.py + fast downloads
 
 # Experiment 2 only — GeoTIFF + UTM reprojection
 rasterio

@@ -100,9 +100,20 @@ hf download ValerianFourel/SOCmappingRastersAndSoilSamples \
     --repo-type dataset \
     --local-dir .
 
+# Install unzip if it's not in the base image
+apt install -y unzip          # or: python3 -m zipfile -e SOCmappingData.zip .
+
 # Unzip (≈ 17 GB → ≈ 25 GB on disk)
 unzip -q SOCmappingData.zip
 rm SOCmappingData.zip    # free 17 GB once you've confirmed it unzipped cleanly
+
+# Heads-up: the zip wraps everything in a top-level "Data/" folder, so the
+# unzip lands at /workspace/SOC/Data/Data/.../. Step 6 below symlinks the
+# inner "Data" directly, so flattening isn't required, but if you prefer
+# a flat layout you can do:
+#   cd /workspace/SOC/Data
+#   mv Data/* Data/.[!.]* .
+#   rmdir Data
 
 # After unzip you should have:
 ls -lh /workspace/SOC/Data
@@ -166,9 +177,14 @@ Easiest fix: **symlink** instead of editing source. One pair of `ln -s`
 keeps every script working unmodified.
 
 ```bash
-sudo mkdir -p /home/valerian/SGTPublication
-sudo chown -R "$(whoami)" /home/valerian/SGTPublication
-ln -s /workspace/SOC/Data /home/valerian/SGTPublication/Data
+mkdir -p /home/valerian/SGTPublication
+
+# NOTE: the dataset zip extracts into /workspace/SOC/Data/Data/ (the zip
+# wraps everything in a "Data/" folder). Point the symlink at the inner
+# directory so the codebase's hard-coded /home/valerian/SGTPublication/Data/...
+# paths resolve correctly. If you already flattened the layout, replace
+# "/workspace/SOC/Data/Data" with "/workspace/SOC/Data" below.
+ln -s /workspace/SOC/Data/Data /home/valerian/SGTPublication/Data
 ln -s /workspace/SOC/Weights /home/valerian/SGTPublication/Weights-ResidualsModels-MappingInference-SOCmapping
 ln -s /workspace/SOC/SOCmapping /home/valerian/SGTPublication/SOCmapping
 ln -s /workspace/SOC/SOCmapping/rebuttal /home/valerian/SGTPublication/rebuttal
@@ -271,14 +287,47 @@ Outputs land alongside each script:
 
 ```bash
 # From your laptop terminal (NOT the SSH session)
-rsync -avzP \
+rsync -avzP --exclude=.venv \
   -e "ssh -i ~/.ssh/id_ed25519" \
   "mnp2foff20udyf-64411310@ssh.runpod.io:/workspace/SOC/SOCmapping/rebuttal/gpu_experiments/" \
   ~/SGTPublication/SOCmapping/rebuttal/gpu_experiments/
 ```
 
-The `--exclude=.venv` flag is optional but recommended (the venv on
-Runpod won't match your local CUDA).
+The `--exclude=.venv` flag is recommended — the venv on Runpod won't
+match your local CUDA anyway.
+
+---
+
+## 11. Upload the outputs to Hugging Face (optional but recommended)
+
+Push all GPU outputs to a single public dataset repo so reviewers and
+collaborators can read them without a code clone:
+<https://huggingface.co/datasets/ValerianFourel/SOCrebuttal>.
+
+```bash
+# Get a write-scope token from https://huggingface.co/settings/tokens
+export HF_TOKEN="hf_xxx_paste_your_write_token"
+
+# (or use cached cli login instead of the env var)
+# hf auth login
+
+source /workspace/SOC/SOCmapping/rebuttal/gpu_experiments/.venv/bin/activate
+python /workspace/SOC/SOCmapping/rebuttal/gpu_experiments/upload_to_hf.py
+```
+
+The script:
+- Creates `ValerianFourel/SOCrebuttal` (idempotent — re-runs are safe)
+- Generates a `README.md` with an upload manifest, file table, and
+  pointers to the GitHub code + the SOCmapping data / weights repos
+- Captures a `_provenance.json` with the current git SHA, host name,
+  and upload timestamp
+- Uploads only the whitelisted experiment outputs (skips `.py`, `.md`
+  sources, the `.venv/`, etc.)
+
+If a file is missing (e.g. you ran Experiment 2 but not Experiment 1
+yet), it's silently skipped and the README reflects the partial state.
+Run again after the second experiment finishes — the dataset gets
+updated in place.
 
 ---
 
