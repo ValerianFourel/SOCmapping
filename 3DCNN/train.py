@@ -20,6 +20,7 @@ from torch.utils.data import Dataset, DataLoader
 from modelCNNMultiYear import Small3DCNN
 from accelerate import Accelerator
 import argparse
+import contextlib
 from balancedDataset import create_validation_train_sets
 import pandas as pd
 import numpy as np
@@ -28,7 +29,8 @@ import uuid
 import os
 
 
-def train_model(args, model, train_loader, val_loader, num_epochs=100, target_transform="none", loss_type="mse"):
+def train_model(args, model, train_loader, val_loader, num_epochs=100, target_transform="none", loss_type="mse",
+                accum_steps=None):
     if loss_type == 'l1':
         criterion = nn.L1Loss()
     elif loss_type == 'mse':
@@ -38,6 +40,17 @@ def train_model(args, model, train_loader, val_loader, num_epochs=100, target_tr
     
     accelerator = Accelerator()
     device = accelerator.device
+
+    # Resolve accumulation factor now that we know how many processes/GPUs
+    # the launcher gave us. Caller can override by passing accum_steps>0.
+    if accum_steps is None or accum_steps <= 0:
+        accum_steps = _resolve_accum_steps(args, accelerator.num_processes)
+    effective_batch = accelerator.num_processes * args.per_gpu_batch_size * accum_steps
+    if accelerator.is_main_process:
+        print(f'[gradient-accumulation]  num_gpus={accelerator.num_processes}  '
+              f'per_gpu_batch={args.per_gpu_batch_size}  '
+              f'accum_steps={accum_steps}  '
+              f'effective_batch={effective_batch}')
 
     model = model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
@@ -78,34 +91,46 @@ def train_model(args, model, train_loader, val_loader, num_epochs=100, target_tr
     patience_counter = 0
     epoch_metrics = []
 
+    n_total = len(train_loader)
     for epoch in range(num_epochs):
         model.train()
         running_loss = 0.0
         train_loader_size = 0
+        optimizer.zero_grad()
 
-        for longitudes, latitudes, features, targets in tqdm(train_loader, desc=f"Epoch {epoch+1}"):
-            optimizer.zero_grad()
-            outputs = model(features)
-            if torch.isnan(outputs).any() or torch.isinf(outputs).any():
-                accelerator.print(f"Epoch {epoch+1}: NaN/Inf in outputs")
-                continue
+        for batch_idx, (longitudes, latitudes, features, targets) in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1}")):
+            is_last_micro = ((batch_idx + 1) % accum_steps == 0) or ((batch_idx + 1) == n_total)
+            sync_ctx = contextlib.nullcontext() if is_last_micro else accelerator.no_sync(model)
+            with sync_ctx:
+                outputs = model(features)
+                if torch.isnan(outputs).any() or torch.isinf(outputs).any():
+                    accelerator.print(f"Epoch {epoch+1}: NaN/Inf in outputs")
+                    # Don't step on this window — drop the partial gradient
+                    optimizer.zero_grad()
+                    continue
 
-            if target_transform == 'log':
-                targets = torch.log(targets + 1e-10)
-            elif target_transform == 'normalize':
-                targets = (targets - target_mean) / (target_std + 1e-10)
-            
-            outputs = outputs.float()
-            targets = targets.float()
-            loss = criterion(outputs, targets)
-            if torch.isnan(loss) or torch.isinf(loss):
-                accelerator.print(f"Epoch {epoch+1}: NaN/Inf in loss")
-                continue
-            accelerator.backward(loss)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
+                if target_transform == 'log':
+                    targets = torch.log(targets + 1e-10)
+                elif target_transform == 'normalize':
+                    targets = (targets - target_mean) / (target_std + 1e-10)
 
-            gathered_loss = accelerator.gather_for_metrics(loss.detach())
+                outputs = outputs.float()
+                targets = targets.float()
+                raw_loss = criterion(outputs, targets)
+                if torch.isnan(raw_loss) or torch.isinf(raw_loss):
+                    accelerator.print(f"Epoch {epoch+1}: NaN/Inf in loss")
+                    optimizer.zero_grad()
+                    continue
+                loss = raw_loss / accum_steps
+                accelerator.backward(loss)
+
+            if is_last_micro:
+                # Grad clip and optimizer step only fire at accumulation flush
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
+                optimizer.zero_grad()
+
+            gathered_loss = accelerator.gather_for_metrics(raw_loss.detach())
             running_loss += gathered_loss.mean().item()
             train_loader_size += 1
 
@@ -257,7 +282,26 @@ def parse_args():
     parser.add_argument('--target-fraction', type=float, default=0.75, help='Fraction of max bin count for resampling')
     parser.add_argument('--num-runs', type=int, default=4, help='Number of times to run the process')
     parser.add_argument('--save_train_and_val', type=bool, default=True, help='Dropout rate for the model')
+    # --- Gradient-accumulation knobs ------------------------------------
+    parser.add_argument('--per-gpu-batch-size', type=int, default=256,
+                        help='Per-process (per-GPU) micro-batch size')
+    parser.add_argument('--effective-batch-size', type=int, default=2048,
+                        help='Target total batch over all GPUs × accumulation. '
+                             '0 disables gradient accumulation.')
+    parser.add_argument('--accum-steps', type=int, default=0,
+                        help='Manual override for gradient accumulation steps. '
+                             '0 = auto from --effective-batch-size and num_processes.')
     return parser.parse_args()
+
+
+def _resolve_accum_steps(args, num_processes):
+    if args.accum_steps > 0:
+        return int(args.accum_steps)
+    if args.effective_batch_size <= 0:
+        return 1
+    per_step = max(1, num_processes * args.per_gpu_batch_size)
+    target = max(args.effective_batch_size, per_step)
+    return max(1, target // per_step)
 
 def compute_average_metrics(all_runs_metrics):
     if not all_runs_metrics:
@@ -440,8 +484,8 @@ if __name__ == "__main__":
         val_dataset.set_feature_stds(train_dataset_std_means.get_feature_stds())
         train_dataset.set_feature_means(train_dataset_std_means.get_feature_means())
         train_dataset.set_feature_stds(train_dataset_std_means.get_feature_stds())
-        train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True, num_workers=4, pin_memory=True)
-        val_loader = DataLoader(val_dataset, batch_size=256, shuffle=False, num_workers=4, pin_memory=True) if val_dataset is not None else None
+        train_loader = DataLoader(train_dataset, batch_size=args.per_gpu_batch_size, shuffle=True, num_workers=4, pin_memory=True)
+        val_loader = DataLoader(val_dataset, batch_size=args.per_gpu_batch_size, shuffle=False, num_workers=4, pin_memory=True) if val_dataset is not None else None
 
         if accelerator.is_main_process:
             print(f"Run {run + 1} - Train dataset size: {len(train_dataset)}, Val dataset size: {len(val_dataset) if val_dataset is not None else 0}")

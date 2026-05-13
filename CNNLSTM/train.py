@@ -18,6 +18,7 @@ from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,
                    file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC, time_before)
 from models import RefittedCovLSTM
 import argparse
+import contextlib
 from balancedDataset import create_validation_train_sets
 import uuid
 import os
@@ -38,10 +39,31 @@ def parse_args():
     parser.add_argument('--target-fraction', type=float, default=0.75, help='Fraction of max bin count for resampling')
     parser.add_argument('--num-runs', type=int, default=5, help='Number of times to run the process')
     parser.add_argument('--save_train_and_val', type=bool, default=False, help='Dropout rate for the model')
+    # --- Gradient-accumulation knobs ------------------------------------
+    parser.add_argument('--per-gpu-batch-size', type=int, default=256,
+                        help='Per-process (per-GPU) micro-batch size')
+    parser.add_argument('--effective-batch-size', type=int, default=2048,
+                        help='Target total batch over all GPUs × accumulation. '
+                             '0 disables gradient accumulation.')
+    parser.add_argument('--accum-steps', type=int, default=0,
+                        help='Manual override for gradient accumulation steps. '
+                             '0 = auto from --effective-batch-size and num_processes.')
     return parser.parse_args()
 
+
+def _resolve_accum_steps(args, num_processes):
+    if args.accum_steps > 0:
+        return int(args.accum_steps)
+    if args.effective_batch_size <= 0:
+        return 1
+    per_step = max(1, num_processes * args.per_gpu_batch_size)
+    target = max(args.effective_batch_size, per_step)
+    return max(1, target // per_step)
+
+
 def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelerator=None, lr=0.001,
-                loss_type='mse', target_transform='none', min_r2=0.5, use_validation=True):
+                loss_type='mse', target_transform='none', min_r2=0.5, use_validation=True,
+                accum_steps=1):
     if loss_type == 'l1':
         criterion = nn.L1Loss()
     elif loss_type == 'mse':
@@ -73,32 +95,36 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
     best_model_state = None
     epoch_metrics = []
     
+    n_total = len(train_loader)
     for epoch in range(num_epochs):
         model.train()
         running_loss = 0.0
-        
+        optimizer.zero_grad()
+
         for batch_idx, (longitudes, latitudes, features, targets) in enumerate(tqdm(train_loader)):
             features = features.to(accelerator.device)
             targets = targets.to(accelerator.device).float()
-            
-            # Apply target transformation
+
             if target_transform == 'log':
-                targets = torch.log(targets + 1e-10)  # Add small constant to avoid log(0)
+                targets = torch.log(targets + 1e-10)
             elif target_transform == 'normalize':
                 targets = (targets - target_mean) / (target_std + 1e-10)
-            # 'none' requires no transformation
-            
-            optimizer.zero_grad()
-            outputs = model(features)
-            loss = criterion(outputs, targets)
-            accelerator.backward(loss)
-            optimizer.step()
-            
-            running_loss += loss.item()
-            
+
+            is_last_micro = ((batch_idx + 1) % accum_steps == 0) or ((batch_idx + 1) == n_total)
+            sync_ctx = contextlib.nullcontext() if is_last_micro else accelerator.no_sync(model)
+            with sync_ctx:
+                outputs = model(features)
+                loss = criterion(outputs, targets) / accum_steps
+                accelerator.backward(loss)
+
+            running_loss += loss.item() * accum_steps
+            if is_last_micro:
+                optimizer.step()
+                optimizer.zero_grad()
+
             if accelerator.is_main_process:
                 wandb.log({
-                    'train_loss': loss.item(),
+                    'train_loss': loss.item() * accum_steps,
                     'batch': batch_idx + 1 + epoch * len(train_loader),
                     'epoch': epoch + 1
                 })
@@ -313,6 +339,15 @@ if __name__ == "__main__":
         args.num_runs = 1
     accelerator = Accelerator()
 
+    NUM_PROCESSES = accelerator.num_processes
+    ACCUM_STEPS = _resolve_accum_steps(args, NUM_PROCESSES)
+    EFFECTIVE_BATCH = NUM_PROCESSES * args.per_gpu_batch_size * ACCUM_STEPS
+    if accelerator.is_main_process:
+        print(f'[gradient-accumulation]  num_gpus={NUM_PROCESSES}  '
+              f'per_gpu_batch={args.per_gpu_batch_size}  '
+              f'accum_steps={ACCUM_STEPS}  '
+              f'effective_batch={EFFECTIVE_BATCH}')
+
     # Initialize lists to store metrics and best metrics across runs
     all_runs_metrics = []
     all_best_metrics = {
@@ -404,13 +439,13 @@ if __name__ == "__main__":
             if accelerator.is_main_process:
                 print(f"Run {run + 1} Length of train_dataset: {len(train_dataset)}")
                 print(f"Run {run + 1} Length of val_dataset: {len(val_dataset)}")
-            train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
-            val_loader = DataLoader(val_dataset, batch_size=256, shuffle=False)
+            train_loader = DataLoader(train_dataset, batch_size=args.per_gpu_batch_size, shuffle=True)
+            val_loader = DataLoader(val_dataset, batch_size=args.per_gpu_batch_size, shuffle=False)
         else:
             train_dataset = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df_std_means)
             if accelerator.is_main_process:
                 print(f"Run {run + 1} Length of train_dataset: {len(train_dataset)}")
-            train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
+            train_loader = DataLoader(train_dataset, batch_size=args.per_gpu_batch_size, shuffle=True)
             val_loader = None
 
         if accelerator.is_main_process:
@@ -501,7 +536,8 @@ if __name__ == "__main__":
             loss_type=args.loss_type,
             target_transform=args.target_transform,
             min_r2=0.2,
-            use_validation=args.use_validation
+            use_validation=args.use_validation,
+            accum_steps=ACCUM_STEPS,
         )
 
         # Store metrics
