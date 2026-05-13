@@ -56,7 +56,7 @@ def _tail(path: str, max_bytes: int = 16384) -> str:
 def _detect_phase(txt: str) -> str:
     if 'wrote _shard_' in txt or 'wrote fold_' in txt or 'wrote ' in txt and 'results.pkl' in txt:
         return 'done'
-    if 'Total batches' in txt:
+    if 'Streaming' in txt or 'Total batches' in txt:
         return 'mc_sampling'
     if 'points in shard' in txt:
         return 'loading_data'

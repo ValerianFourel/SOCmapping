@@ -66,6 +66,21 @@ class MultiRasterDataset1MilMultiYears(Dataset):
             for subfolder in self.samples_coordinates_array_subfolders
         }
 
+        # Build (lat, lon) -> (id_num, x, y) hashmap per subfolder so that
+        # find_coordinates_index() is O(1) instead of an O(N) np.where scan
+        # over the 1.3 M-row coordinates.npy. Cuts 80k-sample dataset
+        # materialisation from ~tens-of-minutes to seconds. Keys are
+        # quantised to 9 decimal digits (≈ sub-mm at the equator) to be
+        # robust against float-equality flakiness.
+        self._coord_index = {
+            subfolder: {
+                (round(float(row[0]), 9), round(float(row[1]), 9)):
+                    (row[2], row[3], row[4])
+                for row in coords
+            }
+            for subfolder, coords in self.coordinates.items()
+        }
+
     def check_seasonality(self, data_array_subfolders):
         seasons = ['winter', 'spring', 'summer', 'autumn']
         return any(any(season in subfolder.lower() for season in seasons) for subfolder in data_array_subfolders)
@@ -75,11 +90,18 @@ class MultiRasterDataset1MilMultiYears(Dataset):
         return '/'.join(parts[-2:])
 
     def find_coordinates_index(self, subfolder, longitude, latitude):
-        coords = self.coordinates[subfolder]
-        match = np.where((coords[:, 1] == longitude) & (coords[:, 0] == latitude))[0]
-        if match.size == 0:
-            raise ValueError(f"Coordinates ({longitude}, {latitude}) not found in {subfolder}")
-        return coords[match[0], 2], coords[match[0], 3], coords[match[0], 4]
+        key = (round(float(latitude), 9), round(float(longitude), 9))
+        idx = self._coord_index[subfolder].get(key)
+        if idx is None:
+            # Fallback to legacy linear scan (handles any edge-case keys
+            # that don't survive the round-trip — should never fire in
+            # practice but kept as a safety net).
+            coords = self.coordinates[subfolder]
+            match = np.where((coords[:, 1] == longitude) & (coords[:, 0] == latitude))[0]
+            if match.size == 0:
+                raise ValueError(f"Coordinates ({longitude}, {latitude}) not found in {subfolder}")
+            return coords[match[0], 2], coords[match[0], 3], coords[match[0], 4]
+        return idx
 
     def filter_by_season_or_year(self, season, year, seasonality_based):
         if seasonality_based:

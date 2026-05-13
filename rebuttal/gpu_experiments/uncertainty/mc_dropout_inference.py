@@ -250,7 +250,11 @@ def invert_log(p: torch.Tensor) -> torch.Tensor:
 
 
 def run_mc_dropout(model, loader, n_total_points, device):
-    """Welford accumulators over MC passes, in original SOC units."""
+    """Welford accumulators over MC passes, in original SOC units.
+
+    Streams the DataLoader (no pre-materialisation) so the GPU starts
+    processing the first batch the moment it's ready — overlap I/O with
+    compute via the loader's num_workers."""
     means_all = np.empty(n_total_points, dtype=np.float32)
     stds_all = np.empty(n_total_points, dtype=np.float32)
     lons_all = np.empty(n_total_points, dtype=np.float64)
@@ -258,10 +262,10 @@ def run_mc_dropout(model, loader, n_total_points, device):
 
     cursor = 0
     t_start = time.time()
-    batches = list(loader)
-    print(f'Total batches: {len(batches)} (≈ {n_total_points} points)',
+    n_batches_est = max(1, (n_total_points + 255) // 256)   # BATCH_SIZE=256
+    print(f'Streaming ≈ {n_batches_est} batches (≈ {n_total_points} points)',
           flush=True)
-    for b_idx, batch in enumerate(batches):
+    for b_idx, batch in enumerate(loader):
         lon, lat, x = batch
         lon = lon.cpu().numpy()
         lat = lat.cpu().numpy()
@@ -288,12 +292,14 @@ def run_mc_dropout(model, loader, n_total_points, device):
         lats_all[cursor:cursor + bsz] = lat
         cursor += bsz
 
-        if (b_idx + 1) % 50 == 0 or b_idx == len(batches) - 1:
+        # Print progress every 50 batches and on the last one
+        is_last = (cursor >= n_total_points)
+        if (b_idx + 1) % 50 == 0 or is_last:
             t = time.time() - t_start
             done = cursor
             rate = done / max(t, 1e-6)
             remain = (n_total_points - done) / max(rate, 1e-6)
-            print(f'  batch {b_idx+1}/{len(batches)}  point {done}/{n_total_points}  '
+            print(f'  batch {b_idx+1}/{n_batches_est}  point {done}/{n_total_points}  '
                   f'elapsed {t:.1f}s  ETA {remain:.0f}s', flush=True)
 
     return lons_all[:cursor], lats_all[:cursor], means_all[:cursor], stds_all[:cursor]

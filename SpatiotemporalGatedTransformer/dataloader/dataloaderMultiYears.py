@@ -166,6 +166,18 @@ class MultiRasterDatasetMultiYears(Dataset):
             for subfolder in self.samples_coordinates_array_subfolders
         }
 
+        # O(1) (lat, lon) lookup hashmap — replaces a per-call np.where scan
+        # over the 30k-row coordinates.npy. Cuts dataset materialisation
+        # from minutes to seconds.
+        self._coord_index = {
+            subfolder: {
+                (round(float(row[0]), 9), round(float(row[1]), 9)):
+                    (row[2], row[3], row[4])
+                for row in coords
+            }
+            for subfolder, coords in self.coordinates.items()
+        }
+
     def check_seasonality(self,data_array_subfolders):
         seasons = ['winter', 'spring', 'summer', 'autumn']
 
@@ -185,24 +197,17 @@ class MultiRasterDatasetMultiYears(Dataset):
         return '/'.join(parts[-2:])
 
     def find_coordinates_index(self, subfolder, longitude, latitude):
-        """
-        Finds the index of the matching coordinates in the subfolder's coordinates.npy file.
-
-        Parameters:
-        subfolder: str, name of the subfolder
-        longitude: float, longitude to match
-        latitude: float, latitude to match
-
-        Returns:
-        tuple: (id_num, x, y) if match is found, otherwise raises an error
-        """
+        """O(1) lookup via the (lat, lon) hashmap built in __init__,
+        with the legacy linear scan kept as a fallback for any edge-case
+        keys that don't round-trip cleanly through float→round(9)."""
+        key = (round(float(latitude), 9), round(float(longitude), 9))
+        idx = self._coord_index[subfolder].get(key)
+        if idx is not None:
+            return idx
         coords = self.coordinates[subfolder]
-        # Assuming the first two columns of `coordinates.npy` are longitude and latitude
         match = np.where((coords[:, 1] == longitude) & (coords[:, 0] == latitude))[0]
         if match.size == 0:
             raise ValueError(f"{coords} Coordinates ({longitude}, {latitude}) not found in {subfolder}")
-
-        # Return id_num, x, y from the same row
         return coords[match[0], 2], coords[match[0], 3], coords[match[0], 4]
 
     def __getitem__(self, index):
