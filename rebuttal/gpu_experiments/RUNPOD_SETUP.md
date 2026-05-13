@@ -70,13 +70,19 @@ Expected most-recent commits (from this session):
 ## 3. Install the Hugging Face CLI (one-line)
 
 We use it to download both the dataset and the model weights. No auth
-needed (both repos are public), but `huggingface-cli login` works too if
+needed (both repos are public), but `hf auth login` works too if
 you want faster CDN access via your account.
 
 ```bash
 pip install --upgrade "huggingface_hub[cli,hf_transfer]"
 export HF_HUB_ENABLE_HF_TRANSFER=1   # 5–10× faster downloads (parallel chunks)
 ```
+
+> **Note on the binary name.** Newer `huggingface_hub` releases ship the
+> CLI as `hf` and print a deprecation warning for `huggingface-cli`.
+> Use `hf` (not `huggingface-cli`) below. The flag `--local-dir-use-symlinks`
+> was removed in the rewrite — the new default is to download actual files,
+> which is what you want anyway.
 
 ---
 
@@ -89,11 +95,10 @@ directory structure the codebase expects.
 mkdir -p /workspace/SOC/Data && cd /workspace/SOC/Data
 
 # Download the zip (uses HF_HUB_ENABLE_HF_TRANSFER for parallel chunks)
-huggingface-cli download ValerianFourel/SOCmappingRastersAndSoilSamples \
+hf download ValerianFourel/SOCmappingRastersAndSoilSamples \
     SOCmappingData.zip \
     --repo-type dataset \
-    --local-dir . \
-    --local-dir-use-symlinks False
+    --local-dir .
 
 # Unzip (≈ 17 GB → ≈ 25 GB on disk)
 unzip -q SOCmappingData.zip
@@ -123,18 +128,16 @@ rebuttal:
 mkdir -p /workspace/SOC/Weights && cd /workspace/SOC/Weights
 
 # Selective download — Model A directory (everything under it, ~5 MB)
-huggingface-cli download \
+hf download \
     ValerianFourel/Weights-ResidualsModels-MappingInference-SOCmapping \
     --include "TemporalFusionTransformer/residualModels1mil_normalize_composite_l2_v2/*" \
-    --local-dir . \
-    --local-dir-use-symlinks False
+    --local-dir .
 
 # Selective download — Model B (single .pth file, ~4.3 MB)
-huggingface-cli download \
+hf download \
     ValerianFourel/Weights-ResidualsModels-MappingInference-SOCmapping \
     "TemporalFusionTransformer/finalResults2023_1milVersion_TRANSFORM_log_LOSS_l1/TFT_model_BEST_OVERALL_from_run_1_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_TRANSFORM_log_LOSS_l1_R2_1.0000.pth" \
-    --local-dir . \
-    --local-dir-use-symlinks False
+    --local-dir .
 
 # Verify the two files landed
 find . -name "*.pth" -size +1M
@@ -147,9 +150,9 @@ If you want **all** model weights for completeness (other architectures,
 residual runs, ~250 MB):
 
 ```bash
-huggingface-cli download \
+hf download \
     ValerianFourel/Weights-ResidualsModels-MappingInference-SOCmapping \
-    --local-dir . --local-dir-use-symlinks False
+    --local-dir .
 ```
 
 ---
@@ -284,7 +287,8 @@ Runpod won't match your local CUDA).
 | Problem | Fix |
 |---|---|
 | `nvidia-smi: command not found` | Pod has no GPU — pick a GPU pod template (RTX 3090 / 4090 / A100 etc.) |
-| `huggingface-cli` download stalls | `unset HF_HUB_ENABLE_HF_TRANSFER` and retry; falls back to plain requests |
+| `hf` download stalls | `unset HF_HUB_ENABLE_HF_TRANSFER` and retry; falls back to plain requests |
+| `huggingface-cli: command is deprecated` | The CLI was renamed to `hf` in `huggingface_hub` ≥ 0.27. Replace `huggingface-cli` with `hf` and drop `--local-dir-use-symlinks` (removed). |
 | `Coordinates ({lon},{lat}) not found in Elevation` at training time | Data didn't unzip into the right structure — re-verify `/workspace/SOC/Data/OC_LUCAS_LFU_LfL_Coordinates_v2/StaticValue/Elevation/coordinates.npy` exists |
 | `torch.cuda.OutOfMemoryError` in MC dropout | drop `BATCH_SIZE` in `mc_dropout_inference.py` from 256 → 128 |
 | Push back to GitHub from Runpod fails | Same as locally — set up a PAT or SSH key on the pod before `git push` |
