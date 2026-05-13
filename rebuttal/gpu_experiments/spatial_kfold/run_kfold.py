@@ -319,10 +319,16 @@ def run_fold(fold: dict, device: torch.device) -> dict:
     train_ds = make_dataset(train_df, means, stds)
     test_ds = make_dataset(test_df, means, stds)
 
+    # NUM_WORKERS=0: the dataset now carries an O(1) (lat, lon) hashmap
+    # per subfolder. With num_workers>0 the DataLoader would have to
+    # pickle that whole structure to each subprocess (~minutes of stall);
+    # main-process loading is already fast. Override with $SOC_KFOLD_NUM_WORKERS
+    # if you have a reason to.
+    _nw = int(os.environ.get('SOC_KFOLD_NUM_WORKERS', 0))
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,
-                              num_workers=4, pin_memory=True)
+                              num_workers=_nw, pin_memory=True)
     test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False,
-                             num_workers=4, pin_memory=True)
+                             num_workers=_nw, pin_memory=True)
 
     model = make_model().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR,

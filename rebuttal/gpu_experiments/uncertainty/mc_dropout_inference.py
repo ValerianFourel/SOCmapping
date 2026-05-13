@@ -101,7 +101,14 @@ MODEL_B_PATH = SOC_WEIGHTS_DIR / (
 OUT_DIR = SOC_REBUTTAL_DIR / 'gpu_experiments' / 'uncertainty'
 N_PASSES = 30
 BATCH_SIZE = 256
-NUM_WORKERS = 4
+# IMPORTANT: keep NUM_WORKERS = 0 for inference. The dataset object now
+# carries a 1.3 M-entry (lat, lon) hashmap per band/year subfolder (~26
+# subfolders × 1.3 M = ~34 M entries total, ~2 GB of Python dicts). With
+# num_workers > 0 the DataLoader has to pickle that whole thing to every
+# worker subprocess, which takes ~5–10 min and stalls the GPU. With the
+# O(1) hashmap lookup, the main process is already fast enough that
+# multi-process loading doesn't help.
+NUM_WORKERS = int(os.environ.get('SOC_MC_NUM_WORKERS', 0))
 TARGET_TRANSFORM = 'log'
 TARGET_RESOLUTION_M = 250        # raster pixel size
 TARGET_CRS = 'EPSG:32632'        # UTM Zone 32N (Bavaria)
@@ -252,9 +259,11 @@ def invert_log(p: torch.Tensor) -> torch.Tensor:
 def run_mc_dropout(model, loader, n_total_points, device):
     """Welford accumulators over MC passes, in original SOC units.
 
-    Streams the DataLoader (no pre-materialisation) so the GPU starts
-    processing the first batch the moment it's ready — overlap I/O with
-    compute via the loader's num_workers."""
+    Streams the DataLoader (no pre-materialisation). With NUM_WORKERS=0
+    (default; see top of file for why) the data fetching happens in the
+    main process — which is fine because find_coordinates_index() is
+    now O(1) via a hashmap and the actual raster reads are in-RAM
+    array slices from data_cache."""
     means_all = np.empty(n_total_points, dtype=np.float32)
     stds_all = np.empty(n_total_points, dtype=np.float32)
     lons_all = np.empty(n_total_points, dtype=np.float64)
