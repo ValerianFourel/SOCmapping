@@ -215,7 +215,7 @@ ORIGINAL_SINGLE_SPLIT = {
     'rpiq': 1.051,
 }
 
-N_FOLDS = 5
+N_FOLDS = int(os.environ.get('SOC_KFOLD_N_FOLDS', 10))
 DIST_THRESHOLD_KM = 1.2          # match train.py / config
 EARTH_RADIUS_KM = 6371.0
 N_EPOCHS = int(num_epochs)       # 270 from config (use_validation=True)
@@ -1122,6 +1122,7 @@ def main():
     df = pd.read_parquet(MODEL_READY).reset_index(drop=True)
     folds_meta = build_folds(df)
     print(f'Loaded {len(df)} rows from {MODEL_READY}', flush=True)
+    print(f'N_FOLDS={N_FOLDS}  (override via SOC_KFOLD_N_FOLDS)', flush=True)
     for f in folds_meta:
         print(f'Fold {f["fold_id"]}: lat [{f["lat_lo"]:.4f}, {f["lat_hi"]:.4f}) '
               f'| n_test={len(f["test_idx"])} n_train={len(f["train_idx"])} '
