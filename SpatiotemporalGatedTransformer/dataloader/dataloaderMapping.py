@@ -26,7 +26,16 @@ class RasterTensorDataset1Mil(Dataset):
     def get_tensor_by_location(self, id_num, x, y, window_size=window_size):
         if id_num not in self.id_to_file:
             raise ValueError(f"ID {id_num} not found in dataset")
-        data = self.data_cache.get(id_num, np.load(self.id_to_file[id_num]))
+        # CRITICAL: previous code was
+        #   data = self.data_cache.get(id_num, np.load(self.id_to_file[id_num]))
+        # — which evaluated the np.load default eagerly on EVERY call, even
+        # on cache hits, loading the entire ~1.9 MB tile from disk every
+        # time. At ~30 raster lookups per sample × 256 samples × ~50
+        # batches that's ~370 GB of pointless I/O. Using `if` avoids it.
+        data = self.data_cache.get(id_num)
+        if data is None:
+            data = np.load(self.id_to_file[id_num])
+            self.data_cache[id_num] = data
         half_window = window_size // 2
         x_start, x_end = int(max(0, x - half_window)), int(min(data.shape[0], x + half_window + 1))
         y_start, y_end = int(max(0, y - half_window)), int(min(data.shape[1], y + half_window + 1))
