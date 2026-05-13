@@ -54,10 +54,13 @@ def _tail(path: str, max_bytes: int = 16384) -> str:
 
 
 def _detect_phase(txt: str) -> str:
-    if 'wrote _shard_' in txt or 'wrote fold_' in txt or 'wrote ' in txt and 'results.pkl' in txt:
+    if 'wrote _shard_' in txt or 'wrote fold_' in txt or ('wrote ' in txt and 'results.pkl' in txt):
         return 'done'
     if 'Streaming' in txt or 'Total batches' in txt:
-        return 'mc_sampling'
+        # Streaming started but no batch_N/M line yet → first batch hasn't
+        # completed. Use a distinct phase so the print code doesn't try to
+        # read batches_done / batches_total fields that aren't populated.
+        return 'mc_starting'
     if 'points in shard' in txt:
         return 'loading_data'
     if 'recomputing' in txt or 'survey_date' in txt:
@@ -126,7 +129,8 @@ def _print_mc(rows: list[dict]) -> None:
         return
     total_d = total_t = 0
     for r in rows:
-        if r['phase'] == 'mc_sampling':
+        # Only treat as mc_sampling if we actually parsed a batch_N/M line.
+        if r['phase'] == 'mc_sampling' and 'batches_done' in r:
             d, t = r['batches_done'], r['batches_total']
             total_d += d; total_t += t
             print(f'  {r["file"]:<22}  batch {d:>4}/{t:<4}  '
@@ -134,7 +138,8 @@ def _print_mc(rows: list[dict]) -> None:
         else:
             tag = {
                 'norm_recompute': 'recomputing normalisation stats',
-                'loading_data':   'materialising dataset (slow)',
+                'loading_data':   'building hashmap / loading dataset',
+                'mc_starting':    'streaming started, first batch in flight',
                 'launching':      'launching / importing',
                 'starting':       'starting up',
                 'done':           'DONE ✓',
@@ -155,7 +160,7 @@ def _print_kfold(rows: list[dict]) -> None:
         return
     total_d = total_t = 0
     for r in rows:
-        if r['phase'] == 'training':
+        if r['phase'] == 'training' and 'epoch' in r:
             e, et = r['epoch'], r['epoch_total']
             total_d += e; total_t += et
             print(f'  {r["file"]:<22}  fold {r["fold_id"]}  '
@@ -164,7 +169,8 @@ def _print_kfold(rows: list[dict]) -> None:
         else:
             tag = {
                 'norm_recompute': 'normalisation stats',
-                'loading_data':   'materialising dataset',
+                'loading_data':   'building hashmap / loading dataset',
+                'mc_starting':    'first batch in flight',
                 'launching':      'launching / importing',
                 'starting':       'starting up',
                 'done':           'DONE ✓',
