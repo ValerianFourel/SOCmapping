@@ -32,19 +32,26 @@ mkdir -p SOC && cd SOC
 
 ## 1. System prerequisites
 
-Most Runpod base images already have these. The `apt update / install`
-lines are only needed if the binary check just before each one fails.
+Most Runpod base images already have `git` / `python3`, but several are
+missing `unzip` and `python3.10-venv`. The single line below is safe
+to run on every image — installs are idempotent.
 
 ```bash
-# Probe what's already there
-python3 --version    # need 3.10+; 3.10 or 3.11 ideal
-git --version
-which nvidia-smi && nvidia-smi | head -5
-
-# If anything is missing:
-apt update && apt install -y git git-lfs curl unzip build-essential python3.10-venv
+apt update && apt install -y \
+    git git-lfs curl unzip build-essential \
+    python3.10-venv python3-pip
 git lfs install
+
+# Sanity-checks
+python3 --version          # need 3.10+
+nvidia-smi | head -5       # GPU must be visible
 ```
+
+> **`python3.10-venv` is mandatory.** Stock Ubuntu's `python3.10`
+> package ships without `venv`/`ensurepip`, so `bash setup_venv.sh`
+> will fail with `No module named ensurepip` if you skip this. The
+> `unzip` package is also missing from many Runpod base images and
+> step 4 needs it.
 
 ---
 
