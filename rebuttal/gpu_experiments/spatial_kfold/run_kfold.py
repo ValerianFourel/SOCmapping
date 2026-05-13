@@ -92,6 +92,89 @@ print(_describe_paths(), flush=True)
 OUT_DIR = SOC_REBUTTAL_DIR / 'gpu_experiments' / 'spatial_kfold'
 MODEL_READY = SOC_REBUTTAL_DIR / 'model_ready_dataset.parquet'
 
+# Files used to build MODEL_READY on first run (gitignored *.parquet means
+# the laptop-built copy isn't in git, so on a fresh Runpod we regenerate
+# it from the canonical xlsx + the Elevation tile system).
+LUCAS_XLSX = SOC_DATA_DIR / 'LUCAS_LFU_Lfl_00to23_Bavaria_OC.xlsx'
+ELEV_COORDS_NPY = SOC_DATA_DIR / 'OC_LUCAS_LFU_LfL_Coordinates_v2' / 'StaticValue' / 'Elevation' / 'coordinates.npy'
+ELEV_TILE_DIR = SOC_DATA_DIR / 'RasterTensorData' / 'StaticValue' / 'Elevation'
+
+
+def _build_model_ready_dataset() -> None:
+    """Regenerate rebuttal/model_ready_dataset.parquet from the canonical
+    LUCAS xlsx + Elevation tile system. Idempotent — no-op if the parquet
+    already exists. ~30 s on first run.
+
+    This is the same 16,514-row dataset that
+    rebuttal/temporal_regression_corrected.py produces; we duplicate the
+    build logic here so the k-fold script is self-contained on a fresh
+    machine where the parquet isn't in git (*.parquet is gitignored)."""
+    if MODEL_READY.exists():
+        return
+    import re as _re
+    print(f'[setup] {MODEL_READY} missing — building from {LUCAS_XLSX}',
+          flush=True)
+    if not LUCAS_XLSX.exists():
+        raise FileNotFoundError(
+            f'Required xlsx not found at {LUCAS_XLSX}. '
+            f'Set SOC_DATA_DIR or SOC_PROJECT_ROOT so the walk-up resolves '
+            f'the correct Data/ directory.')
+
+    raw = pd.read_excel(LUCAS_XLSX)
+    raw['GPS_LONG'] = pd.to_numeric(raw['GPS_LONG'], errors='coerce')
+    raw['GPS_LAT'] = pd.to_numeric(raw['GPS_LAT'], errors='coerce')
+    raw['OC'] = pd.to_numeric(raw['OC'], errors='coerce')
+    mask = ((raw['OC'] <= 150)
+            & raw['GPS_LONG'].notna() & raw['GPS_LAT'].notna()
+            & raw['OC'].notna()
+            & raw['year'].between(2007, 2023, inclusive='both'))
+    df = raw[mask].copy().reset_index(drop=True)
+    print(f'[setup] After year ∈ [2007,2023], OC ≤ 150, non-null GPS filter: '
+          f'{len(df):,} rows', flush=True)
+
+    # Join altitude from the Elevation tile system
+    if not ELEV_COORDS_NPY.exists():
+        raise FileNotFoundError(f'{ELEV_COORDS_NPY} missing — needed for altitude.')
+    coords = np.load(ELEV_COORDS_NPY)
+    elev_map = (pd.DataFrame(coords, columns=['lat', 'lon', 'id_num', 'x', 'y'])
+                .drop_duplicates(['lat', 'lon']).reset_index(drop=True))
+    tile_files = {int(_re.match(r'ID(\d+)', p.name).group(1)): p
+                  for p in ELEV_TILE_DIR.iterdir()
+                  if p.name.startswith('ID')}
+    tiles: dict[int, np.ndarray] = {}
+    altitude = np.empty(len(elev_map), dtype=float)
+    for i, r in elev_map.iterrows():
+        tid = int(r.id_num)
+        if tid not in tiles:
+            tiles[tid] = np.load(tile_files[tid])
+        altitude[i] = float(tiles[tid][int(r.x), int(r.y)])
+    elev_map['altitude'] = altitude
+
+    df = df.merge(elev_map[['lat', 'lon', 'altitude']],
+                  left_on=['GPS_LAT', 'GPS_LONG'],
+                  right_on=['lat', 'lon'], how='left').drop(columns=['lat', 'lon'])
+    n_missing = int(df['altitude'].isna().sum())
+    if n_missing:
+        print(f'[setup] {n_missing} rows missing altitude after merge — dropping',
+              flush=True)
+        df = df.dropna(subset=['altitude']).copy()
+    df['altitude'] = df['altitude'].astype(float)
+    df['year'] = df['year'].astype(int)
+
+    # Coerce dtypes that don't round-trip through pyarrow cleanly
+    keep = [c for c in ('POINTID', 'GPS_LONG', 'GPS_LAT', 'year', 'OC',
+                        'survey_date', 'season', 'bin', 'dataset_type',
+                        'altitude') if c in df.columns]
+    out = df[keep].copy()
+    for c in ('POINTID', 'season'):
+        if c in out.columns:
+            out[c] = out[c].astype(str)
+
+    MODEL_READY.parent.mkdir(parents=True, exist_ok=True)
+    out.to_parquet(MODEL_READY)
+    print(f'[setup] Wrote {MODEL_READY} ({len(out):,} rows × {len(out.columns)} cols)',
+          flush=True)
+
 # Single-split baseline (hardcoded from rebuttal_numbers.md for the report)
 ORIGINAL_SINGLE_SPLIT = {
     'n_test': 1359,
@@ -782,10 +865,12 @@ def main():
     if args.worker:
         if args.fold is None:
             raise SystemExit('--fold N is required when --worker is set.')
+        _build_model_ready_dataset()           # idempotent — no-op if exists
         _worker_run_fold(args.fold)
         return
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+    _build_model_ready_dataset()               # build once on first run
 
     # Probe the dataset once on the orchestrator side so we can log fold
     # geometry up front (the actual training happens in subprocesses).
