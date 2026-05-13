@@ -219,6 +219,48 @@ SEED_BASE = 42
 ACCUM_STEPS = max(1, int(os.environ.get('SOC_KFOLD_ACCUM_STEPS', 8)))
 EFFECTIVE_BATCH = BATCH_SIZE * ACCUM_STEPS
 
+# Per-bin oversampling of the training set — same as the SGT train.py
+# does via balancedDataset.create_balanced_dataset(): cut OC into N_BINS
+# quantile bins and upsample any bin with fewer than (max_bin_count ×
+# REBALANCE_MIN_RATIO) rows so rare/high-OC samples get more updates.
+# Set REBALANCE_MIN_RATIO=0 to disable. Original training used
+# n_bins=128, min_ratio=3/4 → typical 16,514 → ~20k training rows.
+REBALANCE_N_BINS     = int(os.environ.get('SOC_KFOLD_REBALANCE_N_BINS', 128))
+REBALANCE_MIN_RATIO  = float(os.environ.get('SOC_KFOLD_REBALANCE_MIN_RATIO', 3 / 4))
+REBALANCE_SEED       = 0   # deterministic per-fold (fold's torch seed varies)
+
+
+def _rebalance_by_oc_bin(df: pd.DataFrame) -> pd.DataFrame:
+    """Mirror SpatiotemporalGatedTransformer/balancedDataset.create_balanced_dataset
+    (`use_validation=False` branch): qcut OC into REBALANCE_N_BINS quantile
+    bins, then for every bin that has fewer than `max_bin_count *
+    REBALANCE_MIN_RATIO` rows, draw additional rows with replacement until
+    the bin reaches that count. Returns a NEW dataframe with reset index.
+
+    No-op if REBALANCE_MIN_RATIO <= 0 or N_BINS < 2."""
+    if REBALANCE_MIN_RATIO <= 0 or REBALANCE_N_BINS < 2 or len(df) < REBALANCE_N_BINS:
+        return df.reset_index(drop=True)
+    df = df.copy()
+    df['_bin'] = pd.qcut(df['OC'], q=REBALANCE_N_BINS,
+                          labels=False, duplicates='drop')
+    bin_counts = df['_bin'].value_counts()
+    if bin_counts.empty:
+        return df.drop(columns=['_bin']).reset_index(drop=True)
+    max_samples = int(bin_counts.max())
+    min_samples = max(int(max_samples * REBALANCE_MIN_RATIO), 5)
+    parts = []
+    for bin_id in bin_counts.index:
+        bin_rows = df[df['_bin'] == bin_id]
+        if len(bin_rows) == 0:
+            continue
+        if len(bin_rows) < min_samples:
+            parts.append(bin_rows.sample(n=min_samples, replace=True,
+                                         random_state=REBALANCE_SEED + int(bin_id)))
+        else:
+            parts.append(bin_rows)
+    out = pd.concat(parts, ignore_index=True).drop(columns=['_bin'])
+    return out
+
 # ASSUMPTION: model_ready_dataset.parquet has an 'altitude' column that maps
 # to the same elevation values used at training time. This script doesn't
 # need altitude — it only uses GPS_LONG/GPS_LAT/year/OC, but the column is
@@ -412,11 +454,22 @@ def run_fold(fold: dict, device: torch.device) -> dict:
     print(f'\n=== Fold {fold_id} | lat [{fold["lat_lo"]:.4f}, '
           f'{fold["lat_hi"]:.4f}) ===', flush=True)
     df = pd.read_parquet(MODEL_READY)
-    train_df = df.loc[fold['train_idx']].reset_index(drop=True)
+    train_df_raw = df.loc[fold['train_idx']].reset_index(drop=True)
     test_df = df.loc[fold['test_idx']].reset_index(drop=True)
 
-    print(f'n_train={len(train_df)} n_test={len(test_df)} '
-          f'n_buffer_excluded={len(fold["buffer_idx"])}', flush=True)
+    # Per-bin oversampling — same recipe as the SGT train.py uses
+    # (qcut OC into 128 quantile bins, upsample rare bins to
+    # max_bin_count × 3/4). Applied to the TRAIN half only; test stays
+    # untouched so metrics are still on the natural distribution.
+    train_df = _rebalance_by_oc_bin(train_df_raw)
+
+    print(f'n_train_raw={len(train_df_raw)}  n_train_rebalanced={len(train_df)}  '
+          f'n_test={len(test_df)}  n_buffer_excluded={len(fold["buffer_idx"])}',
+          flush=True)
+    print(f'  rebalance: {REBALANCE_N_BINS} bins, min_ratio={REBALANCE_MIN_RATIO:.2f} '
+          f'→ {len(train_df) - len(train_df_raw):+,} rows '
+          f'({100 * len(train_df) / max(len(train_df_raw), 1) - 100:+.1f}%)',
+          flush=True)
     print(f'Test SOC: mean={test_df.OC.mean():.2f} std={test_df.OC.std():.2f} '
           f'max={test_df.OC.max():.1f} %>50={100*(test_df.OC>50).mean():.2f}%',
           flush=True)
@@ -427,7 +480,9 @@ def run_fold(fold: dict, device: torch.device) -> dict:
           f'(was {(len(train_df) + BATCH_SIZE - 1) // BATCH_SIZE} without accumulation)',
           flush=True)
 
-    # Per-fold feature normalisation (no leakage)
+    # Per-fold feature normalisation (no leakage) — compute from the
+    # REBALANCED train set so the feature stats reflect what the model
+    # actually sees during training.
     means, stds = compute_fold_statistics(train_df)
 
     train_ds = make_dataset(train_df, means, stds)
@@ -576,7 +631,12 @@ def run_fold(fold: dict, device: torch.device) -> dict:
         'lat_lo': fold['lat_lo'], 'lat_hi': fold['lat_hi'],
         'n_test': int(len(test_df)),
         'n_train': int(len(train_df)),
+        'n_train_raw': int(len(train_df_raw)),     # before per-bin oversample
         'n_buffer': int(len(fold['buffer_idx'])),
+        'rebalance_n_bins': REBALANCE_N_BINS,
+        'rebalance_min_ratio': REBALANCE_MIN_RATIO,
+        'accum_steps': ACCUM_STEPS,
+        'effective_batch_size': EFFECTIVE_BATCH,
         'test_oc_mean': float(test_df.OC.mean()),
         'test_oc_std': float(test_df.OC.std()),
         'test_oc_max': float(test_df.OC.max()),
