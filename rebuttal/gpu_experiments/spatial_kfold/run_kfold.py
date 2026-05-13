@@ -161,6 +161,22 @@ def _build_model_ready_dataset() -> None:
     df['altitude'] = df['altitude'].astype(float)
     df['year'] = df['year'].astype(int)
 
+    # The project's MultiRasterDatasetMultiYears.__getitem__ always reads
+    # row['season']. SGT runs in yearly mode (seasonalityBased=0) so the
+    # value is read but not used in filtering — still, the column must
+    # exist or we get KeyError on every sample. Derive a sensible season
+    # from survey_date.month so the parquet matches what the original
+    # train_val_data parquets stored.
+    if 'season' not in df.columns:
+        sd = pd.to_datetime(df['survey_date'], errors='coerce')
+        month = sd.dt.month.fillna(0).astype(int)
+        season_of_month = month.map(
+            {1: 'winter', 2: 'winter', 3: 'spring', 4: 'spring',
+             5: 'spring', 6: 'summer', 7: 'summer', 8: 'summer',
+             9: 'autumn', 10: 'autumn', 11: 'autumn', 12: 'winter'}
+        ).fillna('winter')
+        df['season'] = df['year'].astype(str) + '_' + season_of_month
+
     # Coerce dtypes that don't round-trip through pyarrow cleanly
     keep = [c for c in ('POINTID', 'GPS_LONG', 'GPS_LAT', 'year', 'OC',
                         'survey_date', 'season', 'bin', 'dataset_type',
@@ -833,12 +849,27 @@ def _orchestrate_folds(n_folds: int, gpu_ids: list[int]) -> list[Path]:
                       f'last log: {last_line[:110]}', flush=True)
             print('', flush=True)
 
-    # Report any failures
+    # Report any failures — also dump the tail of each failed worker's
+    # log so the user doesn't have to go cat them one by one.
     failures = [fid for fid, rc in completed.items() if rc != 0]
     if failures:
+        print('\n' + '=' * 70, flush=True)
+        print(f'FAILED FOLDS: {failures}\nLast 30 lines of each worker log:',
+              flush=True)
+        for fid in failures:
+            for log_path in sorted(log_dir.glob(f'fold_{fid}_gpu_*.log')):
+                print('-' * 70, flush=True)
+                print(f'>>> {log_path}', flush=True)
+                try:
+                    lines = log_path.read_text(errors='replace').splitlines()
+                    for ln in lines[-30:]:
+                        print(ln, flush=True)
+                except OSError as e:
+                    print(f'  (could not read: {e})', flush=True)
+        print('=' * 70 + '\n', flush=True)
         raise RuntimeError(
             f'Worker(s) for fold(s) {failures} exited non-zero. '
-            f'Check {log_dir}/fold_<id>_gpu_<g>.log for details.'
+            f'See log tails above and full files at {log_dir}/fold_<id>_gpu_<g>.log.'
         )
 
     return [OUT_DIR / f'fold_{i}_results.pkl' for i in range(n_folds)]
