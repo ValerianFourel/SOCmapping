@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-run_kfold.py — Experiment 1 — Spatial 5-fold CV on EnhancedSGT 1.1M.
+run_kfold.py — Experiment 1 — Spatial 5-fold CV on SimpleSGT (matches train.py).
 
 Answers reviewer concerns R1.3, R3.6, R3.8.
 
@@ -71,7 +71,19 @@ SGT_DIR = SOC_CODE_DIR / 'SpatiotemporalGatedTransformer'
 sys.path.insert(0, str(SGT_DIR))
 sys.path.insert(0, str(SGT_DIR / 'dataloader'))
 
-from EnhancedSGT import EnhancedSGT  # noqa: E402
+# Model selection — match SGT train.py.
+#   train.py's active import is `from SimpleSGT import SimpleSGT` (line 19).
+#   running.py aliases EnhancedSGT *as* SimpleSGT for INFERENCE on already-
+#   trained checkpoints, but the actual TRAINER is SimpleSGT. EnhancedSGT
+#   at lr=2e-4 with effective batch 2048 and no LR warmup trains so slowly
+#   it looks like the model isn't learning — that was the root cause of
+#   the flat fold curves before this commit. Override via env if needed.
+_MODEL_NAME = os.environ.get('SOC_KFOLD_MODEL', 'simple').lower()
+if _MODEL_NAME == 'enhanced':
+    from EnhancedSGT import EnhancedSGT as _SGTModel  # noqa: E402
+else:
+    from SimpleSGT import SimpleSGT as _SGTModel  # noqa: E402
+
 from dataloader.dataloaderMultiYears import (  # noqa: E402
     MultiRasterDatasetMultiYears,
 )
@@ -434,18 +446,33 @@ def compute_fold_statistics(train_df: pd.DataFrame, max_n: int = 1500):
 # Training / evaluation
 # --------------------------------------------------------------------------
 def make_model() -> nn.Module:
-    return EnhancedSGT(
+    """Match SGT train.py exactly: SimpleSGT(input_channels, height, width,
+    time_steps, d_model). num_heads defaults to 2 inside SimpleSGT, dropout
+    to 0.3 — same as train.py which passes only d_model. No extra kwargs
+    because SimpleSGT does not accept num_encoder_layers / expansion_factor.
+
+    Set SOC_KFOLD_MODEL=enhanced to fall back to EnhancedSGT (1.1 M params,
+    BatchNorm, 3-layer transformer) — only useful for reproducing the
+    legacy mapping checkpoints, not for the Table-2 evaluation recipe."""
+    if _MODEL_NAME == 'enhanced':
+        return _SGTModel(
+            input_channels=len(bands_list_order),
+            height=window_size,
+            width=window_size,
+            time_steps=time_before,
+            d_model=hidden_size,
+            num_heads=4,
+            dropout=DROPOUT,
+            num_encoder_layers=3,
+            expansion_factor=4,
+        )
+    # Default — SimpleSGT, mirroring train.py:549
+    return _SGTModel(
         input_channels=len(bands_list_order),
         height=window_size,
         width=window_size,
         time_steps=time_before,
         d_model=hidden_size,
-        num_heads=4,           # ASSUMPTION: matches EnhancedSGT default; the
-                               # 1.1M checkpoints in Weights/ were trained with
-                               # this. Verified by state_dict shape.
-        dropout=DROPOUT,
-        num_encoder_layers=3,  # default; consistent with 99-key state_dict
-        expansion_factor=4,
     )
 
 
@@ -577,6 +604,9 @@ def run_fold(fold: dict, device: torch.device) -> dict:
                              num_workers=_nw, pin_memory=True)
 
     model = make_model().to(device)
+    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f'Model: {type(model).__name__}  ({n_params:,} trainable params)  '
+          f'[SOC_KFOLD_MODEL={_MODEL_NAME!r}]', flush=True)
     # WEIGHT_DECAY=0 by default — matches SGT train.py (plain Adam).
     optimizer = torch.optim.Adam(model.parameters(), lr=LR,
                                  weight_decay=WEIGHT_DECAY)
@@ -660,16 +690,18 @@ def run_fold(fold: dict, device: torch.device) -> dict:
 
     # Save best
     pth_path = OUT_DIR / f'fold_{fold_id}_best.pth'
+    model_config = {'input_channels': len(bands_list_order),
+                    'height': window_size,
+                    'width': window_size,
+                    'time_steps': time_before,
+                    'd_model': hidden_size,
+                    'model_class': _MODEL_NAME}
+    if _MODEL_NAME == 'enhanced':
+        model_config.update({'num_heads': 4, 'num_encoder_layers': 3,
+                             'dropout': DROPOUT, 'expansion_factor': 4})
     torch.save({
         'model_state_dict': best_state,
-        'model_config': {'input_channels': len(bands_list_order),
-                         'height': window_size,
-                         'width': window_size,
-                         'time_steps': time_before,
-                         'd_model': hidden_size,
-                         'num_heads': 4,
-                         'num_encoder_layers': 3,
-                         'dropout': DROPOUT},
+        'model_config': model_config,
         'fold_id': fold_id,
         'best_r2': best_r2,
         'n_train': len(train_df),

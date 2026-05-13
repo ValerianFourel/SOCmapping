@@ -27,12 +27,11 @@ reader (or future-you) what's where and why.
 | Land-use extended regression (T2.9) | **Done** — `extended_regression.{md,json}` |
 | Figure 7 replacement (T1.16) | **Done** — `figure7_replacement.png`, `figure7_data.csv` |
 | Multi-run spatial-CV evidence (T3.1) | **Done** — `multi_run_cv.{md,json}` |
-| **k-fold spatial CV (Experiment 1)** | **Scripts ready, not run** — needs ≈ 15 GPU h |
-| **MC dropout uncertainty map (Experiment 2)** | **Scripts ready, not run** — needs ≈ 3 GPU h |
+| **k-fold spatial CV (Experiment 1)** | **Scripts aligned with `train.py` (2026-05-13)** — pending Runpod re-run |
+| **MC dropout uncertainty map (Experiment 2)** | **Done 2026-05-13** — 5.5 min on 4 GPUs, uploaded to `ValerianFourel/SOCrebuttal` |
 | Final response-letter integration | Pending |
 
-Everything CPU-side is complete. The only outstanding work is the two
-GPU experiments under `rebuttal/gpu_experiments/`, ready to launch.
+Day-by-day record: [`session_log_2026-05-13.md`](session_log_2026-05-13.md) — Runpod operationalization, debug history, k-fold recipe alignment.
 
 ---
 
