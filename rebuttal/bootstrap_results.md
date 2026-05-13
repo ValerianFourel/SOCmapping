@@ -59,10 +59,17 @@ The parquet has **no** `predicted` column — it is the train/val split snapshot
 
 ## Point estimates
 
+**Two flavours of R² are reported throughout this file:**
+
+- `r2` — **coefficient of determination** = 1 − SS_res / SS_tot. Scientifically meaningful "R²"; sensitive to prediction bias. What scikit-learn `r2_score` returns.
+- `pearson_r2` — squared Pearson correlation. What the v1 manuscript and wandb panels called "R²"; invariant to additive/multiplicative shifts in predictions.
+
 | metric | train | val |
 |--------|-------|-----|
 | `n` | 15155 | 1359 |
-| `r2` | 0.8659 | 0.6258 |
+| `r2` | 0.8623 | 0.5944 |
+| `pearson_r2` | 0.8659 | 0.6258 |
+| `pearson_r` | 0.9306 | 0.7911 |
 | `rmse` | 7.5378 | 4.7583 |
 | `mae` | 3.3695 | 2.7912 |
 | `rpiq` | 1.5522 | 1.0508 |
@@ -74,16 +81,20 @@ Resampling with replacement on the **validation set** (1359 samples).
 
 | metric | mean | SD | median | 95% CI lo | 95% CI hi |
 |--------|------|----|--------|-----------|-----------|
-| `r2` | 0.6245 | 0.0471 | 0.6269 | 0.5257 | 0.7115 |
+| `r2` | 0.5891 | 0.0620 | 0.5953 | 0.4502 | 0.6929 |
+| `pearson_r2` | 0.6245 | 0.0471 | 0.6269 | 0.5257 | 0.7115 |
 | `rmse` | 4.7497 | 0.2999 | 4.7388 | 4.1767 | 5.3348 |
 | `mae` | 2.7913 | 0.1052 | 2.7874 | 2.5996 | 2.9989 |
 | `rpiq` | 1.0414 | 0.0760 | 1.0381 | 0.9019 | 1.1884 |
+| `bias_pred_minus_actual` | 1.1223 | 0.1252 | 1.1227 | 0.8814 | 1.3732 |
 
 ### Training-set bootstrap (for completeness, 15155 samples)
 
 | metric | mean | SD | median | 95% CI lo | 95% CI hi |
 |--------|------|----|--------|-----------|-----------|
-| `r2` | 0.8659 | 0.0066 | 0.8660 | 0.8525 | 0.8780 |
+| `r2` | 0.8622 | 0.0065 | 0.8623 | 0.8488 | 0.8746 |
+| `pearson_r2` | 0.8659 | 0.0066 | 0.8660 | 0.8525 | 0.8780 |
 | `rmse` | 7.5420 | 0.1868 | 7.5362 | 7.1866 | 7.9281 |
 | `mae` | 3.3713 | 0.0540 | 3.3691 | 3.2679 | 3.4783 |
 | `rpiq` | 1.5515 | 0.0395 | 1.5515 | 1.4732 | 1.6247 |
+| `bias_pred_minus_actual` | -0.3148 | 0.0618 | -0.3109 | -0.4386 | -0.2069 |

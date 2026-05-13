@@ -42,7 +42,7 @@ PRED_PATH = Path(
     'analysis_results.pkl'
 )
 
-OUT_DIR = Path('/home/valerian/SGTPublication/rebuttal')
+OUT_DIR = Path(__file__).resolve().parent   # rebuttal/ next to this script
 N_BOOT = 1000
 RNG_SEED = 20260513     # rebuttal deadline date — fixed for reproducibility
 HIGH_THRESHOLDS = (50.0, 120.0)
@@ -75,25 +75,40 @@ def descriptive(series: pd.Series) -> dict:
 
 
 def point_metrics(pred: np.ndarray, actual: np.ndarray) -> dict:
+    """Compute regression metrics. Reports BOTH:
+      - `r2` (proper) = COEFFICIENT OF DETERMINATION = 1 - SS_res / SS_tot
+        — what scikit-learn r2_score returns; sensitive to prediction bias
+      - `pearson_r2` = squared Pearson correlation — what v1 paper called
+        "R²"; invariant to additive/multiplicative shifts
+    The two agree closely when predictions are unbiased; diverge when bias
+    is large (spatial extrapolation typically causes this)."""
     pred = np.asarray(pred, dtype=float)
     actual = np.asarray(actual, dtype=float)
     err = pred - actual
     rmse = float(np.sqrt(np.mean(err ** 2)))
     mae = float(np.mean(np.abs(err)))
     bias = float(np.mean(err))
-    rho = float(np.corrcoef(pred, actual)[0, 1]) if pred.std() > 0 and actual.std() > 0 else 0.0
-    r2 = rho ** 2
+    if pred.std() > 0 and actual.std() > 0:
+        rho = float(np.corrcoef(pred, actual)[0, 1])
+    else:
+        rho = 0.0
+    pearson_r2 = rho ** 2
+    ss_res = float(np.sum((actual - pred) ** 2))
+    ss_tot = float(np.sum((actual - actual.mean()) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float('nan')
     q25, q75 = np.percentile(actual, [25, 75])
     iqr = q75 - q25
     rpiq = float(iqr / rmse) if rmse > 0 else float('inf')
-    return {'r2': float(r2), 'rmse': rmse, 'mae': mae, 'rpiq': rpiq,
+    return {'r2': float(r2), 'pearson_r2': float(pearson_r2),
+            'pearson_r': float(rho), 'rmse': rmse, 'mae': mae, 'rpiq': rpiq,
             'bias_pred_minus_actual': bias, 'n': int(pred.size)}
 
 
 def bootstrap_cis(pred: np.ndarray, actual: np.ndarray, n_boot: int, seed: int) -> dict:
     rng = np.random.default_rng(seed)
     n = pred.size
-    keys = ('r2', 'rmse', 'mae', 'rpiq')
+    keys = ('r2', 'pearson_r2', 'pearson_r', 'rmse', 'mae', 'rpiq',
+            'bias_pred_minus_actual')
     samples = {k: np.empty(n_boot, dtype=float) for k in keys}
     for b in range(n_boot):
         idx = rng.integers(0, n, size=n)
@@ -237,9 +252,18 @@ def main():
 
     md.append('## Point estimates')
     md.append('')
+    md.append('**Two flavours of R² are reported throughout this file:**')
+    md.append('')
+    md.append('- `r2` — **coefficient of determination** = 1 − SS_res / SS_tot. '
+              'Scientifically meaningful "R²"; sensitive to prediction bias. '
+              'What scikit-learn `r2_score` returns.')
+    md.append('- `pearson_r2` — squared Pearson correlation. What the v1 manuscript '
+              'and wandb panels called "R²"; invariant to additive/multiplicative '
+              'shifts in predictions.')
+    md.append('')
     md.append('| metric | train | val |')
     md.append('|--------|-------|-----|')
-    for k in ('n', 'r2', 'rmse', 'mae', 'rpiq', 'bias_pred_minus_actual'):
+    for k in ('n', 'r2', 'pearson_r2', 'pearson_r', 'rmse', 'mae', 'rpiq', 'bias_pred_minus_actual'):
         tv = out['train_point_metrics'][k]
         vv = out['val_point_metrics'][k]
         if k == 'n':
@@ -255,7 +279,7 @@ def main():
     md.append('')
     md.append('| metric | mean | SD | median | 95% CI lo | 95% CI hi |')
     md.append('|--------|------|----|--------|-----------|-----------|')
-    for k in ('r2', 'rmse', 'mae', 'rpiq'):
+    for k in ('r2', 'pearson_r2', 'rmse', 'mae', 'rpiq', 'bias_pred_minus_actual'):
         v = out['val_bootstrap'][k]
         md.append(f'| `{k}` | {v["mean"]:.4f} | {v["sd"]:.4f} | {v["median"]:.4f} | '
                   f'{v["ci95_lo"]:.4f} | {v["ci95_hi"]:.4f} |')
@@ -265,7 +289,7 @@ def main():
     md.append('')
     md.append('| metric | mean | SD | median | 95% CI lo | 95% CI hi |')
     md.append('|--------|------|----|--------|-----------|-----------|')
-    for k in ('r2', 'rmse', 'mae', 'rpiq'):
+    for k in ('r2', 'pearson_r2', 'rmse', 'mae', 'rpiq', 'bias_pred_minus_actual'):
         v = out['train_bootstrap'][k]
         md.append(f'| `{k}` | {v["mean"]:.4f} | {v["sd"]:.4f} | {v["median"]:.4f} | '
                   f'{v["ci95_lo"]:.4f} | {v["ci95_hi"]:.4f} |')
