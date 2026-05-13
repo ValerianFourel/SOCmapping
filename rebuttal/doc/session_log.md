@@ -33,6 +33,8 @@ reader (or future-you) what's where and why.
 
 Day-by-day record: [`session_log_2026-05-13.md`](session_log_2026-05-13.md) — Runpod operationalization, debug history, k-fold recipe alignment.
 
+How-to: [`completion_playbook.md`](completion_playbook.md) — operational runbook for finishing both GPU experiments (resume, inspect, push to HF, drop-in response-letter paragraphs).
+
 ---
 
 ## 2. Directory map
