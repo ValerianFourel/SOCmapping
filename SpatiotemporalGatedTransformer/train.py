@@ -59,6 +59,20 @@ def parse_args():
                         help='Override training epochs per run. Defaults: '
                              f'{num_epochs} with held-out test set, '
                              f'{NUM_EPOCHS_RUN} without.')
+    # --- LR scheduler -----------------------------------------------------
+    # Default 'none' preserves the original train.py behaviour (fixed lr).
+    # 'cosine' anneals smoothly from --lr to --lr-min over the full run.
+    # 'cosine_warm_restarts' uses periodic restarts (T_0 = --lr-restart-T0).
+    # 'exponential' multiplies lr by --lr-gamma every epoch.
+    parser.add_argument('--lr-scheduler', type=str, default='none',
+                        choices=['none', 'cosine', 'cosine_warm_restarts', 'exponential'],
+                        help='LR schedule. cosine decays to --lr-min over the run.')
+    parser.add_argument('--lr-min', type=float, default=1e-6,
+                        help='Final LR for cosine schedules (eta_min).')
+    parser.add_argument('--lr-gamma', type=float, default=0.99,
+                        help='Per-epoch multiplier for exponential schedule.')
+    parser.add_argument('--lr-restart-T0', type=int, default=50,
+                        help='Period of first cycle for cosine_warm_restarts.')
     parser.add_argument('--hidden_size', type=int, default=hidden_size, help='Hidden size for the model')
     parser.add_argument('--dropout_rate', type=float, default=0.3, help='Dropout rate for the model')
     parser.add_argument('--save_train_and_test', action=argparse.BooleanOptionalAction, default=False, help='Save train/test parquets to disk (use --no-save_train_and_test to disable)')
@@ -112,7 +126,8 @@ def _resolve_accum_steps(args, num_processes):
 
 def train_model(model, train_loader, test_loader,target_mean,target_std, num_epochs=num_epochs, accelerator=None, lr=0.001,
                 loss_type='l1', target_transform='none', min_r2=0.5, use_test=True,
-                accum_steps=1):
+                accum_steps=1, lr_scheduler='none', lr_min=1e-6, lr_gamma=0.99,
+                lr_restart_T0=50):
     if loss_type == 'l1':
         criterion = nn.L1Loss()
     elif loss_type == 'mse':
@@ -121,6 +136,22 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
         raise ValueError(f"Unknown loss type: {loss_type}")
 
     optimizer = optim.Adam(model.parameters(), lr=lr)
+
+    # LR scheduler — epoch-level stepping. Built BEFORE accelerator.prepare
+    # so accum_steps doesn't affect the per-epoch step cadence.
+    if lr_scheduler == 'cosine':
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=num_epochs, eta_min=lr_min)
+    elif lr_scheduler == 'cosine_warm_restarts':
+        scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer, T_0=lr_restart_T0, T_mult=1, eta_min=lr_min)
+    elif lr_scheduler == 'exponential':
+        scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=lr_gamma)
+    else:
+        scheduler = None
+    if accelerator is not None and accelerator.is_main_process:
+        print(f"LR schedule: {lr_scheduler}  (lr={lr}, lr_min={lr_min}, "
+              f"gamma={lr_gamma}, T_0={lr_restart_T0}, T_max={num_epochs})")
 
     # Prepare with Accelerator
     train_loader, model, optimizer = accelerator.prepare(train_loader, model, optimizer)
@@ -141,6 +172,7 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
 
     n_total = len(train_loader)
     for epoch in range(num_epochs):
+        current_lr = optimizer.param_groups[0]['lr']
         model.train()
         running_loss = 0.0
         optimizer.zero_grad()
@@ -280,6 +312,7 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
         if accelerator.is_main_process:
             log_dict = {
                 'epoch': epoch + 1,
+                'lr': current_lr,
                 'train_loss_avg': train_loss,
                 'test_loss': test_loss,
                 'correlation': correlation,
@@ -303,7 +336,7 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
                 best_model_state = model.state_dict()
                 wandb.run.summary['best_r2'] = best_r2
 
-        accelerator.print(f'Epoch {epoch+1}:')
+        accelerator.print(f'Epoch {epoch+1}  (lr={current_lr:.2e}):')
         accelerator.print(f'Training Loss: {train_loss:.4f}')
         if use_test:
             accelerator.print(f'Test Loss: {test_loss:.4f}')
@@ -312,6 +345,11 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
             accelerator.print(f'MAE: {mae:.4f}')
             accelerator.print(f'RPIQ: {rpiq:.4f}\n')
             # Print the results
+
+        # Step the LR scheduler at epoch boundary. Done after eval/logging so
+        # current_lr reflects the LR actually used for this epoch's training.
+        if scheduler is not None:
+            scheduler.step()
 
 
     return model, test_outputs, test_targets_list, best_model_state, best_r2, epoch_metrics
@@ -835,6 +873,10 @@ if __name__ == "__main__":
             min_r2=0.40,
             use_test=args.use_test,
             accum_steps=ACCUM_STEPS,
+            lr_scheduler=args.lr_scheduler,
+            lr_min=args.lr_min,
+            lr_gamma=args.lr_gamma,
+            lr_restart_T0=args.lr_restart_T0,
         )
 
         # Store metrics
