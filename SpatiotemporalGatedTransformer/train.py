@@ -48,7 +48,7 @@ def parse_args():
     parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of transformer layers')
     parser.add_argument('--loss_type', type=str, default='l1', choices=['l1', 'mse'], help='Type of loss function')
     parser.add_argument('--target_transform', type=str, default='normalize', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
-    parser.add_argument('--use_test',  type=bool, default=True, help='Whether to use a held-out test set')
+    parser.add_argument('--use_test', action=argparse.BooleanOptionalAction, default=True, help='Whether to use a held-out test set (use --no-use_test to disable)')
     parser.add_argument('--output-dir', type=str, default='output', help='Output directory')
     parser.add_argument('--target-test-ratio', type=float, default=0.08, help='Target test ratio')
     parser.add_argument('--use-gpu', action='store_true', default=True, help='Use GPU')
@@ -57,7 +57,7 @@ def parse_args():
     parser.add_argument('--num-runs', type=int, default=4, help='Number of times to run the process')
     parser.add_argument('--hidden_size', type=int, default=hidden_size, help='Hidden size for the model')
     parser.add_argument('--dropout_rate', type=float, default=0.3, help='Dropout rate for the model')
-    parser.add_argument('--save_train_and_test', type=bool, default=False, help='Save train/test parquets to disk')
+    parser.add_argument('--save_train_and_test', action=argparse.BooleanOptionalAction, default=False, help='Save train/test parquets to disk (use --no-save_train_and_test to disable)')
     # --- Rebuttal / audited reproduction ---------------------------------
     # When --rebuttal is set, the script overrides hyperparameters to the
     # audited Model A v2 recipe (test proper R²=0.594, Pearson r²=0.626,
