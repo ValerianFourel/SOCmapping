@@ -35,10 +35,14 @@ import uuid
 import os
 import datetime
 
-# Increase the timeout value
+# Increase the NCCL collective-op timeout. The explicit init_process_group
+# only fires in multi-process launches; single-process (accelerate
+# simple_launcher / plain `python train.py`) leaves WORLD_SIZE unset and
+# Accelerator handles initialization itself.
 os.environ["NCCL_BLOCKING_WAIT"] = "1"
-os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1" 
-torch.distributed.init_process_group(backend='nccl', timeout=datetime.timedelta(minutes=20))
+os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
+if int(os.environ.get("WORLD_SIZE", "1")) > 1:
+    torch.distributed.init_process_group(backend='nccl', timeout=datetime.timedelta(minutes=20))
 
 
 def parse_args():
