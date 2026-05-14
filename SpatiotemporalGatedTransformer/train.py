@@ -55,6 +55,10 @@ def parse_args():
     parser.add_argument('--distance-threshold', type=float, default=1.2, help='Minimum distance threshold for test points')
     parser.add_argument('--target-fraction', type=float, default=0.75, help='Fraction of max bin count for resampling')
     parser.add_argument('--num-runs', type=int, default=4, help='Number of times to run the process')
+    parser.add_argument('--num-epochs', type=int, default=None,
+                        help='Override training epochs per run. Defaults: '
+                             f'{num_epochs} with held-out test set, '
+                             f'{NUM_EPOCHS_RUN} without.')
     parser.add_argument('--hidden_size', type=int, default=hidden_size, help='Hidden size for the model')
     parser.add_argument('--dropout_rate', type=float, default=0.3, help='Dropout rate for the model')
     parser.add_argument('--save_train_and_test', action=argparse.BooleanOptionalAction, default=False, help='Save train/test parquets to disk (use --no-save_train_and_test to disable)')
@@ -514,6 +518,9 @@ if __name__ == "__main__":
     if not args.use_test:
         args.num_runs = 1
         num_epochs = NUM_EPOCHS_RUN
+    # CLI override wins over both defaults
+    if args.num_epochs is not None:
+        num_epochs = args.num_epochs
     accelerator = Accelerator()
 
     # ---- Resolve effective batch & accumulation -----------------------
