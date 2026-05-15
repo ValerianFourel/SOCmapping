@@ -66,7 +66,18 @@ def parse_args():
     parser.add_argument('--target-test-ratio', type=float, default=0.08, help='Target test ratio')
     parser.add_argument('--use-gpu', action='store_true', default=True, help='Use GPU')
     parser.add_argument('--distance-threshold', type=float, default=1.2, help='Minimum distance threshold for test points')
-    parser.add_argument('--target-fraction', type=float, default=0.75, help='Fraction of max bin count for resampling')
+    # Per-OC-bin oversample rate. Accepts both --rebalance-min-ratio (the
+    # name used in run_kfold.py) and --target-fraction (legacy). Each OC
+    # qcut bin is upsampled with replacement to at least
+    #   max_bin_count × rebalance_min_ratio
+    # rows. Higher = more aggressive balancing (more uniform OC distribution),
+    # at the cost of duplicated training samples. Set to 0 to disable.
+    parser.add_argument('--rebalance-min-ratio', '--target-fraction',
+                        dest='rebalance_min_ratio', type=float, default=0.75,
+                        help='Per-bin floor as fraction of densest bin '
+                             '(0 disables rebalancing).')
+    parser.add_argument('--rebalance-n-bins', type=int, default=128,
+                        help='Number of OC quantile bins for the per-bin oversample.')
     parser.add_argument('--num-runs', type=int, default=4, help='Number of times to run the process')
     parser.add_argument('--num-epochs', type=int, default=None,
                         help='Override training epochs per run. Defaults: '
@@ -578,7 +589,8 @@ def _resolve_rebuttal_preset(args):
     args.target_transform = 'normalize'
     args.target_test_ratio = 0.08
     args.distance_threshold = 1.2
-    args.target_fraction = 0.75
+    args.rebalance_min_ratio = 0.75
+    args.rebalance_n_bins = 128
     args.use_test = True
     args.save_train_and_test = True
     if args.model_size == 'big':
@@ -692,7 +704,8 @@ if __name__ == "__main__":
             "loss_type": args.loss_type, "target_transform": args.target_transform,
             "target_test_ratio": args.target_test_ratio,
             "distance_threshold": args.distance_threshold,
-            "target_fraction": args.target_fraction,
+            "rebalance_min_ratio": args.rebalance_min_ratio,
+            "rebalance_n_bins": args.rebalance_n_bins,
             "num_heads": args.num_heads, "num_layers": args.num_layers,
             "num_runs": args.num_runs, "num_epochs": num_epochs,
             "per_gpu_batch_size": args.per_gpu_batch_size,
@@ -841,20 +854,30 @@ if __name__ == "__main__":
             )
             min_distance_stats_all.append(min_distance_stats)
             train_df, _ = create_balanced_dataset(
-                train_df_pre_balance, min_ratio=3/4, with_test=False)
+                train_df_pre_balance,
+                n_bins=args.rebalance_n_bins,
+                min_ratio=args.rebalance_min_ratio,
+                with_test=False)
             if accelerator.is_main_process:
                 print(f"Run {run + 1} train_df rebalanced: "
                       f"{len(train_df_pre_balance)} → {len(train_df)} "
-                      f"(+{len(train_df) - len(train_df_pre_balance)} from per-bin oversample); "
+                      f"(+{len(train_df) - len(train_df_pre_balance)} from per-bin oversample, "
+                      f"n_bins={args.rebalance_n_bins} min_ratio={args.rebalance_min_ratio}); "
                       f"test_df held out: {len(test_df)}")
         else:
             # No held-out test set — rebalance the full df for training.
-            train_df, _ = create_balanced_dataset(df, min_ratio=3/4, with_test=False)
+            train_df, _ = create_balanced_dataset(
+                df,
+                n_bins=args.rebalance_n_bins,
+                min_ratio=args.rebalance_min_ratio,
+                with_test=False)
             test_df = None
             min_distance_stats = {k: float('nan') for k in ('mean', 'median', 'min', 'max', 'std')}
             if accelerator.is_main_process:
                 print(f"Run {run + 1} train_df rebalanced from full df: "
-                      f"{len(df)} → {len(train_df)} (no held-out test set)")
+                      f"{len(df)} → {len(train_df)} "
+                      f"(n_bins={args.rebalance_n_bins} min_ratio={args.rebalance_min_ratio}, "
+                      f"no held-out test set)")
 
         if args.save_train_and_test:
             # Create data subfolder within experiment directory
