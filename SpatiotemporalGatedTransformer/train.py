@@ -126,6 +126,21 @@ def parse_args():
                         help='Manual override for gradient accumulation steps. '
                              '0 = auto from --effective-batch-size and '
                              'accelerator.num_processes.')
+    # --- SyncBN: cross-GPU-count reproducibility -------------------------
+    # EnhancedSGT's spatial_encoder uses BatchNorm2d. Without SyncBN each
+    # rank computes BN running stats on its own per-GPU batch, so 2-GPU
+    # and 4-GPU runs (even with the same effective batch via grad accum)
+    # see different BN normalization and drift apart over 1000 epochs.
+    # Converting to SyncBatchNorm all-reduces BN stats across ranks every
+    # forward pass, making only the GLOBAL per-step batch matter.
+    # Default ON so 2/4-GPU launches of the same recipe match. Pass
+    # --no-sync-bn to bit-equivalence-reproduce historical (pre-2026-05-15)
+    # single-num_processes runs. ~5-10% slower per step. No-op on 1 GPU.
+    parser.add_argument('--sync-bn', action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help='Convert BatchNorm2d → SyncBatchNorm in multi-GPU '
+                             'runs (default: enabled). Use --no-sync-bn to '
+                             'match historical per-GPU-BN behaviour.')
     return parser.parse_args()
 
 
@@ -144,7 +159,7 @@ def _resolve_accum_steps(args, num_processes):
 def train_model(model, train_loader, test_loader,target_mean,target_std, num_epochs=num_epochs, accelerator=None, lr=0.001,
                 loss_type='l1', target_transform='none', min_r2=0.5, use_test=True,
                 accum_steps=1, lr_scheduler='none', lr_min=1e-6, lr_gamma=0.99,
-                lr_restart_T0=50, huber_delta=2.5):
+                lr_restart_T0=50, huber_delta=2.5, sync_bn=True):
     if loss_type == 'l1':
         criterion = nn.L1Loss()
     elif loss_type == 'mse':
@@ -153,6 +168,14 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
         criterion = nn.HuberLoss(delta=huber_delta)
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
+
+    # Convert BatchNorm2d → SyncBatchNorm BEFORE building the optimizer so
+    # the optimizer's param list reflects the converted layers. No-op on
+    # single-GPU runs.
+    if sync_bn and accelerator is not None and accelerator.num_processes > 1:
+        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+        if accelerator.is_main_process:
+            print(f"SyncBatchNorm: enabled (num_processes={accelerator.num_processes})", flush=True)
 
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
@@ -897,6 +920,7 @@ if __name__ == "__main__":
             lr_gamma=args.lr_gamma,
             lr_restart_T0=args.lr_restart_T0,
             huber_delta=args.huber_delta,
+            sync_bn=args.sync_bn,
         )
 
         # Store metrics
