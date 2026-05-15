@@ -696,7 +696,7 @@ def parse_args():
     p.add_argument('--lr-gamma', type=float, default=0.99)
     p.add_argument('--lr-restart-T0', type=int, default=50)
     p.add_argument('--plateau-monitor', type=str, default='pearson_r2',
-                   choices=['pearson_r2', 'r_squared', 'test_loss', 'rmse', 'mae'])
+                   choices=['pearson_r2', 'r_squared', 'test_loss', 'mse', 'rmse', 'mae'])
     p.add_argument('--plateau-patience', type=int, default=20)
     p.add_argument('--plateau-factor', type=float, default=0.5)
 

@@ -80,7 +80,7 @@ def parse_args():
     parser.add_argument('--lr-restart-T0', type=int, default=50,
                         help='Period of first cycle for cosine_warm_restarts.')
     parser.add_argument('--plateau-monitor', type=str, default='pearson_r2',
-                        choices=['pearson_r2', 'r_squared', 'test_loss', 'rmse', 'mae'],
+                        choices=['pearson_r2', 'r_squared', 'test_loss', 'mse', 'rmse', 'mae'],
                         help='Metric watched by --lr-scheduler plateau.')
     parser.add_argument('--plateau-patience', type=int, default=20,
                         help='Epochs without improvement before plateau cuts LR.')
@@ -163,7 +163,7 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
         scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=lr_gamma)
     elif lr_scheduler == 'plateau':
         # Higher-is-better metrics get mode='max'; loss-like metrics 'min'.
-        plateau_mode = 'min' if plateau_monitor in ('test_loss', 'rmse', 'mae') else 'max'
+        plateau_mode = 'min' if plateau_monitor in ('test_loss', 'mse', 'rmse', 'mae') else 'max'
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, mode=plateau_mode, factor=plateau_factor,
             patience=plateau_patience, min_lr=lr_min)
@@ -382,6 +382,7 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
                         'pearson_r2': pearson_r2,
                         'r_squared':  r_squared,
                         'test_loss':  test_loss,
+                        'mse':        mse,
                         'rmse':       rmse,
                         'mae':        mae,
                     }.get(plateau_monitor, pearson_r2))
