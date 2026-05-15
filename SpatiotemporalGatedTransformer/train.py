@@ -35,10 +35,19 @@ import uuid
 import os
 import datetime
 
-# Increase the NCCL collective-op timeout. The explicit init_process_group
-# only fires in multi-process launches; single-process (accelerate
-# simple_launcher / plain `python train.py`) leaves WORLD_SIZE unset and
-# Accelerator handles initialization itself.
+# NCCL safe defaults for cloud-GPU pods (Runpod, Lambda, etc.) WITHOUT
+# NVLink. L4/A10/3090/4090 are PCIe-only and container PCIe topology
+# frequently blocks peer-to-peer, causing the DDP parameter broadcast
+# inside accelerator.prepare(model) to spin at 100% util forever. Force
+# NCCL onto the shared-host-memory + TCP fallback path which always
+# works (small bandwidth cost). Override with NCCL_P2P_DISABLE=0 if
+# you have working NVLink (DGX, multi-GPU bare metal with NV NVSwitch).
+os.environ.setdefault("NCCL_P2P_DISABLE", "1")
+os.environ.setdefault("NCCL_IB_DISABLE", "1")
+# Collective-op timeout. The explicit init_process_group only fires in
+# multi-process launches; single-process (accelerate simple_launcher /
+# plain `python train.py`) leaves WORLD_SIZE unset and Accelerator
+# handles initialization itself.
 os.environ["NCCL_BLOCKING_WAIT"] = "1"
 os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
 if int(os.environ.get("WORLD_SIZE", "1")) > 1:
@@ -155,6 +164,12 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
 
+    def _dbg(msg):
+        if accelerator is not None and accelerator.is_main_process:
+            print(f"[train_model:debug] {msg}", flush=True)
+
+    _dbg("entered train_model")
+
     # Convert BatchNorm2d → SyncBatchNorm before optimizer build so the
     # optimizer's parameter list reflects the converted layers. Only fires
     # in multi-process runs (no-op on single GPU).
@@ -163,7 +178,9 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
         if accelerator.is_main_process:
             print(f"SyncBatchNorm: enabled (num_processes={accelerator.num_processes})")
 
+    _dbg("building optimizer (Adam)")
     optimizer = optim.Adam(model.parameters(), lr=lr)
+    _dbg("optimizer built")
 
     # LR scheduler — epoch-level stepping. Built BEFORE accelerator.prepare
     # so accum_steps doesn't affect the per-epoch step cadence.
@@ -192,10 +209,17 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
             print(f"LR schedule: {lr_scheduler}  (lr={lr}, lr_min={lr_min}, "
                   f"gamma={lr_gamma}, T_0={lr_restart_T0}, T_max={num_epochs})")
 
-    # Prepare with Accelerator
+    # Prepare with Accelerator — this is THE most common DDP-hang point on
+    # cloud GPUs (parameter broadcast inside DDP.__init__). If we hang here
+    # the issue is almost certainly NCCL P2P; ensure NCCL_P2P_DISABLE=1.
+    _dbg(f"about to call accelerator.prepare(train_loader, model, optimizer) "
+         f"on rank {accelerator.process_index if accelerator else 0}")
     train_loader, model, optimizer = accelerator.prepare(train_loader, model, optimizer)
+    _dbg("accelerator.prepare(train_loader, model, optimizer) returned")
     if use_test and test_loader is not None:
+        _dbg("about to call accelerator.prepare(test_loader)")
         test_loader = accelerator.prepare(test_loader)
+        _dbg("accelerator.prepare(test_loader) returned")
 
     # Handle target normalization if selected
     if target_transform == 'normalize':
@@ -209,7 +233,9 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
     best_model_state = None
     epoch_metrics = []
 
+    _dbg("computing len(train_loader)")
     n_total = len(train_loader)
+    _dbg(f"n_total batches per epoch = {n_total}")
     if accelerator is not None and accelerator.is_main_process:
         print(f"Entering training loop: {num_epochs} epochs × {n_total} batches/epoch",
               flush=True)
@@ -222,6 +248,7 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
         running_loss = 0.0
         optimizer.zero_grad()
 
+        _dbg(f"epoch {epoch+1}: about to enter train_loader iterator (first sample may take 30-90s on cold disk)")
         for batch_idx, (longitudes, latitudes, features, targets) in enumerate(train_loader):
             if accelerator is not None and accelerator.is_main_process and (batch_idx == 0 or (batch_idx + 1) % 5 == 0):
                 print(f"  [epoch {epoch+1}] batch {batch_idx+1}/{n_total}", flush=True)
