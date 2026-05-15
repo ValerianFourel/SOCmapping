@@ -86,6 +86,12 @@ def parse_args():
                         help='Epochs without improvement before plateau cuts LR.')
     parser.add_argument('--plateau-factor', type=float, default=0.5,
                         help='LR multiplier when plateau triggers (typical 0.3–0.7).')
+    parser.add_argument('--sync-bn', action='store_true', default=False,
+                        help='Convert BatchNorm2d → SyncBatchNorm so per-GPU '
+                             'batch size does not change BN statistics. Needed '
+                             'to reproduce results across different num_processes '
+                             'values. ~5-10%% slower per step. No effect on '
+                             'single-GPU runs.')
     parser.add_argument('--hidden_size', type=int, default=hidden_size, help='Hidden size for the model')
     parser.add_argument('--dropout_rate', type=float, default=0.3, help='Dropout rate for the model')
     parser.add_argument('--save_train_and_test', action=argparse.BooleanOptionalAction, default=False, help='Save train/test parquets to disk (use --no-save_train_and_test to disable)')
@@ -141,13 +147,21 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
                 loss_type='l1', target_transform='none', min_r2=0.5, use_test=True,
                 accum_steps=1, lr_scheduler='none', lr_min=1e-6, lr_gamma=0.99,
                 lr_restart_T0=50, plateau_monitor='pearson_r2',
-                plateau_patience=20, plateau_factor=0.5):
+                plateau_patience=20, plateau_factor=0.5, sync_bn=False):
     if loss_type == 'l1':
         criterion = nn.L1Loss()
     elif loss_type == 'mse':
         criterion = nn.MSELoss()
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
+
+    # Convert BatchNorm2d → SyncBatchNorm before optimizer build so the
+    # optimizer's parameter list reflects the converted layers. Only fires
+    # in multi-process runs (no-op on single GPU).
+    if sync_bn and accelerator is not None and accelerator.num_processes > 1:
+        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+        if accelerator.is_main_process:
+            print(f"SyncBatchNorm: enabled (num_processes={accelerator.num_processes})")
 
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
@@ -924,6 +938,7 @@ if __name__ == "__main__":
             plateau_monitor=args.plateau_monitor,
             plateau_patience=args.plateau_patience,
             plateau_factor=args.plateau_factor,
+            sync_bn=args.sync_bn,
         )
 
         # Store metrics

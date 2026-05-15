@@ -422,6 +422,7 @@ def train_one_fold(args, fold: dict, df: pd.DataFrame,
         plateau_monitor=args.plateau_monitor,
         plateau_patience=args.plateau_patience,
         plateau_factor=args.plateau_factor,
+        sync_bn=args.sync_bn,
     )
 
     wandb_run.finish()
@@ -699,6 +700,8 @@ def parse_args():
                    choices=['pearson_r2', 'r_squared', 'test_loss', 'mse', 'rmse', 'mae'])
     p.add_argument('--plateau-patience', type=int, default=20)
     p.add_argument('--plateau-factor', type=float, default=0.5)
+    p.add_argument('--sync-bn', action='store_true', default=False,
+                   help='Convert BN→SyncBN for cross-num_processes reproducibility.')
 
     # ----- K-fold-specific -----
     p.add_argument('--num-folds', type=int, default=10,
