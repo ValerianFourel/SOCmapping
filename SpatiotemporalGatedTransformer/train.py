@@ -35,10 +35,19 @@ import uuid
 import os
 import datetime
 
-# Increase the NCCL collective-op timeout. The explicit init_process_group
-# only fires in multi-process launches; single-process (accelerate
-# simple_launcher / plain `python train.py`) leaves WORLD_SIZE unset and
-# Accelerator handles initialization itself.
+# NCCL safe defaults for cloud-GPU pods (Runpod, Lambda, etc.) WITHOUT
+# NVLink. L4/A10/3090/4090 are PCIe-only and container PCIe topology
+# frequently blocks peer-to-peer, causing the DDP parameter broadcast
+# inside accelerator.prepare(model) to spin at 100% util forever. Force
+# NCCL onto the shared-host-memory + TCP fallback path which always
+# works (small bandwidth cost). Override with NCCL_P2P_DISABLE=0 if
+# you have working NVLink (DGX, multi-GPU bare metal with NV NVSwitch).
+os.environ.setdefault("NCCL_P2P_DISABLE", "1")
+os.environ.setdefault("NCCL_IB_DISABLE", "1")
+# Collective-op timeout. The explicit init_process_group only fires in
+# multi-process launches; single-process (accelerate simple_launcher /
+# plain `python train.py`) leaves WORLD_SIZE unset and Accelerator
+# handles initialization itself.
 os.environ["NCCL_BLOCKING_WAIT"] = "1"
 os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
 if int(os.environ.get("WORLD_SIZE", "1")) > 1:
