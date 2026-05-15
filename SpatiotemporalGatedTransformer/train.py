@@ -79,17 +79,30 @@ def parse_args():
     # --- LR scheduler -----------------------------------------------------
     # Default 'none' preserves the original train.py behaviour (fixed lr).
     # 'cosine' anneals smoothly from --lr to --lr-min over the full run.
+    # 'warmup_cosine' = LinearLR warmup over --lr-warmup-epochs (start at
+    #                   --lr * --lr-warmup-start-factor, ramp to --lr),
+    #                   then CosineAnnealingLR over the remaining epochs
+    #                   from --lr down to --lr-min. SequentialLR-chained.
     # 'cosine_warm_restarts' uses periodic restarts (T_0 = --lr-restart-T0).
     # 'exponential' multiplies lr by --lr-gamma every epoch.
     parser.add_argument('--lr-scheduler', type=str, default='none',
-                        choices=['none', 'cosine', 'cosine_warm_restarts', 'exponential'],
-                        help='LR schedule. cosine decays to --lr-min over the run.')
+                        choices=['none', 'cosine', 'warmup_cosine',
+                                 'cosine_warm_restarts', 'exponential'],
+                        help='LR schedule. warmup_cosine = linear warmup '
+                             'then cosine anneal to --lr-min.')
     parser.add_argument('--lr-min', type=float, default=1e-6,
                         help='Final LR for cosine schedules (eta_min).')
     parser.add_argument('--lr-gamma', type=float, default=0.99,
                         help='Per-epoch multiplier for exponential schedule.')
     parser.add_argument('--lr-restart-T0', type=int, default=50,
                         help='Period of first cycle for cosine_warm_restarts.')
+    parser.add_argument('--lr-warmup-epochs', type=int, default=50,
+                        help='Warmup length in epochs for warmup_cosine. '
+                             'Typical: 5-10%% of --num-epochs (50 of 1000).')
+    parser.add_argument('--lr-warmup-start-factor', type=float, default=0.01,
+                        help='Initial LR fraction at epoch 0 for warmup_cosine '
+                             '(LR ramps from --lr * this to --lr over '
+                             '--lr-warmup-epochs).')
     parser.add_argument('--hidden_size', type=int, default=hidden_size, help='Hidden size for the model')
     parser.add_argument('--dropout_rate', type=float, default=0.3, help='Dropout rate for the model')
     parser.add_argument('--save_train_and_test', action=argparse.BooleanOptionalAction, default=False, help='Save train/test parquets to disk (use --no-save_train_and_test to disable)')
@@ -159,7 +172,8 @@ def _resolve_accum_steps(args, num_processes):
 def train_model(model, train_loader, test_loader,target_mean,target_std, num_epochs=num_epochs, accelerator=None, lr=0.001,
                 loss_type='l1', target_transform='none', min_r2=0.5, use_test=True,
                 accum_steps=1, lr_scheduler='none', lr_min=1e-6, lr_gamma=0.99,
-                lr_restart_T0=50, huber_delta=2.5, sync_bn=True):
+                lr_restart_T0=50, huber_delta=2.5, sync_bn=True,
+                lr_warmup_epochs=50, lr_warmup_start_factor=0.01):
     if loss_type == 'l1':
         criterion = nn.L1Loss()
     elif loss_type == 'mse':
@@ -184,6 +198,25 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
     if lr_scheduler == 'cosine':
         scheduler = optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=num_epochs, eta_min=lr_min)
+    elif lr_scheduler == 'warmup_cosine':
+        # Linear warmup over `lr_warmup_epochs`, then cosine anneal over the
+        # remaining (num_epochs - lr_warmup_epochs) epochs. Both stages are
+        # chained via SequentialLR with the warmup→cosine handover at
+        # epoch=lr_warmup_epochs.
+        warmup_epochs = max(1, min(int(lr_warmup_epochs), num_epochs - 1))
+        warmup = optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=lr_warmup_start_factor,
+            end_factor=1.0,
+            total_iters=warmup_epochs)
+        cosine = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=max(1, num_epochs - warmup_epochs),
+            eta_min=lr_min)
+        scheduler = optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[warmup, cosine],
+            milestones=[warmup_epochs])
     elif lr_scheduler == 'cosine_warm_restarts':
         scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
             optimizer, T_0=lr_restart_T0, T_mult=1, eta_min=lr_min)
@@ -192,8 +225,14 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
     else:
         scheduler = None
     if accelerator is not None and accelerator.is_main_process:
-        print(f"LR schedule: {lr_scheduler}  (lr={lr}, lr_min={lr_min}, "
-              f"gamma={lr_gamma}, T_0={lr_restart_T0}, T_max={num_epochs})")
+        if lr_scheduler == 'warmup_cosine':
+            warmup_epochs = max(1, min(int(lr_warmup_epochs), num_epochs - 1))
+            print(f"LR schedule: warmup_cosine  "
+                  f"(warmup {warmup_epochs} ep: {lr*lr_warmup_start_factor:.2e} → {lr:.2e}, "
+                  f"cosine {num_epochs - warmup_epochs} ep: {lr:.2e} → {lr_min:.2e})")
+        else:
+            print(f"LR schedule: {lr_scheduler}  (lr={lr}, lr_min={lr_min}, "
+                  f"gamma={lr_gamma}, T_0={lr_restart_T0}, T_max={num_epochs})")
 
     # Prepare with Accelerator
     train_loader, model, optimizer = accelerator.prepare(train_loader, model, optimizer)
@@ -921,6 +960,8 @@ if __name__ == "__main__":
             lr_restart_T0=args.lr_restart_T0,
             huber_delta=args.huber_delta,
             sync_bn=args.sync_bn,
+            lr_warmup_epochs=args.lr_warmup_epochs,
+            lr_warmup_start_factor=args.lr_warmup_start_factor,
         )
 
         # Store metrics
