@@ -59,7 +59,11 @@ def parse_args():
     parser.add_argument('--lr', type=float, default=0.0002, help='Learning rate')
     parser.add_argument('--num_heads', type=int, default=NUM_HEADS, help='Number of attention heads')
     parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of transformer layers')
-    parser.add_argument('--loss_type', type=str, default='l1', choices=['l1', 'mse'], help='Type of loss function')
+    parser.add_argument('--loss_type', type=str, default='l1', choices=['l1', 'mse', 'huber'], help='Type of loss function')
+    parser.add_argument('--huber-delta', type=float, default=2.5,
+                        help='Delta threshold for Huber loss (g/kg on the *training-target scale*, '
+                             'i.e. after --target_transform). 2.5 is a good default for normalize; '
+                             'use ~0.3 for log-transform.')
     parser.add_argument('--target_transform', type=str, default='normalize', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
     parser.add_argument('--use_test', action=argparse.BooleanOptionalAction, default=True, help='Whether to use a held-out test set (use --no-use_test to disable)')
     parser.add_argument('--output-dir', type=str, default='output', help='Output directory')
@@ -140,11 +144,13 @@ def _resolve_accum_steps(args, num_processes):
 def train_model(model, train_loader, test_loader,target_mean,target_std, num_epochs=num_epochs, accelerator=None, lr=0.001,
                 loss_type='l1', target_transform='none', min_r2=0.5, use_test=True,
                 accum_steps=1, lr_scheduler='none', lr_min=1e-6, lr_gamma=0.99,
-                lr_restart_T0=50):
+                lr_restart_T0=50, huber_delta=2.5):
     if loss_type == 'l1':
         criterion = nn.L1Loss()
     elif loss_type == 'mse':
         criterion = nn.MSELoss()
+    elif loss_type == 'huber':
+        criterion = nn.HuberLoss(delta=huber_delta)
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
 
@@ -890,6 +896,7 @@ if __name__ == "__main__":
             lr_min=args.lr_min,
             lr_gamma=args.lr_gamma,
             lr_restart_T0=args.lr_restart_T0,
+            huber_delta=args.huber_delta,
         )
 
         # Store metrics
