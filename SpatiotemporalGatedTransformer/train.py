@@ -778,6 +778,16 @@ if __name__ == "__main__":
                 'id': wandb_run.id
             })
 
+        # Seed numpy + torch identically on every DDP rank BEFORE the data
+        # split. Without this each rank's numpy RNG state diverges (rank 0
+        # consumes RNG in wandb.init while others do not), causing
+        # create_test_train_sets to pick a different held-out set per rank
+        # and DistributedSampler to shard different-sized datasets across
+        # ranks → DDP hangs at the first epoch-boundary all-reduce.
+        _split_seed = 42 + run
+        np.random.seed(_split_seed)
+        torch.manual_seed(_split_seed)
+
         # Data preparation
         df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
         samples_coordinates_array_path, data_array_path = separate_and_add_data()
