@@ -27,11 +27,14 @@ reader (or future-you) what's where and why.
 | Land-use extended regression (T2.9) | **Done** — `extended_regression.{md,json}` |
 | Figure 7 replacement (T1.16) | **Done** — `figure7_replacement.png`, `figure7_data.csv` |
 | Multi-run spatial-CV evidence (T3.1) | **Done** — `multi_run_cv.{md,json}` |
-| **k-fold spatial CV (Experiment 1)** | **Scripts aligned with `train.py` (2026-05-13)** — pending Runpod re-run |
+| **k-fold spatial CV (Experiment 1)** | **Rewritten 2026-05-15** (10 latitude-decile folds, train.py recipe imported) — pending Runpod re-run |
 | **MC dropout uncertainty map (Experiment 2)** | **Done 2026-05-13** — 5.5 min on 4 GPUs, uploaded to `ValerianFourel/SOCrebuttal` |
+| **Training CLI / LR schedulers / SyncBN** | **Done 2026-05-15** — cosine/plateau/exponential schedulers, `--num-epochs`, `--sync-bn`, bool-flag fix, val→test rename, rebalance-after-split fix |
 | Final response-letter integration | Pending |
 
-Day-by-day record: [`session_log_2026-05-13.md`](session_log_2026-05-13.md) — Runpod operationalization, debug history, k-fold recipe alignment.
+Day-by-day record:
+- [`session_log_2026-05-13.md`](session_log_2026-05-13.md) — Runpod operationalization, debug history, k-fold recipe alignment.
+- [`session_log_2026-05-15.md`](session_log_2026-05-15.md) — train.py bug fixes, new LR scheduler CLI surface, SyncBN, run_kfold rewrite (10 latitude deciles); 4-GPU / 2-GPU / 1-GPU launch commands.
 
 How-to: [`completion_playbook.md`](completion_playbook.md) — operational runbook for finishing both GPU experiments (resume, inspect, push to HF, drop-in response-letter paragraphs).
 
