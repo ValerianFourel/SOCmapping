@@ -164,12 +164,6 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
 
-    def _dbg(msg):
-        if accelerator is not None and accelerator.is_main_process:
-            print(f"[train_model:debug] {msg}", flush=True)
-
-    _dbg("entered train_model")
-
     # Convert BatchNorm2d → SyncBatchNorm before optimizer build so the
     # optimizer's parameter list reflects the converted layers. Only fires
     # in multi-process runs (no-op on single GPU).
@@ -178,9 +172,7 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
         if accelerator.is_main_process:
             print(f"SyncBatchNorm: enabled (num_processes={accelerator.num_processes})")
 
-    _dbg("building optimizer (Adam)")
     optimizer = optim.Adam(model.parameters(), lr=lr)
-    _dbg("optimizer built")
 
     # LR scheduler — epoch-level stepping. Built BEFORE accelerator.prepare
     # so accum_steps doesn't affect the per-epoch step cadence.
@@ -209,17 +201,10 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
             print(f"LR schedule: {lr_scheduler}  (lr={lr}, lr_min={lr_min}, "
                   f"gamma={lr_gamma}, T_0={lr_restart_T0}, T_max={num_epochs})")
 
-    # Prepare with Accelerator — this is THE most common DDP-hang point on
-    # cloud GPUs (parameter broadcast inside DDP.__init__). If we hang here
-    # the issue is almost certainly NCCL P2P; ensure NCCL_P2P_DISABLE=1.
-    _dbg(f"about to call accelerator.prepare(train_loader, model, optimizer) "
-         f"on rank {accelerator.process_index if accelerator else 0}")
+    # Prepare with Accelerator
     train_loader, model, optimizer = accelerator.prepare(train_loader, model, optimizer)
-    _dbg("accelerator.prepare(train_loader, model, optimizer) returned")
     if use_test and test_loader is not None:
-        _dbg("about to call accelerator.prepare(test_loader)")
         test_loader = accelerator.prepare(test_loader)
-        _dbg("accelerator.prepare(test_loader) returned")
 
     # Handle target normalization if selected
     if target_transform == 'normalize':
@@ -233,25 +218,23 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
     best_model_state = None
     epoch_metrics = []
 
-    _dbg("computing len(train_loader)")
     n_total = len(train_loader)
-    _dbg(f"n_total batches per epoch = {n_total}")
     if accelerator is not None and accelerator.is_main_process:
-        print(f"Entering training loop: {num_epochs} epochs × {n_total} batches/epoch",
-              flush=True)
+        print(f"Training: {num_epochs} epochs × {n_total} batches/epoch", flush=True)
+
+    # Single tqdm bar over epochs. Updates `postfix` with the latest metrics
+    # so the terminal stays clean (one line that refreshes in place).
+    pbar = tqdm(total=num_epochs, desc='Epochs', unit='ep',
+                disable=(accelerator is None or not accelerator.is_main_process),
+                dynamic_ncols=True)
+
     for epoch in range(num_epochs):
         current_lr = optimizer.param_groups[0]['lr']
-        if accelerator is not None and accelerator.is_main_process:
-            print(f"[epoch {epoch+1}/{num_epochs}] starting (lr={current_lr:.2e})",
-                  flush=True)
         model.train()
         running_loss = 0.0
         optimizer.zero_grad()
 
-        _dbg(f"epoch {epoch+1}: about to enter train_loader iterator (first sample may take 30-90s on cold disk)")
         for batch_idx, (longitudes, latitudes, features, targets) in enumerate(train_loader):
-            if accelerator is not None and accelerator.is_main_process and (batch_idx == 0 or (batch_idx + 1) % 5 == 0):
-                print(f"  [epoch {epoch+1}] batch {batch_idx+1}/{n_total}", flush=True)
             features = features.to(accelerator.device)
             targets = targets.to(accelerator.device).float()
 
@@ -323,16 +306,6 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
                     original_test_outputs = test_outputs_all
                     original_test_targets = test_targets_all
 
-                # Assuming original_test_outputs and original_test_targets are NumPy arrays
-                min_outputs = np.min(original_test_outputs)
-                max_outputs = np.max(original_test_outputs)
-                min_targets = np.min(original_test_targets)
-                max_targets = np.max(original_test_targets)
-                if use_test:
-                    accelerator.print("Min of original_test_outputs:", min_outputs)
-                    accelerator.print("Max of original_test_outputs:", max_outputs)
-                    accelerator.print("Min of original_test_targets:", min_targets)
-                    accelerator.print("Max of original_test_targets:", max_targets)
                 # Compute metrics on original scale.
                 # `r_squared` is the COEFFICIENT OF DETERMINATION (1 - SS_res/SS_tot),
                 # which is what scikit-learn's r2_score reports and what reviewers mean by
@@ -409,15 +382,20 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
                 best_model_state = model.state_dict()
                 wandb.run.summary['best_r2'] = best_r2
 
-        accelerator.print(f'Epoch {epoch+1}  (lr={current_lr:.2e}):')
-        accelerator.print(f'Training Loss: {train_loss:.4f}')
-        if use_test:
-            accelerator.print(f'Test Loss: {test_loss:.4f}')
-            accelerator.print(f'R²: {r_squared:.4f}')
-            accelerator.print(f'RMSE: {rmse:.4f}')
-            accelerator.print(f'MAE: {mae:.4f}')
-            accelerator.print(f'RPIQ: {rpiq:.4f}\n')
-            # Print the results
+        # Single-line epoch summary via tqdm postfix (refreshes in place)
+        if accelerator.is_main_process:
+            postfix = {'lr': f'{current_lr:.1e}', 'loss': f'{train_loss:.3f}'}
+            if use_test:
+                postfix.update({
+                    'test_loss': f'{test_loss:.3f}',
+                    'R²': f'{r_squared:.3f}',
+                    'RMSE': f'{rmse:.2f}',
+                    'MAE': f'{mae:.2f}',
+                    'RPIQ': f'{rpiq:.2f}',
+                    'best_R²': f'{best_r2:.3f}',
+                })
+            pbar.set_postfix(postfix)
+            pbar.update(1)
 
         # Step the LR scheduler at epoch boundary. Done after eval/logging so
         # current_lr reflects the LR actually used for this epoch's training.
@@ -443,6 +421,7 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
             else:
                 scheduler.step()
 
+    pbar.close()
 
     return model, test_outputs, test_targets_list, best_model_state, best_r2, epoch_metrics
 
