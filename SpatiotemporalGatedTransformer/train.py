@@ -210,13 +210,21 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
     epoch_metrics = []
 
     n_total = len(train_loader)
+    if accelerator is not None and accelerator.is_main_process:
+        print(f"Entering training loop: {num_epochs} epochs × {n_total} batches/epoch",
+              flush=True)
     for epoch in range(num_epochs):
         current_lr = optimizer.param_groups[0]['lr']
+        if accelerator is not None and accelerator.is_main_process:
+            print(f"[epoch {epoch+1}/{num_epochs}] starting (lr={current_lr:.2e})",
+                  flush=True)
         model.train()
         running_loss = 0.0
         optimizer.zero_grad()
 
-        for batch_idx, (longitudes, latitudes, features, targets) in enumerate(tqdm(train_loader)):
+        for batch_idx, (longitudes, latitudes, features, targets) in enumerate(train_loader):
+            if accelerator is not None and accelerator.is_main_process and (batch_idx == 0 or (batch_idx + 1) % 5 == 0):
+                print(f"  [epoch {epoch+1}] batch {batch_idx+1}/{n_total}", flush=True)
             features = features.to(accelerator.device)
             targets = targets.to(accelerator.device).float()
 
@@ -242,12 +250,11 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
                 optimizer.step()
                 optimizer.zero_grad()
 
-            if accelerator.is_main_process:
-                wandb.log({
-                    'train_loss': loss.item() * accum_steps,
-                    'batch': batch_idx + 1 + epoch * len(train_loader),
-                    'epoch': epoch + 1
-                })
+            # Per-batch wandb.log was removed: under online mode it could
+            # block rank 0 inside the inner loop while ranks 1+ proceeded to
+            # the next gradient all-reduce, causing NCCL busy-wait and 100%
+            # GPU util on all ranks with no forward progress. The per-epoch
+            # wandb.log below already records train_loss_avg.
 
         train_loss = running_loss / max(n_total, 1)
 
