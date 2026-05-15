@@ -419,6 +419,9 @@ def train_one_fold(args, fold: dict, df: pd.DataFrame,
         lr_min=args.lr_min,
         lr_gamma=args.lr_gamma,
         lr_restart_T0=args.lr_restart_T0,
+        plateau_monitor=args.plateau_monitor,
+        plateau_patience=args.plateau_patience,
+        plateau_factor=args.plateau_factor,
     )
 
     wandb_run.finish()
@@ -688,10 +691,14 @@ def parse_args():
     p.add_argument('--accum-steps', type=int, default=0)
     p.add_argument('--num-epochs', type=int, default=CONFIG_NUM_EPOCHS)
     p.add_argument('--lr-scheduler', type=str, default='none',
-                   choices=['none', 'cosine', 'cosine_warm_restarts', 'exponential'])
+                   choices=['none', 'cosine', 'cosine_warm_restarts', 'exponential', 'plateau'])
     p.add_argument('--lr-min', type=float, default=1e-6)
     p.add_argument('--lr-gamma', type=float, default=0.99)
     p.add_argument('--lr-restart-T0', type=int, default=50)
+    p.add_argument('--plateau-monitor', type=str, default='pearson_r2',
+                   choices=['pearson_r2', 'r_squared', 'test_loss', 'rmse', 'mae'])
+    p.add_argument('--plateau-patience', type=int, default=20)
+    p.add_argument('--plateau-factor', type=float, default=0.5)
 
     # ----- K-fold-specific -----
     p.add_argument('--num-folds', type=int, default=10,

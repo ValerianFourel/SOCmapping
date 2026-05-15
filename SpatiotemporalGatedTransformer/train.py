@@ -68,15 +68,24 @@ def parse_args():
     # 'cosine' anneals smoothly from --lr to --lr-min over the full run.
     # 'cosine_warm_restarts' uses periodic restarts (T_0 = --lr-restart-T0).
     # 'exponential' multiplies lr by --lr-gamma every epoch.
+    # 'plateau' cuts LR by --plateau-factor when --plateau-monitor stalls
+    #           for --plateau-patience epochs (ReduceLROnPlateau).
     parser.add_argument('--lr-scheduler', type=str, default='none',
-                        choices=['none', 'cosine', 'cosine_warm_restarts', 'exponential'],
+                        choices=['none', 'cosine', 'cosine_warm_restarts', 'exponential', 'plateau'],
                         help='LR schedule. cosine decays to --lr-min over the run.')
     parser.add_argument('--lr-min', type=float, default=1e-6,
-                        help='Final LR for cosine schedules (eta_min).')
+                        help='Final LR for cosine schedules (eta_min) and floor for plateau.')
     parser.add_argument('--lr-gamma', type=float, default=0.99,
                         help='Per-epoch multiplier for exponential schedule.')
     parser.add_argument('--lr-restart-T0', type=int, default=50,
                         help='Period of first cycle for cosine_warm_restarts.')
+    parser.add_argument('--plateau-monitor', type=str, default='pearson_r2',
+                        choices=['pearson_r2', 'r_squared', 'test_loss', 'rmse', 'mae'],
+                        help='Metric watched by --lr-scheduler plateau.')
+    parser.add_argument('--plateau-patience', type=int, default=20,
+                        help='Epochs without improvement before plateau cuts LR.')
+    parser.add_argument('--plateau-factor', type=float, default=0.5,
+                        help='LR multiplier when plateau triggers (typical 0.3–0.7).')
     parser.add_argument('--hidden_size', type=int, default=hidden_size, help='Hidden size for the model')
     parser.add_argument('--dropout_rate', type=float, default=0.3, help='Dropout rate for the model')
     parser.add_argument('--save_train_and_test', action=argparse.BooleanOptionalAction, default=False, help='Save train/test parquets to disk (use --no-save_train_and_test to disable)')
@@ -131,7 +140,8 @@ def _resolve_accum_steps(args, num_processes):
 def train_model(model, train_loader, test_loader,target_mean,target_std, num_epochs=num_epochs, accelerator=None, lr=0.001,
                 loss_type='l1', target_transform='none', min_r2=0.5, use_test=True,
                 accum_steps=1, lr_scheduler='none', lr_min=1e-6, lr_gamma=0.99,
-                lr_restart_T0=50):
+                lr_restart_T0=50, plateau_monitor='pearson_r2',
+                plateau_patience=20, plateau_factor=0.5):
     if loss_type == 'l1':
         criterion = nn.L1Loss()
     elif loss_type == 'mse':
@@ -151,11 +161,22 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
             optimizer, T_0=lr_restart_T0, T_mult=1, eta_min=lr_min)
     elif lr_scheduler == 'exponential':
         scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=lr_gamma)
+    elif lr_scheduler == 'plateau':
+        # Higher-is-better metrics get mode='max'; loss-like metrics 'min'.
+        plateau_mode = 'min' if plateau_monitor in ('test_loss', 'rmse', 'mae') else 'max'
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode=plateau_mode, factor=plateau_factor,
+            patience=plateau_patience, min_lr=lr_min)
     else:
         scheduler = None
     if accelerator is not None and accelerator.is_main_process:
-        print(f"LR schedule: {lr_scheduler}  (lr={lr}, lr_min={lr_min}, "
-              f"gamma={lr_gamma}, T_0={lr_restart_T0}, T_max={num_epochs})")
+        if lr_scheduler == 'plateau':
+            print(f"LR schedule: plateau  (monitor={plateau_monitor}, "
+                  f"patience={plateau_patience}, factor={plateau_factor}, "
+                  f"min_lr={lr_min})")
+        else:
+            print(f"LR schedule: {lr_scheduler}  (lr={lr}, lr_min={lr_min}, "
+                  f"gamma={lr_gamma}, T_0={lr_restart_T0}, T_max={num_epochs})")
 
     # Prepare with Accelerator
     train_loader, model, optimizer = accelerator.prepare(train_loader, model, optimizer)
@@ -353,7 +374,25 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
         # Step the LR scheduler at epoch boundary. Done after eval/logging so
         # current_lr reflects the LR actually used for this epoch's training.
         if scheduler is not None:
-            scheduler.step()
+            if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
+                # Plateau needs the monitored metric. Pick it on rank 0 then
+                # sync to all ranks so DDP keeps LRs aligned.
+                if accelerator.is_main_process:
+                    metric_for_plateau = float({
+                        'pearson_r2': pearson_r2,
+                        'r_squared':  r_squared,
+                        'test_loss':  test_loss,
+                        'rmse':       rmse,
+                        'mae':        mae,
+                    }.get(plateau_monitor, pearson_r2))
+                else:
+                    metric_for_plateau = 0.0
+                m_tensor = torch.tensor([metric_for_plateau], device=accelerator.device)
+                m_synced = accelerator.gather(m_tensor)[0].item()  # rank-0 value on all ranks
+                if not np.isnan(m_synced):
+                    scheduler.step(m_synced)
+            else:
+                scheduler.step()
 
 
     return model, test_outputs, test_targets_list, best_model_state, best_r2, epoch_metrics
@@ -881,6 +920,9 @@ if __name__ == "__main__":
             lr_min=args.lr_min,
             lr_gamma=args.lr_gamma,
             lr_restart_T0=args.lr_restart_T0,
+            plateau_monitor=args.plateau_monitor,
+            plateau_patience=args.plateau_patience,
+            plateau_factor=args.plateau_factor,
         )
 
         # Store metrics
