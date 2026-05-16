@@ -90,6 +90,14 @@ def parse_args():
                              'only spatially-isolated high-OC points qualify, '
                              'which forces a biased test set.')
     parser.add_argument('--target-fraction', type=float, default=0.75, help='Fraction of max bin count for resampling')
+    parser.add_argument('--max-oc', type=float, default=MAX_OC,
+                        help=f'Upper OC cap applied at xlsx load time '
+                             f'(filter_dataframe). Default {MAX_OC} g/kg from '
+                             f'config.py. Filters the global pool BEFORE any '
+                             f'splitting — both train and test only see OC≤'
+                             f'this value. Set independently from '
+                             f'--test-oc-max (which further restricts the '
+                             f'test set only).')
     parser.add_argument('--num-runs', type=int, default=5, help='Number of times to run the process')
     parser.add_argument('--hidden_size', type=int, default=hidden_size, help='Hidden size for the model')
     parser.add_argument('--dropout_rate', type=float, default=0.3, help='Dropout rate for the model')
@@ -593,8 +601,8 @@ def compute_min_distance_stats(min_distance_stats_all):
 
     return avg_stats
 
-def compute_training_statistics_oc():
-    df_train = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
+def compute_training_statistics_oc(max_oc=MAX_OC):
+    df_train = filter_dataframe(TIME_BEGINNING, TIME_END, max_oc)
         # Calculate target statistics from balanced dataset
     target_mean = df_train['OC'].mean()
     target_std = df_train['OC'].std()
@@ -677,7 +685,7 @@ if __name__ == "__main__":
         if accelerator.is_main_process:
             print(f"Building {args.kfold} spatial K-fold splits (lat-decile blocks, "
                   f"distance_threshold={args.distance_threshold} km)…")
-        df_all = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
+        df_all = filter_dataframe(TIME_BEGINNING, TIME_END, args.max_oc)
         kfold_splits = create_spatial_kfold_splits(
             df=df_all,
             output_dir=args.output_dir,
@@ -718,7 +726,7 @@ if __name__ == "__main__":
                 name=f"run_{run+1}",
                 config={
                     "run_number": run + 1,
-                    "max_oc": MAX_OC,
+                    "max_oc": args.max_oc,
                     "time_beginning": TIME_BEGINNING,
                     "time_end": TIME_END,
                     "window_size": window_size,
@@ -743,7 +751,7 @@ if __name__ == "__main__":
             })
 
         # Data preparation
-        df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
+        df = filter_dataframe(TIME_BEGINNING, TIME_END, args.max_oc)
         samples_coordinates_array_path, data_array_path = separate_and_add_data()
 
         def flatten_paths(path_list):
@@ -765,7 +773,7 @@ if __name__ == "__main__":
         train_dataset_std_means = NormalizedMultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
         train_dataset_std_means.set_feature_means(train_dataset_features_norm.get_feature_means())
         train_dataset_std_means.set_feature_stds(train_dataset_features_norm.get_feature_stds())
-        target_mean, target_std =  compute_training_statistics_oc()
+        target_mean, target_std =  compute_training_statistics_oc(max_oc=args.max_oc)
         # Create train/validation split — pick strategy based on flags.
         if args.use_validation:
             if kfold_splits is not None:
@@ -944,7 +952,7 @@ if __name__ == "__main__":
 
         # Save model
         if accelerator.is_main_process and best_model_state is not None:
-            final_model_path = (f'TFT_model_run_{run+1}_MAX_OC_{MAX_OC}_TIME_BEGINNING_{TIME_BEGINNING}_'
+            final_model_path = (f'TFT_model_run_{run+1}_MAX_OC_{args.max_oc:g}_TIME_BEGINNING_{TIME_BEGINNING}_'
                                f'TIME_END_{TIME_END}_R2_{best_r2:.4f}_TRANSFORM_{args.target_transform}_'
                                f'LOSS_{args.loss_type}.pth')
             accelerator.save(best_model_state, final_model_path)
