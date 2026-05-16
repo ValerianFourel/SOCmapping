@@ -70,16 +70,23 @@ class EnhancedTFT(nn.Module):
             nn.Linear(d_model // 4, 1)
         )
 
-        # Learnable output scale (Tier-1 fix for slow output-range growth on
-        # heavy-tailed OC targets). The head's final Linear(d_model//4, 1) is
-        # init'd with Kaiming uniform (bound ~1/sqrt(32) ≈ 0.18), so initial
-        # output std ≈ 1.4 z-units ≈ 5-30 g/kg around the mean — far too
-        # narrow to express samples up to 150 g/kg (z ≈ 12). With output_scale
-        # init'd at 3, the model's initial output range is 3× wider AND
-        # output_scale itself is trainable so the model can grow it as needed.
-        # State-dict-compatible: the saved Model A v2 .pth still loads with
-        # load_state_dict(strict=False) — output_scale becomes a "missing"
-        # key that defaults to 3.0.
+        # Tier-2 fix: re-init the head's final Linear(d_model//4, 1) with
+        # wider weights so the model can natively express the full target
+        # range from epoch 0 (not just ±1.4 z-units from the Kaiming-uniform
+        # default). std=1.0 is 4× the default weight magnitude, raising the
+        # intrinsic output std from ~1.4 to ~5 z-units BEFORE output_scale.
+        # Bias is zero'd to keep initial predictions centered on the OC mean.
+        nn.init.normal_(self.head[-1].weight, mean=0.0, std=1.0)
+        nn.init.zeros_(self.head[-1].bias)
+
+        # Tier-1 fix: learnable output scale, multiplied with the head's
+        # output. Combined with the Tier-2 wider init above, initial output
+        # std ≈ 5 × 3 = 15 z-units → covers the full LUCAS OC range from
+        # epoch 0 (max z ≈ 12 = 150 g/kg, min z ≈ -1.4 = 0 g/kg).
+        # output_scale itself is trainable; Adam will adjust it (often to
+        # 4-6 by convergence) to whatever value minimises the loss.
+        # State-dict compat: saved Model A v2 .pth loads with strict=False
+        # (1 missing: `output_scale`, defaults to 3.0).
         self.output_scale = nn.Parameter(torch.tensor(3.0))
 
     def forward(self, x):
