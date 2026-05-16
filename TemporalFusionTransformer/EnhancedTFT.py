@@ -70,6 +70,18 @@ class EnhancedTFT(nn.Module):
             nn.Linear(d_model // 4, 1)
         )
 
+        # Learnable output scale (Tier-1 fix for slow output-range growth on
+        # heavy-tailed OC targets). The head's final Linear(d_model//4, 1) is
+        # init'd with Kaiming uniform (bound ~1/sqrt(32) ≈ 0.18), so initial
+        # output std ≈ 1.4 z-units ≈ 5-30 g/kg around the mean — far too
+        # narrow to express samples up to 150 g/kg (z ≈ 12). With output_scale
+        # init'd at 3, the model's initial output range is 3× wider AND
+        # output_scale itself is trainable so the model can grow it as needed.
+        # State-dict-compatible: the saved Model A v2 .pth still loads with
+        # load_state_dict(strict=False) — output_scale becomes a "missing"
+        # key that defaults to 3.0.
+        self.output_scale = nn.Parameter(torch.tensor(3.0))
+
     def forward(self, x):
         # x: [B, C, H, W, T]
         B, C, H, W, T = x.shape
@@ -106,8 +118,11 @@ class EnhancedTFT(nn.Module):
         # Apply attention pooling to focus on important timesteps
         x = self.attention_pooling(x)  # (B, d_model)
 
-        # Final prediction
-        x = self.head(x)  # (B, 1)
+        # Final prediction — head output is multiplied by the learnable
+        # output_scale so the model can express the full z-score range
+        # of the target from epoch 1 (avoids the "mean-collapse → range-
+        # grows-slowly" pathology).
+        x = self.head(x) * self.output_scale  # (B, 1)
 
         return x.squeeze()
 
