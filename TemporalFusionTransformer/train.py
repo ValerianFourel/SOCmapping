@@ -106,12 +106,23 @@ def parse_args():
     parser.add_argument('--grad-clip', type=float, default=0.0,
                         help='Max gradient norm for clip_grad_norm_; 0 disables. '
                              '1.0 is a sensible default for stability.')
+    # --- Anti-overfit bundle --------------------------------------------
+    # Defaults preserve original Adam-with-no-weight-decay, no-early-stop
+    # behaviour. Enable when the val R² curve peaks early then drifts down.
+    parser.add_argument('--weight-decay', type=float, default=0.0,
+                        help='L2 weight decay for AdamW. 0 keeps plain Adam '
+                             '(default). 1e-4–1e-2 is the usual range; '
+                             'start at 1e-4 for soft regularisation.')
+    parser.add_argument('--early-stop-patience', type=int, default=0,
+                        help='Stop training if val R² (r_squared, proper) has '
+                             'not improved for this many epochs. 0 disables '
+                             '(default). 20–50 is typical for 200-epoch runs.')
     return parser.parse_args()
 
 def train_model(model, train_loader, val_loader,target_mean,target_std, num_epochs=num_epochs, accelerator=None, lr=0.001,
                 loss_type='l1', loss_alpha=0.5, target_transform='none', min_r2=0.5, use_validation=True,
                 lr_scheduler='none', lr_min=1e-6, lr_warmup_epochs=20, lr_warmup_start_factor=0.01,
-                grad_clip=0.0):
+                grad_clip=0.0, weight_decay=0.0, early_stop_patience=0):
     # Define loss function based on loss_type
     if loss_type == 'composite_l1':
         criterion = lambda outputs, targets: composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=loss_alpha)
@@ -124,7 +135,13 @@ def train_model(model, train_loader, val_loader,target_mean,target_std, num_epoc
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
 
-    optimizer = optim.Adam(model.parameters(), lr=lr)
+    # Use AdamW (decoupled weight decay) when weight_decay > 0;
+    # plain Adam otherwise (matches original 8dce131 behaviour bit-identically
+    # when --weight-decay is left at its default 0).
+    if weight_decay > 0:
+        optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    else:
+        optimizer = optim.Adam(model.parameters(), lr=lr)
 
     # Build LR scheduler BEFORE accelerator.prepare so the optimizer's
     # param groups are the un-wrapped ones the scheduler will mutate.
@@ -155,6 +172,13 @@ def train_model(model, train_loader, val_loader,target_mean,target_std, num_epoc
             print(f"LR schedule: {lr_scheduler}  (lr={lr}, lr_min={lr_min})", flush=True)
         if grad_clip > 0:
             print(f"Gradient clipping: max_norm={grad_clip}", flush=True)
+        if weight_decay > 0:
+            print(f"Optimizer: AdamW (weight_decay={weight_decay})", flush=True)
+        if early_stop_patience > 0:
+            print(f"Early stopping: patience={early_stop_patience} (monitoring r_squared)", flush=True)
+
+    # Early-stopping bookkeeping (only used when early_stop_patience > 0)
+    epochs_since_best = 0
 
     # Prepare with Accelerator
     train_loader, model, optimizer = accelerator.prepare(train_loader, model, optimizer)
@@ -328,10 +352,16 @@ def train_model(model, train_loader, val_loader,target_mean,target_std, num_epoc
                 best_r2 = r_squared
                 best_model_state = model.state_dict()
                 wandb.run.summary['best_r2'] = best_r2
+                epochs_since_best = 0  # reset patience counter on improvement
             elif not use_validation and epoch == num_epochs - 1:
                 best_r2 = 1.0
                 best_model_state = model.state_dict()
                 wandb.run.summary['best_r2'] = best_r2
+            else:
+                # Only count toward patience when we DID compute a real val R²
+                # (use_validation=True and val pass actually ran).
+                if use_validation and not np.isnan(r_squared):
+                    epochs_since_best += 1
 
         accelerator.print(f'Epoch {epoch+1}:')
         accelerator.print(f'Training Loss: {train_loss:.4f}')
@@ -347,6 +377,16 @@ def train_model(model, train_loader, val_loader,target_mean,target_std, num_epoc
         # Step the LR scheduler at epoch boundary (after eval, after logging).
         if scheduler is not None:
             scheduler.step()
+
+        # Early stopping check (after the LR step so the schedule still
+        # advances as recorded in epoch_metrics for any partial run).
+        if early_stop_patience > 0 and use_validation and epochs_since_best >= early_stop_patience:
+            if accelerator is not None and accelerator.is_main_process:
+                print(f"Early stopping at epoch {epoch+1}: "
+                      f"r_squared has not improved for {epochs_since_best} epochs "
+                      f"(patience={early_stop_patience}). Best r_squared = {best_r2:.4f}.",
+                      flush=True)
+            break
 
     return model, val_outputs, val_targets_list, best_model_state, best_r2, epoch_metrics
 
@@ -624,6 +664,8 @@ if __name__ == "__main__":
             lr_warmup_epochs=args.lr_warmup_epochs,
             lr_warmup_start_factor=args.lr_warmup_start_factor,
             grad_clip=args.grad_clip,
+            weight_decay=args.weight_decay,
+            early_stop_patience=args.early_stop_patience,
         )
 
         # Store metrics
