@@ -19,7 +19,12 @@ from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,NUM_EPOCHS_
 from SimpleTFT import SimpleTFT
 from EnhancedTFT import EnhancedTFT
 import argparse
-from balancedDataset import create_validation_train_sets,create_balanced_dataset
+from balancedDataset import (
+    create_validation_train_sets,
+    create_balanced_dataset,
+    create_stratified_validation_train_sets,
+    create_spatial_kfold_splits,
+)
 import uuid
 import os
 
@@ -117,6 +122,27 @@ def parse_args():
                         help='Stop training if val R² (r_squared, proper) has '
                              'not improved for this many epochs. 0 disables '
                              '(default). 20–50 is typical for 200-epoch runs.')
+    # --- Dataset bundle: stratified split + KS gate + spatial K-fold -------
+    # Defaults preserve legacy behaviour bit-identically.
+    parser.add_argument('--split-mode', type=str, default='legacy',
+                        choices=['legacy', 'stratified'],
+                        help='"legacy" = inverse-gamma sampled val set (original '
+                             '8dce131 behaviour). "stratified" = OC-quantile-'
+                             'stratified val sampling that matches train/val '
+                             'OC distributions before applying the spatial buffer.')
+    parser.add_argument('--split-n-bins', type=int, default=10,
+                        help='Number of OC quantile bins for --split-mode '
+                             'stratified.')
+    parser.add_argument('--ks-pvalue-min', type=float, default=0.0,
+                        help='Reject stratified splits whose ks_2samp(train_oc, '
+                             'val_oc).pvalue < this. 0 disables the gate. '
+                             '0.05 means "require train/val OC distributions to '
+                             'be statistically indistinguishable".')
+    parser.add_argument('--kfold', type=int, default=0,
+                        help='Spatial K-fold CV. 0 (default) = single split, '
+                             'repeated --num-runs times. >0 = build N latitude-'
+                             'decile folds; the outer run loop iterates over '
+                             'them, replacing --num-runs.')
     return parser.parse_args()
 
 def train_model(model, train_loader, val_loader,target_mean,target_std, num_epochs=num_epochs, accelerator=None, lr=0.001,
@@ -495,6 +521,32 @@ if __name__ == "__main__":
         num_epochs = NUM_EPOCHS_RUN
     accelerator = Accelerator()
 
+    # Pre-compute spatial K-fold splits if requested. Each fold = one
+    # (val_df, train_df, dist_stats, fold_meta) tuple; the outer run loop
+    # iterates over them instead of running --num-runs independent splits.
+    kfold_splits = None
+    if args.use_validation and args.kfold > 0:
+        if accelerator.is_main_process:
+            print(f"Building {args.kfold} spatial K-fold splits (lat-decile blocks, "
+                  f"distance_threshold={args.distance_threshold} km)…")
+        df_all = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
+        kfold_splits = create_spatial_kfold_splits(
+            df=df_all,
+            output_dir=args.output_dir,
+            n_folds=args.kfold,
+            use_gpu=args.use_gpu,
+            distance_threshold=args.distance_threshold,
+            ks_pvalue_min=args.ks_pvalue_min,
+        )
+        if not kfold_splits:
+            raise RuntimeError("create_spatial_kfold_splits returned 0 folds; "
+                               "lower --distance-threshold or increase --kfold "
+                               "to leave more usable points per block.")
+        args.num_runs = len(kfold_splits)
+        if accelerator.is_main_process:
+            print(f"K-fold mode: --num-runs overridden to {args.num_runs} "
+                  f"(one run per fold).")
+
     # Initialize lists to store metrics and best metrics across runs
     all_runs_metrics = []
     all_best_metrics = {
@@ -566,15 +618,35 @@ if __name__ == "__main__":
         train_dataset_std_means.set_feature_means(train_dataset_features_norm.get_feature_means())
         train_dataset_std_means.set_feature_stds(train_dataset_features_norm.get_feature_stds())
         target_mean, target_std =  compute_training_statistics_oc()
-        # Create train/validation split
+        # Create train/validation split — pick strategy based on flags.
         if args.use_validation:
-            val_df, train_df, min_distance_stats = create_validation_train_sets(
-                df=df,
-                output_dir=args.output_dir,
-                target_val_ratio=args.target_val_ratio,
-                use_gpu=args.use_gpu,
-                distance_threshold=args.distance_threshold
-            )
+            if kfold_splits is not None:
+                # Spatial K-fold: pull the precomputed split for this fold.
+                val_df, train_df, min_distance_stats, fold_meta = kfold_splits[run]
+                if accelerator.is_main_process:
+                    print(f"Using spatial fold {fold_meta['fold_idx']+1}/{args.kfold}: "
+                          f"lat [{fold_meta['lat_lo']:.4f}, {fold_meta['lat_hi']:.4f}]  "
+                          f"val n={fold_meta['val_size']}  train n={fold_meta['train_size']}  "
+                          f"KS p={fold_meta['ks_pvalue']:.4f}")
+            elif args.split_mode == 'stratified':
+                val_df, train_df, min_distance_stats = create_stratified_validation_train_sets(
+                    df=df,
+                    output_dir=args.output_dir,
+                    target_val_ratio=args.target_val_ratio,
+                    use_gpu=args.use_gpu,
+                    distance_threshold=args.distance_threshold,
+                    n_bins=args.split_n_bins,
+                    ks_pvalue_min=args.ks_pvalue_min,
+                    seed=42 + run,
+                )
+            else:
+                val_df, train_df, min_distance_stats = create_validation_train_sets(
+                    df=df,
+                    output_dir=args.output_dir,
+                    target_val_ratio=args.target_val_ratio,
+                    use_gpu=args.use_gpu,
+                    distance_threshold=args.distance_threshold
+                )
             min_distance_stats_all.append(min_distance_stats)
 
 

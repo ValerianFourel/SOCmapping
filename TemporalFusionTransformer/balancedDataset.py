@@ -265,6 +265,231 @@ def create_validation_train_sets(df=None, output_dir='output', target_val_ratio=
 
 
 
+# ---------------------------------------------------------------------------
+# Stratified-spatial split (anti-overfit option 1 + 3 from the bundle)
+# ---------------------------------------------------------------------------
+# The legacy create_validation_train_sets picks val points from an inverse-
+# gamma-weighted draw, which can yield val sets whose OC distribution is
+# noticeably shifted from train (KS p-value < 0.05 in some folds). Combined
+# with a small distance_threshold, that gives the model a "test set that
+# looks easier than reality" failure mode.
+#
+# create_stratified_validation_train_sets fixes both:
+#   • OC distribution match: bin by OC quantiles, sample val points
+#     proportionally from EVERY bin so train/val OC histograms match.
+#   • Distribution gate: after splitting, run scipy.stats.ks_2samp on the
+#     OC arrays. If p < ks_pvalue_min, retry up to max_retries times with
+#     a fresh random seed. Returns the LAST split if all retries fail
+#     (logged warning).
+#   • Spatial buffer: same haversine + distance_threshold check as the
+#     legacy function.
+# ---------------------------------------------------------------------------
+def create_stratified_validation_train_sets(df=None,
+                                             output_dir='output',
+                                             target_val_ratio=0.08,
+                                             use_gpu=False,
+                                             distance_threshold=1.2,
+                                             n_bins=10,
+                                             ks_pvalue_min=0.0,
+                                             max_retries=20,
+                                             seed=None):
+    """Stratified-spatial train/val split with optional KS-pvalue gate.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Source dataframe (LUCAS OC + GPS_LONG + GPS_LAT). If None, filter
+        from config.
+    target_val_ratio : float
+        Fraction of total samples to allocate to val (e.g. 0.08).
+    distance_threshold : float
+        Minimum km between any val point and its nearest train point.
+    n_bins : int
+        Number of OC quantile bins for stratification.
+    ks_pvalue_min : float
+        Reject splits whose ks_2samp(train_oc, val_oc).pvalue < this
+        threshold. 0 disables the gate.
+    max_retries : int
+        How many resamples to attempt before giving up.
+    seed : int or None
+        Base seed; each retry uses seed + retry_idx.
+
+    Returns
+    -------
+    (val_df, train_df, min_distance_stats)
+    """
+    logger = logging.getLogger(__name__)
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    if df is None:
+        df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
+    df = df.copy().reset_index(drop=True)
+
+    device = 'cuda' if use_gpu and torch.cuda.is_available() else 'cpu'
+    total_samples = len(df)
+    target_val_size = max(1, int(round(total_samples * target_val_ratio)))
+
+    # Stratify by OC quantiles (use n_bins or fewer if ties collapse them)
+    bins = pd.qcut(df['OC'], q=n_bins, labels=False, duplicates='drop')
+    df = df.assign(_bin=bins.values)
+    unique_bins = sorted(df['_bin'].dropna().unique().astype(int))
+    per_bin_val = max(1, target_val_size // max(1, len(unique_bins)))
+
+    best_result = None
+    best_pvalue = -1.0
+    for retry in range(max(1, max_retries)):
+        rng = np.random.default_rng((seed or 0) + retry)
+        candidate_val_idx = []
+        for b in unique_bins:
+            bin_df = df[df['_bin'] == b]
+            if len(bin_df) == 0:
+                continue
+            take = min(per_bin_val, len(bin_df))
+            picked = rng.choice(bin_df.index.values, size=take, replace=False)
+            candidate_val_idx.extend(picked.tolist())
+
+        candidate_val = df.loc[candidate_val_idx].reset_index(drop=True)
+        candidate_train = df.drop(index=candidate_val_idx).reset_index(drop=True)
+
+        # Enforce spatial buffer: any val point too close to a train point gets dropped
+        min_dists = compute_min_distances(candidate_val, candidate_train, device=device)
+        buffer_mask = min_dists >= distance_threshold
+        val_df = candidate_val[buffer_mask].reset_index(drop=True)
+        train_df = pd.concat(
+            [candidate_train, candidate_val[~buffer_mask]],
+            ignore_index=True,
+        )
+
+        # Drop the helper _bin column from outputs
+        val_df = val_df.drop(columns=['_bin'], errors='ignore')
+        train_df = train_df.drop(columns=['_bin'], errors='ignore')
+
+        if len(val_df) < 5 or len(train_df) < 5:
+            continue
+
+        # KS test on OC distributions
+        ks_stat, ks_pvalue = stats.ks_2samp(train_df['OC'].values, val_df['OC'].values)
+        if ks_pvalue >= ks_pvalue_min:
+            best_result = (val_df, train_df, ks_stat, ks_pvalue, min_dists[buffer_mask])
+            break  # accept this split
+        if ks_pvalue > best_pvalue:
+            best_pvalue = ks_pvalue
+            best_result = (val_df, train_df, ks_stat, ks_pvalue, min_dists[buffer_mask])
+
+    if best_result is None:
+        raise RuntimeError("Stratified split failed to produce any valid (val, train) pair.")
+
+    val_df, train_df, ks_stat, ks_pvalue, val_min_dists = best_result
+    if ks_pvalue < ks_pvalue_min:
+        logger.warning(
+            f"Stratified split: best KS p-value {ks_pvalue:.4f} < gate {ks_pvalue_min}; "
+            f"using best of {max_retries} attempts anyway.")
+
+    valid_dists = val_min_dists[~np.isinf(val_min_dists) & ~np.isnan(val_min_dists)]
+    min_distance_stats = {
+        'mean':   float(np.mean(valid_dists))   if len(valid_dists) else float('nan'),
+        'median': float(np.median(valid_dists)) if len(valid_dists) else float('nan'),
+        'min':    float(np.min(valid_dists))    if len(valid_dists) else float('nan'),
+        'max':    float(np.max(valid_dists))    if len(valid_dists) else float('nan'),
+        'std':    float(np.std(valid_dists))    if len(valid_dists) else float('nan'),
+    }
+
+    val_df.to_parquet(Path(output_dir) / 'final_validation_df.parquet')
+    train_df.to_parquet(Path(output_dir) / 'final_training_df.parquet')
+    print(f"Stratified split: val n={len(val_df)} train n={len(train_df)} "
+          f"KS stat={ks_stat:.4f} p={ks_pvalue:.4f}  bins={len(unique_bins)}")
+    return val_df, train_df, min_distance_stats
+
+
+# ---------------------------------------------------------------------------
+# Spatial K-fold splits (anti-overfit option 2 from the bundle)
+# ---------------------------------------------------------------------------
+# Divides Bavaria's coordinate range into K spatial blocks (latitude deciles
+# by default). Each fold's val is one block; train is every other block
+# minus a distance_threshold buffer at the block edges. Returns a list of
+# (val_df, train_df, stats) tuples — one per fold — for the caller to loop
+# over instead of independent random splits.
+#
+# Use n_folds=5 for the classic 80/20 spatial CV, n_folds=10 for tighter
+# 90/10 with more folds.
+# ---------------------------------------------------------------------------
+def create_spatial_kfold_splits(df=None,
+                                 output_dir='output',
+                                 n_folds=5,
+                                 use_gpu=False,
+                                 distance_threshold=1.2,
+                                 ks_pvalue_min=0.0,
+                                 seed=42):
+    """Build n_folds spatial-block train/val splits.
+
+    Returns a list of length n_folds; each element is (val_df, train_df,
+    min_distance_stats, fold_meta) where fold_meta is a dict with the
+    fold index, latitude block edges, and KS p-value of the OC split.
+    """
+    logger = logging.getLogger(__name__)
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    if df is None:
+        df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
+    df = df.copy().reset_index(drop=True)
+    device = 'cuda' if use_gpu and torch.cuda.is_available() else 'cpu'
+
+    # Latitude-decile blocks (5/10/etc. equal-count slices in lat). This is
+    # the simplest spatial blocking that preserves coverage of the full
+    # longitude range in every fold. For multi-dimensional blocking
+    # (lat × lon grid) the call site can shuffle df by some 2-D key first.
+    lat_edges = np.quantile(df['GPS_LAT'].values, np.linspace(0, 1, n_folds + 1))
+    folds = []
+    for fold_idx in range(n_folds):
+        lo, hi = lat_edges[fold_idx], lat_edges[fold_idx + 1]
+        # Half-open at the lower edge, closed at the upper edge except for
+        # the topmost fold which is closed at both ends.
+        if fold_idx == n_folds - 1:
+            fold_mask = (df['GPS_LAT'] >= lo) & (df['GPS_LAT'] <= hi)
+        else:
+            fold_mask = (df['GPS_LAT'] >= lo) & (df['GPS_LAT'] < hi)
+        val_candidate = df[fold_mask].reset_index(drop=True)
+        train_candidate = df[~fold_mask].reset_index(drop=True)
+        if len(val_candidate) < 5 or len(train_candidate) < 5:
+            logger.warning(f"Fold {fold_idx}: too few samples (val={len(val_candidate)}, "
+                           f"train={len(train_candidate)}); skipping.")
+            continue
+        min_dists = compute_min_distances(val_candidate, train_candidate, device=device)
+        buffer_mask = min_dists >= distance_threshold
+        val_df = val_candidate[buffer_mask].reset_index(drop=True)
+        train_df = pd.concat(
+            [train_candidate, val_candidate[~buffer_mask]],
+            ignore_index=True,
+        )
+        if len(val_df) < 5:
+            logger.warning(f"Fold {fold_idx}: val collapsed to <5 after buffer; skipping.")
+            continue
+        ks_stat, ks_pvalue = stats.ks_2samp(train_df['OC'].values, val_df['OC'].values)
+        if ks_pvalue_min > 0 and ks_pvalue < ks_pvalue_min:
+            logger.warning(f"Fold {fold_idx}: KS p-value {ks_pvalue:.4f} below gate "
+                           f"{ks_pvalue_min}; including anyway (spatial folds can't be "
+                           f"resampled).")
+        valid_dists = min_dists[buffer_mask]
+        valid_dists = valid_dists[~np.isinf(valid_dists) & ~np.isnan(valid_dists)]
+        min_distance_stats = {
+            'mean':   float(np.mean(valid_dists))   if len(valid_dists) else float('nan'),
+            'median': float(np.median(valid_dists)) if len(valid_dists) else float('nan'),
+            'min':    float(np.min(valid_dists))    if len(valid_dists) else float('nan'),
+            'max':    float(np.max(valid_dists))    if len(valid_dists) else float('nan'),
+            'std':    float(np.std(valid_dists))    if len(valid_dists) else float('nan'),
+        }
+        fold_meta = {
+            'fold_idx': fold_idx, 'lat_lo': float(lo), 'lat_hi': float(hi),
+            'val_size': len(val_df), 'train_size': len(train_df),
+            'ks_stat': float(ks_stat), 'ks_pvalue': float(ks_pvalue),
+        }
+        print(f"K-fold {fold_idx+1}/{n_folds}: lat in [{lo:.4f}, {hi:.4f}]  "
+              f"val n={len(val_df)} train n={len(train_df)}  "
+              f"KS p={ks_pvalue:.4f}")
+        folds.append((val_df, train_df, min_distance_stats, fold_meta))
+    return folds
+
+
 # Function to create balanced dataset (unchanged)
 def create_balanced_dataset(df, n_bins=128, min_ratio=3/4, use_validation=True):
     bins = pd.qcut(df['OC'], q=n_bins, labels=False, duplicates='drop')
