@@ -86,10 +86,32 @@ def parse_args():
                         choices=['small', 'big'],
                         help='TFT variant: "small" = SimpleTFT (360k); '
                              '"big" = EnhancedTFT multi-scale (1.10M).')
+    # --- Smooth-training bundle -----------------------------------------
+    # All defaults preserve the original 8dce131 behaviour bit-identically:
+    #   --lr-scheduler none → fixed LR, no schedule
+    #   --grad-clip 0.0     → no gradient clipping
+    # Enable any subset to reduce metric volatility.
+    parser.add_argument('--lr-scheduler', type=str, default='none',
+                        choices=['none', 'cosine', 'warmup_cosine'],
+                        help='LR schedule. "warmup_cosine" = LinearLR warmup '
+                             'then CosineAnnealingLR to --lr-min over the run.')
+    parser.add_argument('--lr-min', type=float, default=1e-6,
+                        help='Final LR for cosine schedules (eta_min).')
+    parser.add_argument('--lr-warmup-epochs', type=int, default=20,
+                        help='Warmup length in epochs for warmup_cosine. '
+                             'Typical: 5-10%% of --num-epochs.')
+    parser.add_argument('--lr-warmup-start-factor', type=float, default=0.01,
+                        help='Initial LR fraction at epoch 0 for warmup_cosine '
+                             '(LR ramps from --lr * this to --lr).')
+    parser.add_argument('--grad-clip', type=float, default=0.0,
+                        help='Max gradient norm for clip_grad_norm_; 0 disables. '
+                             '1.0 is a sensible default for stability.')
     return parser.parse_args()
 
 def train_model(model, train_loader, val_loader,target_mean,target_std, num_epochs=num_epochs, accelerator=None, lr=0.001,
-                loss_type='l1', loss_alpha=0.5, target_transform='none', min_r2=0.5, use_validation=True):
+                loss_type='l1', loss_alpha=0.5, target_transform='none', min_r2=0.5, use_validation=True,
+                lr_scheduler='none', lr_min=1e-6, lr_warmup_epochs=20, lr_warmup_start_factor=0.01,
+                grad_clip=0.0):
     # Define loss function based on loss_type
     if loss_type == 'composite_l1':
         criterion = lambda outputs, targets: composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=loss_alpha)
@@ -103,6 +125,36 @@ def train_model(model, train_loader, val_loader,target_mean,target_std, num_epoc
         raise ValueError(f"Unknown loss type: {loss_type}")
 
     optimizer = optim.Adam(model.parameters(), lr=lr)
+
+    # Build LR scheduler BEFORE accelerator.prepare so the optimizer's
+    # param groups are the un-wrapped ones the scheduler will mutate.
+    if lr_scheduler == 'cosine':
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=num_epochs, eta_min=lr_min)
+    elif lr_scheduler == 'warmup_cosine':
+        # LinearLR warmup → CosineAnnealingLR chained via SequentialLR.
+        # epoch [0, warmup):  lr ramps lr*start_factor → lr
+        # epoch [warmup, end): lr cosine-descends lr → lr_min
+        warmup_epochs = max(1, min(int(lr_warmup_epochs), num_epochs - 1))
+        warmup = optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=lr_warmup_start_factor,
+            end_factor=1.0, total_iters=warmup_epochs)
+        cosine = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=max(1, num_epochs - warmup_epochs), eta_min=lr_min)
+        scheduler = optim.lr_scheduler.SequentialLR(
+            optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs])
+    else:
+        scheduler = None
+    if accelerator is not None and accelerator.is_main_process:
+        if lr_scheduler == 'warmup_cosine':
+            warmup_epochs = max(1, min(int(lr_warmup_epochs), num_epochs - 1))
+            print(f"LR schedule: warmup_cosine  "
+                  f"(warmup {warmup_epochs} ep: {lr*lr_warmup_start_factor:.2e} → {lr:.2e}, "
+                  f"cosine {num_epochs - warmup_epochs} ep: {lr:.2e} → {lr_min:.2e})", flush=True)
+        else:
+            print(f"LR schedule: {lr_scheduler}  (lr={lr}, lr_min={lr_min})", flush=True)
+        if grad_clip > 0:
+            print(f"Gradient clipping: max_norm={grad_clip}", flush=True)
 
     # Prepare with Accelerator
     train_loader, model, optimizer = accelerator.prepare(train_loader, model, optimizer)
@@ -140,6 +192,11 @@ def train_model(model, train_loader, val_loader,target_mean,target_std, num_epoc
             outputs = model(features)
             loss = criterion(outputs, targets)
             accelerator.backward(loss)
+            # Gradient clipping (disabled when grad_clip == 0).
+            # accelerator.clip_grad_norm_ unscales mixed-precision grads first
+            # and operates on the wrapped DDP model, so it's the correct call.
+            if grad_clip > 0:
+                accelerator.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
             optimizer.step()
 
             running_loss += loss.item()
@@ -273,7 +330,11 @@ def train_model(model, train_loader, val_loader,target_mean,target_std, num_epoc
             accelerator.print(f'MAE: {mae:.4f}')
             accelerator.print(f'RPIQ: {rpiq:.4f}\n')
             # Print the results
-            
+
+
+        # Step the LR scheduler at epoch boundary (after eval, after logging).
+        if scheduler is not None:
+            scheduler.step()
 
     return model, val_outputs, val_targets_list, best_model_state, best_r2, epoch_metrics
 
@@ -546,7 +607,11 @@ if __name__ == "__main__":
             target_transform=args.target_transform,
             min_r2=0.5,
             use_validation=args.use_validation,
-            
+            lr_scheduler=args.lr_scheduler,
+            lr_min=args.lr_min,
+            lr_warmup_epochs=args.lr_warmup_epochs,
+            lr_warmup_start_factor=args.lr_warmup_start_factor,
+            grad_clip=args.grad_clip,
         )
 
         # Store metrics
