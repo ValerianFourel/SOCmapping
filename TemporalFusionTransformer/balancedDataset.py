@@ -333,34 +333,92 @@ def create_stratified_validation_train_sets(df=None,
     bins = pd.qcut(df['OC'], q=n_bins, labels=False, duplicates='drop')
     df = df.assign(_bin=bins.values)
     unique_bins = sorted(df['_bin'].dropna().unique().astype(int))
-    per_bin_val = max(1, target_val_size // max(1, len(unique_bins)))
+    per_bin_target = max(1, target_val_size // max(1, len(unique_bins)))
 
+    # Three-stage stratified-spatial split (mirrors the legacy adaptive loop):
+    #   1. Oversample candidates per OC bin (pool ≫ target so the spatial
+    #      buffer leaves enough survivors).
+    #   2. Apply spatial buffer; candidates that fail the buffer go BACK to
+    #      train (no information lost).
+    #   3. From SURVIVORS, draw `per_bin_target` per bin (so the final test
+    #      OC histogram matches the main distribution by construction).
+    #      Excess survivors (those not picked) also go back to train.
+    # Oversample factor grows each retry so a single dense pod can still hit
+    # the target eventually. Behaviour matches the legacy create_validation_
+    # train_sets adaptive loop except it uses OC-quantile stratification
+    # instead of inverse-gamma weighting.
     best_result = None
     best_pvalue = -1.0
     for retry in range(max(1, max_retries)):
         rng = np.random.default_rng((seed or 0) + retry)
+        # Grow oversample with each retry: 4× target, 5×, 6×, ... Capped at
+        # 90% of total_samples so train always has at least 10% to learn from.
+        oversample = 4 + retry
+        candidate_pool = min(int(total_samples * 0.9),
+                             target_val_size * oversample)
+        per_bin_pool = max(per_bin_target,
+                           candidate_pool // max(1, len(unique_bins)))
+
+        # --- stage 1: stratified candidate pool --------------------------
         candidate_val_idx = []
         for b in unique_bins:
             bin_df = df[df['_bin'] == b]
             if len(bin_df) == 0:
                 continue
-            take = min(per_bin_val, len(bin_df))
+            take = min(per_bin_pool, len(bin_df))
             picked = rng.choice(bin_df.index.values, size=take, replace=False)
             candidate_val_idx.extend(picked.tolist())
+        candidate_val_idx = np.array(candidate_val_idx, dtype=np.int64)
 
         candidate_val = df.loc[candidate_val_idx].reset_index(drop=True)
         candidate_train = df.drop(index=candidate_val_idx).reset_index(drop=True)
 
-        # Enforce spatial buffer: any val point too close to a train point gets dropped
+        # --- stage 2: spatial buffer -------------------------------------
+        # Rejected candidates rejoin the train pool later (no data thrown away).
         min_dists = compute_min_distances(candidate_val, candidate_train, device=device)
         buffer_mask = min_dists >= distance_threshold
-        val_df = candidate_val[buffer_mask].reset_index(drop=True)
-        train_df = pd.concat(
-            [candidate_train, candidate_val[~buffer_mask]],
-            ignore_index=True,
-        )
+        survivor_idx = candidate_val_idx[buffer_mask]
+        survivor_dists = min_dists[buffer_mask]
 
-        # Drop the helper _bin column from outputs
+        if len(survivor_idx) < target_val_size:
+            # Not enough survivors with this oversample; let the retry loop
+            # grow it and try again. If we're already on the last retry,
+            # fall through and use what we have.
+            if retry < max_retries - 1:
+                continue
+
+        # --- stage 3: stratified pick to hit target_val_size --------------
+        # Within survivors, draw `per_bin_target` per bin, preferring largest
+        # min_dist (cleanest spatial separation). Excess survivors + rejected
+        # candidates both flow back to train.
+        survivor_df = df.loc[survivor_idx].copy()
+        survivor_df['_min_dist'] = survivor_dists
+        final_val_idx_list = []
+        final_val_dists_list = []
+        for b in unique_bins:
+            bin_survivors = survivor_df[survivor_df['_bin'] == b]
+            bin_survivors = bin_survivors.sort_values('_min_dist', ascending=False)
+            take = min(per_bin_target, len(bin_survivors))
+            final_val_idx_list.extend(bin_survivors.index[:take].tolist())
+            final_val_dists_list.extend(bin_survivors['_min_dist'].values[:take].tolist())
+
+        final_val_idx = np.array(final_val_idx_list, dtype=np.int64)
+        # If after per-bin truncation we're still below target (some bins
+        # have very few survivors), top up by taking the next-best survivors
+        # globally, regardless of bin.
+        if len(final_val_idx) < target_val_size:
+            remaining = survivor_df.drop(index=final_val_idx, errors='ignore')
+            remaining = remaining.sort_values('_min_dist', ascending=False)
+            need = target_val_size - len(final_val_idx)
+            extras = remaining.index[:need].values
+            extra_dists = remaining['_min_dist'].values[:need].tolist()
+            final_val_idx = np.concatenate([final_val_idx, extras])
+            final_val_dists_list.extend(extra_dists)
+
+        val_df = df.loc[final_val_idx].reset_index(drop=True)
+        train_df = df.drop(index=final_val_idx).reset_index(drop=True)
+
+        # Drop helper _bin column from outputs
         val_df = val_df.drop(columns=['_bin'], errors='ignore')
         train_df = train_df.drop(columns=['_bin'], errors='ignore')
 
@@ -369,12 +427,13 @@ def create_stratified_validation_train_sets(df=None,
 
         # KS test on OC distributions
         ks_stat, ks_pvalue = stats.ks_2samp(train_df['OC'].values, val_df['OC'].values)
+        result_dists = np.array(final_val_dists_list)
         if ks_pvalue >= ks_pvalue_min:
-            best_result = (val_df, train_df, ks_stat, ks_pvalue, min_dists[buffer_mask])
+            best_result = (val_df, train_df, ks_stat, ks_pvalue, result_dists)
             break  # accept this split
         if ks_pvalue > best_pvalue:
             best_pvalue = ks_pvalue
-            best_result = (val_df, train_df, ks_stat, ks_pvalue, min_dists[buffer_mask])
+            best_result = (val_df, train_df, ks_stat, ks_pvalue, result_dists)
 
     if best_result is None:
         raise RuntimeError("Stratified split failed to produce any valid (val, train) pair.")
