@@ -143,12 +143,27 @@ def parse_args():
                              'repeated --num-runs times. >0 = build N latitude-'
                              'decile folds; the outer run loop iterates over '
                              'them, replacing --num-runs.')
+    # --- Augmentation bundle (on-the-fly + batch-level) --------------------
+    # All defaults disabled. Affects TRAINING samples only; val is deterministic.
+    parser.add_argument('--aug-spatial-flip', action='store_true', default=False,
+                        help='Random hflip + vflip + 90°k rotation of the 5×5 '
+                             'spatial patch on each training sample. Free 8× '
+                             'effective dataset size.')
+    parser.add_argument('--aug-temporal-dropout-prob', type=float, default=0.0,
+                        help='Probability of zeroing one random training timestep '
+                             '(in [0, 1)). Forces the model to use multi-timestep '
+                             'evidence. 0 disables.')
+    parser.add_argument('--mixup-alpha', type=float, default=0.0,
+                        help='Beta(α, α) mixup strength. 0 disables. '
+                             '0.2–0.4 is the usual range for regression. Linearly '
+                             'combines two samples (and their targets) per pair.')
     return parser.parse_args()
 
 def train_model(model, train_loader, val_loader,target_mean,target_std, num_epochs=num_epochs, accelerator=None, lr=0.001,
                 loss_type='l1', loss_alpha=0.5, target_transform='none', min_r2=0.5, use_validation=True,
                 lr_scheduler='none', lr_min=1e-6, lr_warmup_epochs=20, lr_warmup_start_factor=0.01,
-                grad_clip=0.0, weight_decay=0.0, early_stop_patience=0):
+                grad_clip=0.0, weight_decay=0.0, early_stop_patience=0,
+                mixup_alpha=0.0):
     # Define loss function based on loss_type
     if loss_type == 'composite_l1':
         criterion = lambda outputs, targets: composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=loss_alpha)
@@ -202,6 +217,8 @@ def train_model(model, train_loader, val_loader,target_mean,target_std, num_epoc
             print(f"Optimizer: AdamW (weight_decay={weight_decay})", flush=True)
         if early_stop_patience > 0:
             print(f"Early stopping: patience={early_stop_patience} (monitoring r_squared)", flush=True)
+        if mixup_alpha > 0:
+            print(f"Mixup: alpha={mixup_alpha} (Beta({mixup_alpha},{mixup_alpha}))", flush=True)
 
     # Early-stopping bookkeeping (only used when early_stop_patience > 0)
     epochs_since_best = 0
@@ -239,6 +256,13 @@ def train_model(model, train_loader, val_loader,target_mean,target_std, num_epoc
             # 'none' requires no transformation
 
             optimizer.zero_grad()
+            # Mixup: linearly combine two samples per batch. λ ~ Beta(α, α);
+            # standard regression-mixup formulation. No-op when mixup_alpha == 0.
+            if mixup_alpha > 0:
+                lam = float(np.random.beta(mixup_alpha, mixup_alpha))
+                perm = torch.randperm(features.size(0), device=features.device)
+                features = lam * features + (1.0 - lam) * features[perm]
+                targets  = lam * targets  + (1.0 - lam) * targets[perm]
             outputs = model(features)
             loss = criterion(outputs, targets)
             accelerator.backward(loss)
@@ -658,6 +682,15 @@ if __name__ == "__main__":
             val_dataset.set_feature_stds(train_dataset_features_norm.get_feature_stds())
             train_dataset.set_feature_means(train_dataset_features_norm.get_feature_means())
             train_dataset.set_feature_stds(train_dataset_features_norm.get_feature_stds())
+            # Enable augmentation on TRAINING dataset only (val stays deterministic).
+            if args.aug_spatial_flip or args.aug_temporal_dropout_prob > 0:
+                train_dataset.set_augmentation(
+                    spatial_flip=args.aug_spatial_flip,
+                    temporal_dropout_prob=args.aug_temporal_dropout_prob,
+                )
+                if accelerator.is_main_process:
+                    print(f"Augmentation on train: spatial_flip={args.aug_spatial_flip}  "
+                          f"temporal_dropout_prob={args.aug_temporal_dropout_prob}")
             #train_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, train_df)
             #val_dataset = MultiRasterDatasetMultiYears(samples_coordinates_array_path, data_array_path, val_df)
             if accelerator.is_main_process:
@@ -738,6 +771,7 @@ if __name__ == "__main__":
             grad_clip=args.grad_clip,
             weight_decay=args.weight_decay,
             early_stop_patience=args.early_stop_patience,
+            mixup_alpha=args.mixup_alpha,
         )
 
         # Store metrics
