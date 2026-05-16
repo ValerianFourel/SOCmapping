@@ -66,13 +66,65 @@ def composite_l2_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
     return alpha * l2_loss + (1 - alpha) * chi2_scaled
 
 
+def neyman_chi2_loss(outputs, targets, target_mean, target_std,
+                     target_transform='normalize', eps=1.0):
+    """Pearson/Neyman chi-squared loss in original OC units (g/kg).
+
+        L = mean( (y_pred_raw - y_true_raw)^2 / max(y_true_raw, eps) )
+
+    Why this is a "real" chi-squared:
+      Pearson's chi-squared for count/non-negative observations is
+      Σ_i (O_i - E_i)^2 / E_i, which is the squared Z-score per
+      observation under a Poisson-like assumption (var ≈ mean). For
+      soil OC (always ≥ 0, right-tailed) this is the natural form:
+      it normalizes the squared error by the expected variance at each
+      target, so the absolute scale of g/kg-range targets doesn't
+      dominate over the [0, 10) bulk.
+
+    Why we evaluate in raw units, not z-score space:
+      The model trains with --target_transform normalize (z-score), so
+      `targets` here are in z-units and can go negative. χ² requires a
+      positive denominator. We inverse-transform back to OC g/kg before
+      computing the loss; gradients flow through the inverse-transform
+      back to the model. Supports the three transforms the rest of the
+      pipeline supports: 'normalize' (z-score), 'log' (log1p), 'none'.
+
+    eps : float
+      Floor on the denominator (g/kg). 1.0 is a sane default for OC —
+      smaller (e.g. 0.1) makes the loss blow up on near-zero samples
+      and destabilizes training; larger (e.g. 5) damps the effect.
+    """
+    # Inverse-transform to OC g/kg space
+    if target_transform == 'normalize':
+        y_pred_raw = outputs  * target_std + target_mean
+        y_true_raw = targets  * target_std + target_mean
+    elif target_transform == 'log':
+        # log(1+x) → x = exp(y)-1. Clamp to avoid overflow for runaway preds.
+        y_pred_raw = torch.expm1(torch.clamp(outputs, max=10.0))
+        y_true_raw = torch.expm1(torch.clamp(targets, max=10.0))
+    else:  # 'none' — already in raw units
+        y_pred_raw = outputs
+        y_true_raw = targets
+    denom = torch.clamp(y_true_raw.abs(), min=eps)
+    return torch.mean((y_pred_raw - y_true_raw) ** 2 / denom)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Train SimpleTFT model with customizable parameters')
     parser.add_argument('--lr', type=float, default=0.0002, help='Learning rate')
     parser.add_argument('--num_heads', type=int, default=NUM_HEADS, help='Number of attention heads')
     parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of transformer layers')
-    parser.add_argument('--loss_type', type=str, default='l1', choices=['composite_l1', 'l1', 'mse','composite_l2'], help='Type of loss function')
+    parser.add_argument('--loss_type', type=str, default='l1',
+                        choices=['composite_l1', 'l1', 'mse', 'composite_l2', 'chi2'],
+                        help='Loss function. "chi2" = Neyman chi-squared in g/kg '
+                             'units (real Pearson χ² = Σ (y_pred-y_true)²/y_true). '
+                             'The two composite_* are blends of L1/L2 with a '
+                             'rescaled squared error and are NOT real χ².')
     parser.add_argument('--loss_alpha', type=float, default=0.5, help='Weight for L1 loss in composite loss (if used)')
+    parser.add_argument('--chi2-eps', type=float, default=1.0,
+                        help='Denominator floor for --loss_type chi2 (g/kg). '
+                             '1.0 is sane for OC; lower destabilizes on near-'
+                             'zero targets; higher damps the χ² effect.')
     parser.add_argument('--target_transform', type=str, default='normalize', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
     parser.add_argument('--use_validation', action='store_true', default=False, help='Whether to use validation set')
     parser.add_argument('--output-dir', type=str, default='output', help='Output directory')
@@ -263,7 +315,7 @@ def train_model(model, train_loader, val_loader,target_mean,target_std, num_epoc
                 loss_type='l1', loss_alpha=0.5, target_transform='none', min_r2=0.5, use_validation=True,
                 lr_scheduler='none', lr_min=1e-6, lr_warmup_epochs=20, lr_warmup_start_factor=0.01,
                 grad_clip=0.0, weight_decay=0.0, early_stop_patience=0,
-                tta=False):
+                tta=False, chi2_eps=1.0):
     # Define loss function based on loss_type
     if loss_type == 'composite_l1':
         criterion = lambda outputs, targets: composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=loss_alpha)
@@ -273,6 +325,13 @@ def train_model(model, train_loader, val_loader,target_mean,target_std, num_epoc
         criterion = nn.L1Loss()
     elif loss_type == 'mse':
         criterion = nn.MSELoss()
+    elif loss_type == 'chi2':
+        # Real Pearson/Neyman χ² in original OC units (g/kg). Inverse-
+        # transforms predictions back via target_mean/target_std (or expm1
+        # for log mode), then computes Σ (y_pred-y_true)²/max(y_true, eps).
+        criterion = lambda outputs, targets: neyman_chi2_loss(
+            outputs, targets, target_mean, target_std,
+            target_transform=target_transform, eps=chi2_eps)
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
 
@@ -931,6 +990,7 @@ if __name__ == "__main__":
             weight_decay=args.weight_decay,
             early_stop_patience=args.early_stop_patience,
             tta=args.tta,
+            chi2_eps=args.chi2_eps,
         )
 
         # Store metrics
