@@ -157,13 +157,25 @@ def parse_args():
                         help='Beta(α, α) mixup strength. 0 disables. '
                              '0.2–0.4 is the usual range for regression. Linearly '
                              'combines two samples (and their targets) per pair.')
+    # --- Model / eval bundle: stochastic depth + test-time augmentation ---
+    parser.add_argument('--layer-drop-prob', type=float, default=0.0,
+                        help='LayerDrop / stochastic depth probability for the '
+                             'transformer encoder. 0 disables (default). 0.1 is '
+                             'a sensible value for a 3-layer encoder. Only '
+                             'applies during training; eval skips no layers. '
+                             'Currently --model-size big only (EnhancedTFT).')
+    parser.add_argument('--tta', action='store_true', default=False,
+                        help='Test-time augmentation: at eval, average the model '
+                             'output over 4 rotations (0/90/180/270°) of the '
+                             'input. Costs 4× eval forward passes; typically '
+                             'adds ~0.005-0.02 to RPIQ for free.')
     return parser.parse_args()
 
 def train_model(model, train_loader, val_loader,target_mean,target_std, num_epochs=num_epochs, accelerator=None, lr=0.001,
                 loss_type='l1', loss_alpha=0.5, target_transform='none', min_r2=0.5, use_validation=True,
                 lr_scheduler='none', lr_min=1e-6, lr_warmup_epochs=20, lr_warmup_start_factor=0.01,
                 grad_clip=0.0, weight_decay=0.0, early_stop_patience=0,
-                mixup_alpha=0.0):
+                mixup_alpha=0.0, tta=False):
     # Define loss function based on loss_type
     if loss_type == 'composite_l1':
         criterion = lambda outputs, targets: composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=loss_alpha)
@@ -219,6 +231,8 @@ def train_model(model, train_loader, val_loader,target_mean,target_std, num_epoc
             print(f"Early stopping: patience={early_stop_patience} (monitoring r_squared)", flush=True)
         if mixup_alpha > 0:
             print(f"Mixup: alpha={mixup_alpha} (Beta({mixup_alpha},{mixup_alpha}))", flush=True)
+        if tta:
+            print(f"Test-time augmentation: 4-rotation average on val forward", flush=True)
 
     # Early-stopping bookkeeping (only used when early_stop_patience > 0)
     epochs_since_best = 0
@@ -300,7 +314,18 @@ def train_model(model, train_loader, val_loader,target_mean,target_std, num_epoc
                     elif target_transform == 'normalize':
                         targets = (targets - target_mean) / (target_std + 1e-10)
 
-                    outputs = model(features)
+                    if tta:
+                        # Test-time augmentation: average outputs over the 4
+                        # 90°k rotations of the spatial dims (H, W). Input
+                        # layout is (B, C, H, W, T) — rotate on (2, 3).
+                        out_acc = None
+                        for k in range(4):
+                            feat_k = features if k == 0 else torch.rot90(features, k=k, dims=(2, 3))
+                            o = model(feat_k)
+                            out_acc = o if out_acc is None else (out_acc + o)
+                        outputs = out_acc / 4.0
+                    else:
+                        outputs = model(features)
                     val_outputs.extend(outputs.cpu().numpy())
                     val_targets_list.extend(targets.cpu().numpy())
 
@@ -735,6 +760,10 @@ if __name__ == "__main__":
                 num_encoder_layers=3,
                 expansion_factor=4,
             )
+            if args.layer_drop_prob > 0:
+                model.set_layer_drop_prob(args.layer_drop_prob)
+                if accelerator.is_main_process:
+                    print(f"LayerDrop: enabled (p={args.layer_drop_prob}) on EnhancedTFT")
         else:
             model = SimpleTFT(
                 input_channels=len(bands_list_order),
@@ -772,6 +801,7 @@ if __name__ == "__main__":
             weight_decay=args.weight_decay,
             early_stop_patience=args.early_stop_patience,
             mixup_alpha=args.mixup_alpha,
+            tta=args.tta,
         )
 
         # Store metrics

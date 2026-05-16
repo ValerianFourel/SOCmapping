@@ -4,11 +4,16 @@ import torch.nn.functional as F
 import math
 
 class EnhancedTFT(nn.Module):
-    def __init__(self, input_channels=6, height=5, width=5, time_steps=5, d_model=128, num_heads=4, 
+    def __init__(self, input_channels=6, height=5, width=5, time_steps=5, d_model=128, num_heads=4,
                  dropout=0.3, num_encoder_layers=3, expansion_factor=4):
         super(EnhancedTFT, self).__init__()
 
         self.time_steps = time_steps
+        # Stochastic-depth probability for transformer-encoder LayerDrop.
+        # 0.0 = no skipping; set via set_layer_drop_prob() so state_dict
+        # naming (transformer_encoder.layers.*) is preserved and existing
+        # saved checkpoints still load with strict=True.
+        self.layer_drop_prob = 0.0
 
         # Enhanced CNN to extract more complex spatial features per timestep
         self.spatial_encoder = nn.Sequential(
@@ -85,8 +90,18 @@ class EnhancedTFT(nn.Module):
         # Add positional encodings
         x = self.pos_encoding(x)  # (B, T, d_model)
 
-        # Apply transformer encoder (already batch_first=True)
-        x = self.transformer_encoder(x)  # (B, T, d_model)
+        # Apply transformer encoder (already batch_first=True). When
+        # layer_drop_prob > 0 and we're in train mode, iterate through the
+        # encoder layers manually and skip each with that probability
+        # (stochastic depth / LayerDrop). Falls back to the standard
+        # TransformerEncoder forward in eval or when prob == 0.
+        if self.training and self.layer_drop_prob > 0.0:
+            for layer in self.transformer_encoder.layers:
+                if torch.rand(1).item() < self.layer_drop_prob:
+                    continue
+                x = layer(x)
+        else:
+            x = self.transformer_encoder(x)  # (B, T, d_model)
 
         # Apply attention pooling to focus on important timesteps
         x = self.attention_pooling(x)  # (B, d_model)
@@ -98,6 +113,13 @@ class EnhancedTFT(nn.Module):
 
     def count_parameters(self):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+    def set_layer_drop_prob(self, p):
+        """Enable stochastic-depth on the transformer encoder. p in [0, 1).
+        Skips each encoder layer with probability p during training only;
+        eval is unaffected. Does NOT change state_dict layout, so saved
+        checkpoints still load with strict=True."""
+        self.layer_drop_prob = float(p)
 
 
 class GatedResidualNetwork(nn.Module):
