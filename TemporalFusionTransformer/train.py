@@ -182,6 +182,24 @@ def parse_args():
                              'output over 4 rotations (0/90/180/270°) of the '
                              'input. Costs 4× eval forward passes; typically '
                              'adds ~0.005-0.02 to RPIQ for free.')
+    # --- Output-head range-recovery bundle (Tier-1 + Tier-2) ----------------
+    # Counter mean-collapse on the heavy-tailed OC distribution by widening
+    # the model's intrinsic output range at init. Defaults preserve the
+    # current --model-size big behaviour (Tier-1 ON @ 3.0, Tier-2 ON @ 1.0).
+    # Only applies to EnhancedTFT (--model-size big); ignored for small.
+    parser.add_argument('--output-scale-init', type=float, default=3.0,
+                        help='Tier-1: initial value of EnhancedTFT.output_scale '
+                             '(a learnable scalar multiplied with the head '
+                             'output). 3.0 (default) amplifies init predictions '
+                             '~3×; 1.0 disables the amplification. Adam updates '
+                             'this parameter during training. --model-size big only.')
+    parser.add_argument('--head-init-std', type=float, default=1.0,
+                        help='Tier-2: std of normal init for the head\'s final '
+                             'Linear(d_model//4, 1). 1.0 (default) is ~4× the '
+                             'Kaiming-uniform magnitude → raises intrinsic '
+                             'output std from ~1.4 to ~5 z-units. Set 0 to '
+                             'skip and keep the default Kaiming init. '
+                             '--model-size big only.')
     return parser.parse_args()
 
 def train_model(model, train_loader, val_loader,target_mean,target_std, num_epochs=num_epochs, accelerator=None, lr=0.001,
@@ -801,11 +819,16 @@ if __name__ == "__main__":
                 dropout=args.dropout_rate,
                 num_encoder_layers=3,
                 expansion_factor=4,
+                output_scale_init=args.output_scale_init,
+                head_init_std=args.head_init_std,
             )
             if args.layer_drop_prob > 0:
                 model.set_layer_drop_prob(args.layer_drop_prob)
                 if accelerator.is_main_process:
                     print(f"LayerDrop: enabled (p={args.layer_drop_prob}) on EnhancedTFT")
+            if accelerator.is_main_process:
+                print(f"Tier-1 output_scale init={args.output_scale_init} "
+                      f"| Tier-2 head_init_std={args.head_init_std}")
         else:
             model = SimpleTFT(
                 input_channels=len(bands_list_order),

@@ -5,7 +5,8 @@ import math
 
 class EnhancedTFT(nn.Module):
     def __init__(self, input_channels=6, height=5, width=5, time_steps=5, d_model=128, num_heads=4,
-                 dropout=0.3, num_encoder_layers=3, expansion_factor=4):
+                 dropout=0.3, num_encoder_layers=3, expansion_factor=4,
+                 output_scale_init=3.0, head_init_std=1.0):
         super(EnhancedTFT, self).__init__()
 
         self.time_steps = time_steps
@@ -70,24 +71,26 @@ class EnhancedTFT(nn.Module):
             nn.Linear(d_model // 4, 1)
         )
 
-        # Tier-2 fix: re-init the head's final Linear(d_model//4, 1) with
-        # wider weights so the model can natively express the full target
-        # range from epoch 0 (not just ±1.4 z-units from the Kaiming-uniform
-        # default). std=1.0 is 4× the default weight magnitude, raising the
-        # intrinsic output std from ~1.4 to ~5 z-units BEFORE output_scale.
-        # Bias is zero'd to keep initial predictions centered on the OC mean.
-        nn.init.normal_(self.head[-1].weight, mean=0.0, std=1.0)
-        nn.init.zeros_(self.head[-1].bias)
+        # Tier-2 fix (head_init_std > 0): re-init the head's final
+        # Linear(d_model//4, 1) with wider weights so the model can natively
+        # express the full target range from epoch 0. Default std=1.0 is ~4×
+        # the Kaiming-uniform magnitude, raising intrinsic output std from
+        # ~1.4 to ~5 z-units BEFORE output_scale. Bias is zero'd to keep
+        # initial predictions centered on the OC mean. Pass --head-init-std 0
+        # to skip and keep the default Kaiming init.
+        if head_init_std > 0:
+            nn.init.normal_(self.head[-1].weight, mean=0.0, std=head_init_std)
+            nn.init.zeros_(self.head[-1].bias)
 
         # Tier-1 fix: learnable output scale, multiplied with the head's
         # output. Combined with the Tier-2 wider init above, initial output
-        # std ≈ 5 × 3 = 15 z-units → covers the full LUCAS OC range from
-        # epoch 0 (max z ≈ 12 = 150 g/kg, min z ≈ -1.4 = 0 g/kg).
-        # output_scale itself is trainable; Adam will adjust it (often to
-        # 4-6 by convergence) to whatever value minimises the loss.
+        # std ≈ 5 × output_scale_init z-units. Default 3.0 → ~15 z-units,
+        # covering the full LUCAS OC range from epoch 0 (max z ≈ 12).
+        # output_scale itself is trainable; Adam will adjust it. Set
+        # --output-scale-init 1.0 to disable the initial amplification.
         # State-dict compat: saved Model A v2 .pth loads with strict=False
-        # (1 missing: `output_scale`, defaults to 3.0).
-        self.output_scale = nn.Parameter(torch.tensor(3.0))
+        # (1 missing: `output_scale`, defaults to output_scale_init).
+        self.output_scale = nn.Parameter(torch.tensor(float(output_scale_init)))
 
     def forward(self, x):
         # x: [B, C, H, W, T]
