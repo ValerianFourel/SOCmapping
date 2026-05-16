@@ -175,6 +175,18 @@ def parse_args():
                         help='Retry budget for the stratified split (raised '
                              'from the historical 20 so the tighter tolerances '
                              'have room to find a passing split).')
+    parser.add_argument('--test-oc-max', type=float, default=50.0,
+                        help='Upper OC cap for the test set (g/kg). Default '
+                             '50.0: points with OC > 50 are reserved for '
+                             'training only, so test never contains outliers '
+                             'but the model still sees them during training. '
+                             'Combined with --match-mode-tol, test ends up '
+                             'with the same KDE-mode as train but a flatter '
+                             '(higher-variance-within-range) shape. mean_tol '
+                             'and std_tol are then compared on train[OC≤cap] '
+                             'vs test (apples-to-apples). Pass 0 to disable '
+                             'and restore the prior behaviour (test can '
+                             'contain any OC up to MAX_OC).')
     parser.add_argument('--kfold', type=int, default=0,
                         help='Spatial K-fold CV. 0 (default) = single split, '
                              'repeated --num-runs times. >0 = build N latitude-'
@@ -778,6 +790,7 @@ if __name__ == "__main__":
                     std_tol=args.match_std_tol  if args.match_std_tol  > 0 else None,
                     mode_tol=args.match_mode_tol if args.match_mode_tol > 0 else None,
                     max_retries=args.split_max_retries,
+                    test_oc_max=args.test_oc_max if args.test_oc_max > 0 else None,
                 )
             else:
                 val_df, train_df, min_distance_stats = create_validation_train_sets(

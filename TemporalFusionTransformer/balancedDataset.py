@@ -308,7 +308,8 @@ def create_stratified_validation_train_sets(df=None,
                                              seed=None,
                                              mean_tol=None,
                                              std_tol=None,
-                                             mode_tol=None):
+                                             mode_tol=None,
+                                             test_oc_max=None):
     """Stratified-spatial train/val split with optional KS-pvalue gate.
 
     Parameters
@@ -340,6 +341,22 @@ def create_stratified_validation_train_sets(df=None,
         disables. 1.0 means "test KDE-mode within 1 g/kg of train mode".
         Modes are computed via a fixed-bandwidth KDE for cross-split
         comparability.
+    test_oc_max : float or None
+        Upper OC cap for the test set. When set (e.g. 50.0):
+          * points with OC > test_oc_max never appear in test — they go
+            straight to train (so the model still sees them during
+            training but isn't graded on outlier predictions);
+          * the stratified split operates ONLY on the OC ≤ test_oc_max
+            subset, giving test a flatter (per-OC-bin uniform) shape
+            within that range than the natural distribution — i.e. test
+            has more variance within the comparable range, while keeping
+            the same KDE-mode (the modal bin is still in-range);
+          * mean_tol / std_tol are then evaluated against the
+            train-subset-in-range, not all of train, so the comparison is
+            apples-to-apples;
+          * KS / mode-tol still compare train (all of it) vs test, which
+            is the regime the production model is graded in.
+        None (default) disables — split runs on the full filtered df.
 
     When mean/std/mode tolerances are given, the retry loop scores each
     candidate split by a composite metric (sum of normalized squared
@@ -358,6 +375,19 @@ def create_stratified_validation_train_sets(df=None,
     if df is None:
         df = filter_dataframe(TIME_BEGINNING, TIME_END, MAX_OC)
     df = df.copy().reset_index(drop=True)
+
+    # test_oc_max: pull OC>cap rows out of the split pool, hold them aside,
+    # and reattach to train AFTER the split. This way test never contains
+    # outliers but the model still trains on them.
+    if test_oc_max is not None:
+        outlier_df = df[df['OC'] > test_oc_max].copy()
+        df = df[df['OC'] <= test_oc_max].reset_index(drop=True)
+        if len(outlier_df) > 0:
+            print(f"test_oc_max={test_oc_max}: {len(outlier_df)} outlier rows "
+                  f"(OC>{test_oc_max}) reserved for train; stratified split "
+                  f"runs on the remaining {len(df)}.")
+    else:
+        outlier_df = None
 
     device = 'cuda' if use_gpu and torch.cuda.is_available() else 'cpu'
     total_samples = len(df)
@@ -471,11 +501,19 @@ def create_stratified_validation_train_sets(df=None,
         if len(val_df) < 5 or len(train_df) < 5:
             continue
 
-        # KS + mean/std/mode gates
+        # KS + mean/std/mode gates.
+        # If test_oc_max is active, evaluate mean/std on the comparable range
+        # of train (train rows with OC ≤ test_oc_max) — otherwise test is
+        # unfairly penalized for not containing outliers it was forbidden
+        # from sampling. KS / mode still compare against full train.
         ks_stat, ks_pvalue = stats.ks_2samp(train_df['OC'].values, val_df['OC'].values)
         result_dists = np.array(final_val_dists_list)
-        mean_diff = abs(train_df['OC'].mean() - val_df['OC'].mean()) / max(global_mean, 1e-9)
-        std_diff  = abs(train_df['OC'].std()  - val_df['OC'].std())  / max(global_std,  1e-9)
+        if test_oc_max is not None:
+            train_in_range = train_df.loc[train_df['OC'] <= test_oc_max, 'OC']
+        else:
+            train_in_range = train_df['OC']
+        mean_diff = abs(train_in_range.mean() - val_df['OC'].mean()) / max(global_mean, 1e-9)
+        std_diff  = abs(train_in_range.std()  - val_df['OC'].std())  / max(global_std,  1e-9)
         if mode_tol is not None:
             mode_train = _kde_mode(train_df['OC'].values)
             mode_val   = _kde_mode(val_df['OC'].values)
@@ -507,15 +545,28 @@ def create_stratified_validation_train_sets(df=None,
 
     (val_df, train_df, ks_stat, ks_pvalue, val_min_dists,
      mean_diff, std_diff, mode_diff, mode_train, mode_val) = best_result
+    # Reattach the OC>test_oc_max outliers to train (they were held aside
+    # before the split). Train ends up with the natural bulk + all outliers;
+    # test contains only OC ≤ test_oc_max points.
+    if outlier_df is not None and len(outlier_df) > 0:
+        # Drop the helper _bin column from outlier_df if present (it isn't)
+        outlier_df_clean = outlier_df.drop(columns=['_bin'], errors='ignore')
+        n_train_pre = len(train_df)
+        train_df = pd.concat([train_df, outlier_df_clean], ignore_index=True)
+        print(f"Reattached {len(outlier_df)} OC>{test_oc_max} outlier rows "
+              f"to train: {n_train_pre} → {len(train_df)}.")
     if ks_pvalue < ks_pvalue_min:
         logger.warning(
             f"Stratified split: best KS p-value {ks_pvalue:.4f} < gate {ks_pvalue_min}; "
             f"using best of {max_retries} attempts anyway.")
-    # Log all match metrics so the user can see how tight the final split is
+    # Log all match metrics so the user can see how tight the final split is.
+    # When test_oc_max is active, mean/std are evaluated on train[in-range]
+    # vs test (apples-to-apples); mode is computed on full train vs test.
+    cmp_label = f" [train OC≤{test_oc_max} vs test]" if test_oc_max is not None else ""
     msg_bits = [f"KS p={ks_pvalue:.4f} (gate {ks_pvalue_min})",
-                f"mean_diff={mean_diff*100:.2f}%"]
+                f"mean_diff={mean_diff*100:.2f}%{cmp_label}"]
     if mean_tol is not None: msg_bits[-1] += f" (tol {mean_tol*100:.1f}%)"
-    msg_bits.append(f"std_diff={std_diff*100:.2f}%")
+    msg_bits.append(f"std_diff={std_diff*100:.2f}%{cmp_label}")
     if std_tol is not None:  msg_bits[-1] += f" (tol {std_tol*100:.1f}%)"
     if mode_tol is not None:
         msg_bits.append(f"mode train={mode_train:.2f} test={mode_val:.2f} "
