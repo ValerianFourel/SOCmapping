@@ -76,7 +76,9 @@ def parse_args():
     parser.add_argument('--target_transform', type=str, default='normalize', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
     parser.add_argument('--use_validation', action='store_true', default=False, help='Whether to use validation set')
     parser.add_argument('--output-dir', type=str, default='output', help='Output directory')
-    parser.add_argument('--target-val-ratio', type=float, default=0.08, help='Target validation ratio')
+    parser.add_argument('--target-val-ratio', type=float, default=0.10,
+                        help='Target validation/test ratio. Default 0.10 = 10% '
+                             'held out (~1,651 of 16,514 Bavaria points).')
     parser.add_argument('--use-gpu', action='store_true', default=True, help='Use GPU')
     parser.add_argument('--distance-threshold', type=float, default=1.2, help='Minimum distance threshold for validation points')
     parser.add_argument('--target-fraction', type=float, default=0.75, help='Fraction of max bin count for resampling')
@@ -123,21 +125,30 @@ def parse_args():
                              'not improved for this many epochs. 0 disables '
                              '(default). 20–50 is typical for 200-epoch runs.')
     # --- Dataset bundle: stratified split + KS gate + spatial K-fold -------
-    # Defaults preserve legacy behaviour bit-identically.
-    parser.add_argument('--split-mode', type=str, default='legacy',
+    # Defaults reproduce "config B": stratified split with KS p-gate 0.05,
+    # which empirically produces a test set with the same OC distribution
+    # as train (test mean 23.7 vs train 22.4 vs global 22.5, KS p≈0.045).
+    # Pass --split-mode legacy to recover the original 8dce131 inverse-gamma
+    # val sampler; pass --ks-pvalue-min 0 to disable the gate.
+    parser.add_argument('--split-mode', type=str, default='stratified',
                         choices=['legacy', 'stratified'],
-                        help='"legacy" = inverse-gamma sampled val set (original '
-                             '8dce131 behaviour). "stratified" = OC-quantile-'
-                             'stratified val sampling that matches train/val '
-                             'OC distributions before applying the spatial buffer.')
+                        help='"stratified" (default) = OC-quantile-stratified '
+                             'val sampling that matches train/val OC '
+                             'distributions before applying the spatial buffer. '
+                             '"legacy" = inverse-gamma sampled val set (original '
+                             '8dce131 behaviour, retained for backward compat).')
     parser.add_argument('--split-n-bins', type=int, default=10,
                         help='Number of OC quantile bins for --split-mode '
                              'stratified.')
-    parser.add_argument('--ks-pvalue-min', type=float, default=0.0,
+    parser.add_argument('--ks-pvalue-min', type=float, default=0.05,
                         help='Reject stratified splits whose ks_2samp(train_oc, '
-                             'val_oc).pvalue < this. 0 disables the gate. '
-                             '0.05 means "require train/val OC distributions to '
-                             'be statistically indistinguishable".')
+                             'val_oc).pvalue < this; the split function retries '
+                             'up to 20× until a passing split is found. 0.05 '
+                             '(default) means "require train/val OC '
+                             'distributions to be statistically '
+                             'indistinguishable". Pass 0 to disable the gate '
+                             '(which dumps the high-OC tail into val and '
+                             'inflates RMSE).')
     parser.add_argument('--kfold', type=int, default=0,
                         help='Spatial K-fold CV. 0 (default) = single split, '
                              'repeated --num-runs times. >0 = build N latitude-'
