@@ -17,6 +17,7 @@ from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,NUM_EPOCHS_
                    MatrixCoordinates_1mil_Seasonally, DataSeasonally, window_size,
                    file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC, time_before)
 from SimpleTFT import SimpleTFT
+from EnhancedTFT import EnhancedTFT
 import argparse
 from balancedDataset import create_validation_train_sets,create_balanced_dataset
 import uuid
@@ -77,6 +78,14 @@ def parse_args():
     parser.add_argument('--num-runs', type=int, default=5, help='Number of times to run the process')
     parser.add_argument('--hidden_size', type=int, default=hidden_size, help='Hidden size for the model')
     parser.add_argument('--dropout_rate', type=float, default=0.3, help='Dropout rate for the model')
+    # Pick which TFT variant to build:
+    #   small → SimpleTFT  (d_model=128, single transformer layer)       → 360,593 params
+    #   big   → EnhancedTFT (multi-scale CNN num_scales=3, num_heads=4,
+    #                        transformer encoder 3 layers)               → 1,126,417 params
+    parser.add_argument('--model-size', type=str, default='small',
+                        choices=['small', 'big'],
+                        help='TFT variant: "small" = SimpleTFT (360k); '
+                             '"big" = EnhancedTFT multi-scale (1.10M).')
     return parser.parse_args()
 
 def train_model(model, train_loader, val_loader,target_mean,target_std, num_epochs=num_epochs, accelerator=None, lr=0.001,
@@ -490,15 +499,32 @@ if __name__ == "__main__":
         if accelerator.is_main_process:
             print(f"Run {run + 1} Size of the first batch: {first_batch_size}")
 
-        # Initialize model
-        model = SimpleTFT(
-            input_channels=len(bands_list_order),
-            height=window_size,
-            width=window_size,
-            time_steps=time_before,
-            d_model=args.hidden_size
-        )
-        print(" The number of parameters: ",model.count_parameters())
+        # Initialize model — pick SimpleTFT or EnhancedTFT via --model-size.
+        if args.model_size == 'big':
+            # EnhancedTFT: multi-scale CNN (num_scales=3) + 3-layer
+            # transformer encoder + num_heads=4 → 1,126,417 trainable params.
+            # See EnhancedTFT.py for the architecture (matches the
+            # 1.10M target from the historic May 2025 Model A run).
+            model = EnhancedTFT(
+                input_channels=len(bands_list_order),
+                height=window_size,
+                width=window_size,
+                time_steps=time_before,
+                d_model=args.hidden_size,
+                num_heads=4,
+                dropout=args.dropout_rate,
+                num_scales=3,
+            )
+        else:
+            model = SimpleTFT(
+                input_channels=len(bands_list_order),
+                height=window_size,
+                width=window_size,
+                time_steps=time_before,
+                d_model=args.hidden_size
+            )
+        print(f" Model variant: {type(model).__name__} (--model-size={args.model_size});",
+              "parameters:", model.count_parameters())
 
         if accelerator.is_main_process:
             wandb_run.summary["model_parameters"] = model.count_parameters()

@@ -69,7 +69,9 @@ class EnhancedTFT(nn.Module):
             dim_feedforward=256,
             batch_first=True
         )
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=2)
+        # 3 layers (was 2) — brings the --big variant from 993,937 → 1,126,417
+        # trainable params, matching the ~1.10M target from the May 2025 Model A.
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=3)
         
         # Static context enrichment
         self.static_context = nn.Sequential(
