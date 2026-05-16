@@ -471,13 +471,25 @@ def train_model(model, train_loader, val_loader,target_mean,target_std, num_epoc
 
         # Early stopping check (after the LR step so the schedule still
         # advances as recorded in epoch_metrics for any partial run).
-        if early_stop_patience > 0 and use_validation and epochs_since_best >= early_stop_patience:
-            if accelerator is not None and accelerator.is_main_process:
-                print(f"Early stopping at epoch {epoch+1}: "
-                      f"r_squared has not improved for {epochs_since_best} epochs "
-                      f"(patience={early_stop_patience}). Best r_squared = {best_r2:.4f}.",
-                      flush=True)
-            break
+        # CRITICAL: epochs_since_best is only updated on rank 0 (inside the
+        # is_main_process block above), so this decision MUST be broadcast
+        # to all ranks. Otherwise rank 0 breaks out of the epoch loop while
+        # other ranks keep training — causing NCCL allgather timeouts at the
+        # start of the next run's accelerator.prepare(). Use accelerator.gather
+        # to disseminate rank 0's stop decision; non-main ranks contribute 0,
+        # so .any() returns True iff rank 0 decided to stop.
+        if early_stop_patience > 0 and use_validation:
+            stop_t = torch.tensor([0], device=accelerator.device, dtype=torch.int)
+            if accelerator.is_main_process and epochs_since_best >= early_stop_patience:
+                stop_t[0] = 1
+            stop_all = accelerator.gather(stop_t)
+            if stop_all.any().item():
+                if accelerator.is_main_process:
+                    print(f"Early stopping at epoch {epoch+1}: "
+                          f"r_squared has not improved for {epochs_since_best} epochs "
+                          f"(patience={early_stop_patience}). Best r_squared = {best_r2:.4f}.",
+                          flush=True)
+                break
 
     return model, val_outputs, val_targets_list, best_model_state, best_r2, epoch_metrics
 
