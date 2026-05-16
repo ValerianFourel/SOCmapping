@@ -143,6 +143,22 @@ def parse_args():
                              'repeated --num-runs times. >0 = build N latitude-'
                              'decile folds; the outer run loop iterates over '
                              'them, replacing --num-runs.')
+    # --- Train-set rebalancing (per-OC-bin upsampling AFTER the split) -----
+    # Independent dimension from --split-mode/--kfold. Can be enabled with
+    # any split strategy. Default off preserves 8dce131 behaviour: train_df
+    # returned by the split function is used as-is (raw spatial half).
+    parser.add_argument('--rebalance-train', action='store_true', default=False,
+                        help='After the train/val split, upsample the TRAIN set '
+                             'so every OC quantile bin has at least '
+                             '--rebalance-min-ratio × max_bin_count rows '
+                             '(duplicated samples for under-represented bins). '
+                             'Helps the model see high-OC tails more often. '
+                             'Stacks with any --split-mode and with --kfold.')
+    parser.add_argument('--rebalance-min-ratio', type=float, default=0.75,
+                        help='Per-bin floor as fraction of densest bin for '
+                             '--rebalance-train.')
+    parser.add_argument('--rebalance-n-bins', type=int, default=128,
+                        help='Number of OC quantile bins for --rebalance-train.')
     # --- Augmentation bundle (on-the-fly + batch-level) --------------------
     # All defaults disabled. Affects TRAINING samples only; val is deterministic.
     parser.add_argument('--aug-spatial-flip', action='store_true', default=False,
@@ -697,6 +713,23 @@ if __name__ == "__main__":
                     distance_threshold=args.distance_threshold
                 )
             min_distance_stats_all.append(min_distance_stats)
+
+            # Optional: rebalance the (spatial-split) training set by per-OC-bin
+            # upsampling. Stacks with whichever split strategy produced
+            # train_df above — legacy, stratified, or K-fold. Val is never
+            # rebalanced (we evaluate on the natural distribution).
+            if args.rebalance_train:
+                train_df_pre_rebalance = train_df
+                train_df, _ = create_balanced_dataset(
+                    train_df,
+                    n_bins=args.rebalance_n_bins,
+                    min_ratio=args.rebalance_min_ratio,
+                    use_validation=False,
+                )
+                if accelerator.is_main_process:
+                    print(f"Rebalanced train: {len(train_df_pre_rebalance)} → {len(train_df)} rows "
+                          f"(+{len(train_df) - len(train_df_pre_rebalance)} from per-bin oversample; "
+                          f"n_bins={args.rebalance_n_bins}, min_ratio={args.rebalance_min_ratio})")
 
 
         # Create datasets
