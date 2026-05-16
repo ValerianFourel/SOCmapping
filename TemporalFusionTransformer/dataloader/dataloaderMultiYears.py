@@ -301,27 +301,30 @@ class MultiRasterDatasetMultiYears(Dataset):
 
 class NormalizedMultiRasterDatasetMultiYears(MultiRasterDatasetMultiYears):
     """Wrapper around MultiRasterDatasetMultiYears that adds feature normalization
-    and optional on-the-fly augmentation (spatial flip/rotate + temporal dropout).
+    and optional on-the-fly D4 spatial augmentation (hflip + vflip + 90°k rotation).
 
     Augmentation is controlled by .set_augmentation(...) — disabled by default
     so the val/test path stays deterministic. The train.py launcher enables
     augmentation only on the training dataset, not on the val dataset.
+
+    Only spatial-symmetry augmentations are supported because all 6 satellite
+    bands (Elevation, LAI, LST, MODIS_NPP, SoilEvaporation, TotalEvapotranspiration)
+    are scalar radiometric measurements with no inherent direction — D4 transforms
+    of the patch produce physically valid Bavaria-like samples. Temporal dropout
+    and per-sample mixup were removed because they create out-of-distribution
+    feature values (zero-fill ≠ "missing" after normalisation; mixed locations
+    don't correspond to any real terrain).
     """
     def __init__(self, samples_coordinates_array_path, data_array_path, df):
         super().__init__(samples_coordinates_array_path, data_array_path, df)
         self.compute_statistics()
-        # Augmentation defaults — all disabled to preserve original behaviour.
-        # Enable per-instance via set_augmentation().
         self._aug_spatial_flip = False
-        self._aug_temporal_dropout_prob = 0.0
 
-    def set_augmentation(self, spatial_flip=False, temporal_dropout_prob=0.0):
-        """Enable on-the-fly augmentation. Call ONLY on the training dataset.
+    def set_augmentation(self, spatial_flip=False):
+        """Enable on-the-fly D4 spatial augmentation. Call ONLY on the training dataset.
         spatial_flip: when True, each sample is randomly hflip / vflip / 90°k-rotated.
-        temporal_dropout_prob: prob in [0, 1) of zeroing one random timestep per sample.
         """
         self._aug_spatial_flip = bool(spatial_flip)
-        self._aug_temporal_dropout_prob = float(temporal_dropout_prob)
 
     def compute_statistics(self):
         """Compute mean and std across all features for normalization"""
@@ -342,7 +345,8 @@ class NormalizedMultiRasterDatasetMultiYears(MultiRasterDatasetMultiYears):
         # disturbed, and only when explicitly enabled via set_augmentation().
         # features shape (post-permute in parent __getitem__): (C, H, W, T).
         if self._aug_spatial_flip:
-            # 8-way dihedral group: horizontal flip × vertical flip × 90°k rotation.
+            # 8-way dihedral D4 group: horizontal flip × vertical flip × 90°k rotation.
+            # Safe for all 6 scalar satellite bands (no directional information).
             if torch.rand(1).item() < 0.5:
                 features = torch.flip(features, dims=[1])  # H flip
             if torch.rand(1).item() < 0.5:
@@ -350,13 +354,6 @@ class NormalizedMultiRasterDatasetMultiYears(MultiRasterDatasetMultiYears):
             k = int(torch.randint(0, 4, (1,)).item())
             if k:
                 features = torch.rot90(features, k=k, dims=(1, 2))
-        if self._aug_temporal_dropout_prob > 0.0 and self.time_before > 1:
-            # With probability p, drop ONE random timestep (set to zero across
-            # all channels and spatial positions).
-            if torch.rand(1).item() < self._aug_temporal_dropout_prob:
-                t_drop = int(torch.randint(0, self.time_before, (1,)).item())
-                features = features.clone()
-                features[..., t_drop] = 0.0
         return longitude, latitude, features, target
 
     def get_statistics(self):
