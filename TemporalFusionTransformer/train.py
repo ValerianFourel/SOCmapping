@@ -501,10 +501,11 @@ if __name__ == "__main__":
 
         # Initialize model — pick SimpleTFT or EnhancedTFT via --model-size.
         if args.model_size == 'big':
-            # EnhancedTFT: multi-scale CNN (num_scales=3) + 3-layer
-            # transformer encoder + num_heads=4 → 1,126,417 trainable params.
-            # See EnhancedTFT.py for the architecture (matches the
-            # 1.10M target from the historic May 2025 Model A run).
+            # EnhancedTFT (single-scale CNN + GRN blocks + 3-layer transformer
+            # encoder + expansion_factor=4) → 1,120,546 trainable params. This
+            # is the architecture of the historic Model A v2 saved checkpoint
+            # at residualModels1mil_normalize_composite_l2_v2 (R²=0.6909):
+            # load_state_dict on that .pth gives 0 missing / 0 unexpected keys.
             model = EnhancedTFT(
                 input_channels=len(bands_list_order),
                 height=window_size,
@@ -513,7 +514,8 @@ if __name__ == "__main__":
                 d_model=args.hidden_size,
                 num_heads=4,
                 dropout=args.dropout_rate,
-                num_scales=3,
+                num_encoder_layers=3,
+                expansion_factor=4,
             )
         else:
             model = SimpleTFT(
