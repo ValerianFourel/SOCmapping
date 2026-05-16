@@ -45,25 +45,43 @@ def composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
     return alpha * l1_loss + (1 - alpha) * chi2_scaled
 
 
-def composite_l2_chi2_loss(outputs, targets, sigma=3.0, alpha=0.5):
-    """Composite loss combining L2 and scaled chi-squared loss"""
+# NB: composite_l2_chi2_loss has been REWRITTEN. The previous version
+# auto-rescaled the chi² term by `scale_factor = L2 / (MSE/sigma²) = sigma²`,
+# which cancels the 1/sigma² in chi² → final L = α·MSE + (1−α)·MSE = MSE.
+# alpha and sigma were dead-code. The version below replaces that with a
+# real Pearson/Neyman chi² in g/kg space (via neyman_chi2_loss), weighted
+# by an explicit `chi2_weight` so the user can keep the natural scale of
+# each term and tune the blend deterministically.
+def composite_l2_chi2_loss(outputs, targets,
+                            target_mean=0.0, target_std=1.0,
+                            target_transform='normalize',
+                            alpha=0.5, chi2_weight=1.0, chi2_eps=1.0,
+                            return_components=False):
+    """L = α · MSE(z-space)  +  (1 − α) · chi2_weight · χ²(g/kg-space).
+
+    The MSE term is computed in whatever space the model trains in
+    (typically z-score normalized), keeping it cheap and well-conditioned.
+    The χ² term inverse-transforms predictions back to OC g/kg first
+    (delegated to neyman_chi2_loss), so it's a real Pearson statistic
+    rather than a rescaled MSE.
+
+    Because the two terms have different natural magnitudes (MSE in
+    z-space ≈ 1, χ² in g/kg-space ≈ err²/y_true ≈ 8-10 for OC), the
+    blend depends on chi2_weight. Defaults give roughly equal gradient
+    contribution after the first few batches if you use --diagnose-loss
+    to print components on batch 0 and pick chi2_weight = MSE/χ².
+
+    alpha=0 reduces to chi², alpha=1 reduces to MSE (sanity boundaries).
+    """
     errors = targets - outputs
-
-    # L2 loss: mean squared error
-    l2_loss = torch.mean(errors ** 2)
-
-    # Standard chi-squared loss: errors^2 / sigma^2
-    chi2_loss = torch.mean((errors ** 2) / (sigma ** 2))
-
-    # Ensure chi2_loss is not too small to avoid division issues
-    chi2_loss = torch.clamp(chi2_loss, min=1e-8)
-
-    # Scale chi2_loss to match the magnitude of l2_loss
-    scale_factor = l2_loss / chi2_loss
-    chi2_scaled = scale_factor * chi2_loss
-
-    # Combine the losses with the weighting factor alpha
-    return alpha * l2_loss + (1 - alpha) * chi2_scaled
+    l2_term = torch.mean(errors ** 2)
+    chi2_term = neyman_chi2_loss(outputs, targets, target_mean, target_std,
+                                  target_transform=target_transform,
+                                  eps=chi2_eps)
+    total = alpha * l2_term + (1 - alpha) * chi2_weight * chi2_term
+    if return_components:
+        return total, l2_term.detach(), chi2_term.detach()
+    return total
 
 
 def neyman_chi2_loss(outputs, targets, target_mean, target_std,
@@ -116,15 +134,32 @@ def parse_args():
     parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of transformer layers')
     parser.add_argument('--loss_type', type=str, default='l1',
                         choices=['composite_l1', 'l1', 'mse', 'composite_l2', 'chi2'],
-                        help='Loss function. "chi2" = Neyman chi-squared in g/kg '
-                             'units (real Pearson χ² = Σ (y_pred-y_true)²/y_true). '
-                             'The two composite_* are blends of L1/L2 with a '
-                             'rescaled squared error and are NOT real χ².')
-    parser.add_argument('--loss_alpha', type=float, default=0.5, help='Weight for L1 loss in composite loss (if used)')
+                        help='Loss function. "chi2" = real Neyman chi-squared '
+                             'in g/kg units (Σ (y_pred-y_true)²/y_true). '
+                             '"composite_l2" = α·MSE(z-space) + (1-α)·'
+                             '--chi2-weight · χ²(g/kg). "composite_l1" is the '
+                             'legacy L1+exp-weighted-square blend (kept for '
+                             'backward compat).')
+    parser.add_argument('--loss_alpha', type=float, default=0.5,
+                        help='Mixing weight for composite_* losses. '
+                             'For composite_l2: alpha=1 → pure MSE, alpha=0 '
+                             '→ pure χ². Default 0.5 = equal blend (in terms '
+                             'of contribution after --chi2-weight scaling).')
     parser.add_argument('--chi2-eps', type=float, default=1.0,
-                        help='Denominator floor for --loss_type chi2 (g/kg). '
-                             '1.0 is sane for OC; lower destabilizes on near-'
-                             'zero targets; higher damps the χ² effect.')
+                        help='Denominator floor for χ² (g/kg). Used by both '
+                             '--loss_type chi2 and the χ² half of '
+                             '--loss_type composite_l2. 1.0 is sane for OC.')
+    parser.add_argument('--chi2-weight', type=float, default=0.1,
+                        help='Multiplier on the χ² term inside composite_l2. '
+                             'Natural-scale χ² (g/kg) is ~8-10× MSE (z-space) '
+                             'for OC, so 0.1 (default) brings them to roughly '
+                             'equal magnitude. Use --diagnose-loss to print '
+                             'both components on batch 0 and tune empirically.')
+    parser.add_argument('--diagnose-loss', action='store_true', default=False,
+                        help='On the first training batch of run 1, print the '
+                             'natural magnitude of every loss component so the '
+                             'user can pick --chi2-weight / --loss_alpha. '
+                             'Adds one extra forward pass; otherwise no cost.')
     parser.add_argument('--target_transform', type=str, default='normalize', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
     parser.add_argument('--use_validation', action='store_true', default=False, help='Whether to use validation set')
     parser.add_argument('--output-dir', type=str, default='output', help='Output directory')
@@ -315,12 +350,18 @@ def train_model(model, train_loader, val_loader,target_mean,target_std, num_epoc
                 loss_type='l1', loss_alpha=0.5, target_transform='none', min_r2=0.5, use_validation=True,
                 lr_scheduler='none', lr_min=1e-6, lr_warmup_epochs=20, lr_warmup_start_factor=0.01,
                 grad_clip=0.0, weight_decay=0.0, early_stop_patience=0,
-                tta=False, chi2_eps=1.0):
+                tta=False, chi2_eps=1.0, chi2_weight=0.1, diagnose_loss=False):
     # Define loss function based on loss_type
     if loss_type == 'composite_l1':
         criterion = lambda outputs, targets: composite_l1_chi2_loss(outputs, targets, sigma=3.0, alpha=loss_alpha)
     elif loss_type == 'composite_l2':
-        criterion = lambda outputs, targets: composite_l2_chi2_loss(outputs, targets, sigma=3.0, alpha=loss_alpha)
+        # Proper L2 + Pearson χ² composite. The legacy auto-rescaling was
+        # algebraically identical to MSE; replaced with explicit chi2_weight.
+        criterion = lambda outputs, targets: composite_l2_chi2_loss(
+            outputs, targets,
+            target_mean=target_mean, target_std=target_std,
+            target_transform=target_transform,
+            alpha=loss_alpha, chi2_weight=chi2_weight, chi2_eps=chi2_eps)
     elif loss_type == 'l1':
         criterion = nn.L1Loss()
     elif loss_type == 'mse':
@@ -417,6 +458,25 @@ def train_model(model, train_loader, val_loader,target_mean,target_std, num_epoc
             optimizer.zero_grad()
             outputs = model(features)
             loss = criterion(outputs, targets)
+            # One-shot loss-component diagnostic on the very first batch.
+            # Prints natural magnitudes of each loss term so the user can
+            # tune --chi2-weight / --loss_alpha. After this batch the flag
+            # auto-clears so it costs nothing for the rest of training.
+            if diagnose_loss and epoch == 0 and batch_idx == 0 and accelerator.is_main_process:
+                with torch.no_grad():
+                    l1_mag  = torch.mean(torch.abs(outputs - targets)).item()
+                    l2_mag  = torch.mean((outputs - targets) ** 2).item()
+                    chi2_mag = neyman_chi2_loss(outputs, targets, target_mean, target_std,
+                                                 target_transform=target_transform,
+                                                 eps=chi2_eps).item()
+                    print(f"\n[diagnose-loss] batch 0 component magnitudes:")
+                    print(f"  L1 (transform space):        {l1_mag:.4f}")
+                    print(f"  L2 / MSE (transform space):  {l2_mag:.4f}")
+                    print(f"  Neyman χ² (g/kg space):      {chi2_mag:.4f}")
+                    print(f"  → for composite_l2 to balance L2 and χ² ~equally,")
+                    print(f"    use --chi2-weight ≈ {l2_mag/max(chi2_mag,1e-9):.4f}")
+                    print(f"    (current --chi2-weight = {chi2_weight})\n")
+                diagnose_loss = False  # local var; suppresses on subsequent batches
             accelerator.backward(loss)
             # Gradient clipping (disabled when grad_clip == 0).
             # accelerator.clip_grad_norm_ unscales mixed-precision grads first
@@ -991,6 +1051,8 @@ if __name__ == "__main__":
             early_stop_patience=args.early_stop_patience,
             tta=args.tta,
             chi2_eps=args.chi2_eps,
+            chi2_weight=args.chi2_weight,
+            diagnose_loss=args.diagnose_loss,
         )
 
         # Store metrics
