@@ -394,8 +394,20 @@ def create_stratified_validation_train_sets(df=None,
         'std':    float(np.std(valid_dists))    if len(valid_dists) else float('nan'),
     }
 
-    val_df.to_parquet(Path(output_dir) / 'final_validation_df.parquet')
-    train_df.to_parquet(Path(output_dir) / 'final_training_df.parquet')
+    # pyarrow refuses to write object-dtype columns with mixed Python types
+    # (e.g. POINTID can be int in some rows, str in others after the
+    # concat/loc indexing). Coerce all object-dtype columns to str just
+    # for the parquet dump; the in-memory dataframes returned to the caller
+    # keep their original dtypes.
+    def _safe_to_parquet(df, path):
+        df_out = df.copy()
+        for col in df_out.columns:
+            if df_out[col].dtype == 'object':
+                df_out[col] = df_out[col].astype(str)
+        df_out.to_parquet(path)
+
+    _safe_to_parquet(val_df,   Path(output_dir) / 'final_validation_df.parquet')
+    _safe_to_parquet(train_df, Path(output_dir) / 'final_training_df.parquet')
     print(f"Stratified split: val n={len(val_df)} train n={len(train_df)} "
           f"KS stat={ks_stat:.4f} p={ks_pvalue:.4f}  bins={len(unique_bins)}")
     return val_df, train_df, min_distance_stats
