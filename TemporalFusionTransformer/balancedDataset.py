@@ -284,6 +284,19 @@ def create_validation_train_sets(df=None, output_dir='output', target_val_ratio=
 #   • Spatial buffer: same haversine + distance_threshold check as the
 #     legacy function.
 # ---------------------------------------------------------------------------
+def _kde_mode(values, lo=0.0, hi=60.0, n=300, bw=0.15):
+    """OC mode via Gaussian KDE on a fixed grid. Fixed-bw for cross-split
+    comparability (Scott would differ between train and test by ~10%)."""
+    from scipy.stats import gaussian_kde
+    v = np.asarray(values, dtype=float)
+    v = v[np.isfinite(v)]
+    if len(v) < 2:
+        return float('nan')
+    k = gaussian_kde(v, bw_method=bw)
+    g = np.linspace(lo, hi, n)
+    return float(g[int(np.argmax(k(g)))])
+
+
 def create_stratified_validation_train_sets(df=None,
                                              output_dir='output',
                                              target_val_ratio=0.08,
@@ -292,7 +305,10 @@ def create_stratified_validation_train_sets(df=None,
                                              n_bins=10,
                                              ks_pvalue_min=0.0,
                                              max_retries=20,
-                                             seed=None):
+                                             seed=None,
+                                             mean_tol=None,
+                                             std_tol=None,
+                                             mode_tol=None):
     """Stratified-spatial train/val split with optional KS-pvalue gate.
 
     Parameters
@@ -313,6 +329,24 @@ def create_stratified_validation_train_sets(df=None,
         How many resamples to attempt before giving up.
     seed : int or None
         Base seed; each retry uses seed + retry_idx.
+    mean_tol : float or None
+        Max allowed |mean_train - mean_test| / mean_global. None disables.
+        0.02 means "test mean within 2% of train mean".
+    std_tol : float or None
+        Max allowed |std_train - std_test| / std_global. None disables.
+        0.05 means "test std within 5% of train std".
+    mode_tol : float or None
+        Max allowed |mode_train - mode_test| in raw OC units (g/kg). None
+        disables. 1.0 means "test KDE-mode within 1 g/kg of train mode".
+        Modes are computed via a fixed-bandwidth KDE for cross-split
+        comparability.
+
+    When mean/std/mode tolerances are given, the retry loop scores each
+    candidate split by a composite metric (sum of normalized squared
+    diffs). It accepts the first split that meets ALL gates (KS + the
+    three tolerances), otherwise it returns the lowest-score split across
+    all retries — so behaviour degrades gracefully on hard cases instead
+    of throwing.
 
     Returns
     -------
@@ -347,8 +381,20 @@ def create_stratified_validation_train_sets(df=None,
     # the target eventually. Behaviour matches the legacy create_validation_
     # train_sets adaptive loop except it uses OC-quantile stratification
     # instead of inverse-gamma weighting.
+    # Composite scoring across retries.
+    #   - KS p ≥ ks_pvalue_min                                   (hard gate)
+    #   - |mean_train - mean_test| / mean_global ≤ mean_tol      (optional)
+    #   - |std_train  - std_test|  / std_global  ≤ std_tol       (optional)
+    #   - |mode_train - mode_test|               ≤ mode_tol      (optional, g/kg)
+    # Accept-and-break the first retry that satisfies ALL active gates.
+    # Else, return the lowest-composite-score split across all retries
+    # (graceful degradation). The composite score is the sum of normalized
+    # squared diffs, so the "least bad" split wins when no split passes.
+    global_mean = float(df['OC'].mean())
+    global_std  = float(df['OC'].std())
+    global_mode = _kde_mode(df['OC'].values)
     best_result = None
-    best_pvalue = -1.0
+    best_score = float('inf')
     for retry in range(max(1, max_retries)):
         rng = np.random.default_rng((seed or 0) + retry)
         # Grow oversample with each retry: 4× target, 5×, 6×, ... Capped at
@@ -425,24 +471,56 @@ def create_stratified_validation_train_sets(df=None,
         if len(val_df) < 5 or len(train_df) < 5:
             continue
 
-        # KS test on OC distributions
+        # KS + mean/std/mode gates
         ks_stat, ks_pvalue = stats.ks_2samp(train_df['OC'].values, val_df['OC'].values)
         result_dists = np.array(final_val_dists_list)
-        if ks_pvalue >= ks_pvalue_min:
-            best_result = (val_df, train_df, ks_stat, ks_pvalue, result_dists)
-            break  # accept this split
-        if ks_pvalue > best_pvalue:
-            best_pvalue = ks_pvalue
-            best_result = (val_df, train_df, ks_stat, ks_pvalue, result_dists)
+        mean_diff = abs(train_df['OC'].mean() - val_df['OC'].mean()) / max(global_mean, 1e-9)
+        std_diff  = abs(train_df['OC'].std()  - val_df['OC'].std())  / max(global_std,  1e-9)
+        if mode_tol is not None:
+            mode_train = _kde_mode(train_df['OC'].values)
+            mode_val   = _kde_mode(val_df['OC'].values)
+            mode_diff  = abs(mode_train - mode_val)
+        else:
+            mode_train = mode_val = mode_diff = float('nan')
+        # Composite score (lower=better). Normalize each diff by its tol so
+        # the three contribute comparably. If a tol is None, term is 0.
+        score = 0.0
+        if mean_tol is not None: score += (mean_diff / max(mean_tol, 1e-9)) ** 2
+        if std_tol  is not None: score += (std_diff  / max(std_tol,  1e-9)) ** 2
+        if mode_tol is not None: score += (mode_diff / max(mode_tol, 1e-9)) ** 2
+        # Hard-gate: all active tolerances must pass
+        passed = ks_pvalue >= ks_pvalue_min
+        if mean_tol is not None: passed = passed and mean_diff <= mean_tol
+        if std_tol  is not None: passed = passed and std_diff  <= std_tol
+        if mode_tol is not None: passed = passed and mode_diff <= mode_tol
+        if passed:
+            best_result = (val_df, train_df, ks_stat, ks_pvalue, result_dists,
+                           mean_diff, std_diff, mode_diff, mode_train, mode_val)
+            break
+        if score < best_score:
+            best_score = score
+            best_result = (val_df, train_df, ks_stat, ks_pvalue, result_dists,
+                           mean_diff, std_diff, mode_diff, mode_train, mode_val)
 
     if best_result is None:
         raise RuntimeError("Stratified split failed to produce any valid (val, train) pair.")
 
-    val_df, train_df, ks_stat, ks_pvalue, val_min_dists = best_result
+    (val_df, train_df, ks_stat, ks_pvalue, val_min_dists,
+     mean_diff, std_diff, mode_diff, mode_train, mode_val) = best_result
     if ks_pvalue < ks_pvalue_min:
         logger.warning(
             f"Stratified split: best KS p-value {ks_pvalue:.4f} < gate {ks_pvalue_min}; "
             f"using best of {max_retries} attempts anyway.")
+    # Log all match metrics so the user can see how tight the final split is
+    msg_bits = [f"KS p={ks_pvalue:.4f} (gate {ks_pvalue_min})",
+                f"mean_diff={mean_diff*100:.2f}%"]
+    if mean_tol is not None: msg_bits[-1] += f" (tol {mean_tol*100:.1f}%)"
+    msg_bits.append(f"std_diff={std_diff*100:.2f}%")
+    if std_tol is not None:  msg_bits[-1] += f" (tol {std_tol*100:.1f}%)"
+    if mode_tol is not None:
+        msg_bits.append(f"mode train={mode_train:.2f} test={mode_val:.2f} "
+                        f"diff={mode_diff:.3f}g/kg (tol {mode_tol:.2f})")
+    print(f"Stratified split match metrics: " + " | ".join(msg_bits))
 
     valid_dists = val_min_dists[~np.isinf(val_min_dists) & ~np.isnan(val_min_dists)]
     min_distance_stats = {

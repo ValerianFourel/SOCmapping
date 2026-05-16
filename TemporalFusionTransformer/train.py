@@ -80,7 +80,15 @@ def parse_args():
                         help='Target validation/test ratio. Default 0.10 = 10% '
                              'held out (~1,651 of 16,514 Bavaria points).')
     parser.add_argument('--use-gpu', action='store_true', default=True, help='Use GPU')
-    parser.add_argument('--distance-threshold', type=float, default=1.2, help='Minimum distance threshold for validation points')
+    parser.add_argument('--distance-threshold', type=float, default=0.5,
+                        help='Minimum km between any test point and its nearest '
+                             'train point. Default 0.5 km is enough to prevent '
+                             'same-pixel leakage on a 250m raster (2 pixels '
+                             'apart) while leaving the algorithm enough degrees '
+                             'of freedom to match train/test OC distributions. '
+                             'The historical 1.2 km buffer is so strict that '
+                             'only spatially-isolated high-OC points qualify, '
+                             'which forces a biased test set.')
     parser.add_argument('--target-fraction', type=float, default=0.75, help='Fraction of max bin count for resampling')
     parser.add_argument('--num-runs', type=int, default=5, help='Number of times to run the process')
     parser.add_argument('--hidden_size', type=int, default=hidden_size, help='Hidden size for the model')
@@ -143,12 +151,30 @@ def parse_args():
     parser.add_argument('--ks-pvalue-min', type=float, default=0.05,
                         help='Reject stratified splits whose ks_2samp(train_oc, '
                              'val_oc).pvalue < this; the split function retries '
-                             'up to 20× until a passing split is found. 0.05 '
-                             '(default) means "require train/val OC '
-                             'distributions to be statistically '
-                             'indistinguishable". Pass 0 to disable the gate '
-                             '(which dumps the high-OC tail into val and '
-                             'inflates RMSE).')
+                             'until a passing split is found. 0.05 (default) '
+                             'means "require train/val OC distributions to be '
+                             'statistically indistinguishable". Pass 0 to '
+                             'disable.')
+    # --- Strict per-stat tolerances on top of the KS gate ------------------
+    # These let the user demand "same mean, same std, same mode" between
+    # train and test (not just "KS doesn't detect a difference"). When all
+    # active gates pass, the retry loop breaks; otherwise the lowest-score
+    # split across all retries is returned (graceful degradation).
+    parser.add_argument('--match-mean-tol', type=float, default=0.02,
+                        help='Max |mean_train-mean_test|/mean_global. Default '
+                             '0.02 = 2%%. Pass 0 to disable this gate (only '
+                             'KS / std / mode gates apply).')
+    parser.add_argument('--match-std-tol', type=float, default=0.05,
+                        help='Max |std_train-std_test|/std_global. Default '
+                             '0.05 = 5%%. Pass 0 to disable.')
+    parser.add_argument('--match-mode-tol', type=float, default=1.0,
+                        help='Max |mode_train-mode_test| in g/kg, where mode '
+                             'is the argmax of a fixed-bandwidth Gaussian KDE '
+                             'on [0,60]. Default 1.0 g/kg. Pass 0 to disable.')
+    parser.add_argument('--split-max-retries', type=int, default=100,
+                        help='Retry budget for the stratified split (raised '
+                             'from the historical 20 so the tighter tolerances '
+                             'have room to find a passing split).')
     parser.add_argument('--kfold', type=int, default=0,
                         help='Spatial K-fold CV. 0 (default) = single split, '
                              'repeated --num-runs times. >0 = build N latitude-'
@@ -748,6 +774,10 @@ if __name__ == "__main__":
                     n_bins=args.split_n_bins,
                     ks_pvalue_min=args.ks_pvalue_min,
                     seed=42 + run,
+                    mean_tol=args.match_mean_tol if args.match_mean_tol > 0 else None,
+                    std_tol=args.match_std_tol  if args.match_std_tol  > 0 else None,
+                    mode_tol=args.match_mode_tol if args.match_mode_tol > 0 else None,
+                    max_retries=args.split_max_retries,
                 )
             else:
                 val_df, train_df, min_distance_stats = create_validation_train_sets(
