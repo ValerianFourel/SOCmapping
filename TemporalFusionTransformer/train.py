@@ -315,7 +315,8 @@ def train_model(model, train_loader, val_loader,target_mean,target_std, num_epoc
                 wandb.log({
                     'train_loss': loss.item(),
                     'batch': batch_idx + 1 + epoch * len(train_loader),
-                    'epoch': epoch + 1
+                    'epoch': epoch + 1,
+                    'lr': optimizer.param_groups[0]['lr'],
                 })
 
         train_loss = running_loss / len(train_loader)
@@ -429,6 +430,7 @@ def train_model(model, train_loader, val_loader,target_mean,target_std, num_epoc
             rpiq = float('nan')
 
         if accelerator.is_main_process:
+            current_lr = optimizer.param_groups[0]['lr']
             log_dict = {
                 'epoch': epoch + 1,
                 'train_loss_avg': train_loss,
@@ -439,7 +441,8 @@ def train_model(model, train_loader, val_loader,target_mean,target_std, num_epoc
                 'mse': mse,
                 'rmse': rmse,
                 'mae': mae,
-                'rpiq': rpiq
+                'rpiq': rpiq,
+                'lr': current_lr,
             }
             wandb.log(log_dict)
             epoch_metrics.append(log_dict)
