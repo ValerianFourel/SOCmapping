@@ -584,7 +584,20 @@ if __name__ == "__main__":
     if not args.use_validation:
         args.num_runs = 1
         num_epochs = NUM_EPOCHS_RUN
-    accelerator = Accelerator()
+    # LayerDrop / stochastic depth means each rank may skip different transformer
+    # encoder layers per batch, so the skipped layers' params get no gradient on
+    # one rank while contributing on another — DDP raises
+    #   "Expected to have finished reduction in the prior iteration before
+    #    starting a new one. … Parameter indices which did not receive grad…"
+    # The PyTorch-documented fix is to pass find_unused_parameters=True to DDP.
+    # We only enable it when LayerDrop is actually on (it adds ~5% DDP overhead
+    # per backward).
+    if args.layer_drop_prob > 0:
+        from accelerate.utils import DistributedDataParallelKwargs
+        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+        accelerator = Accelerator(kwargs_handlers=[ddp_kwargs])
+    else:
+        accelerator = Accelerator()
 
     # Pre-compute spatial K-fold splits if requested. Each fold = one
     # (val_df, train_df, dist_stats, fold_meta) tuple; the outer run loop
