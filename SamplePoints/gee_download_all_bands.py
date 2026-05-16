@@ -49,9 +49,23 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
-# Bavaria area of interest (degrees, WGS84) — slightly buffered
+# AOI matches the EXISTING 12-tile layout in
+#   Data/RasterTensorData/StaticValue/Elevation/IDxN..S..W..E..npy
+# decoded by parsing the filenames. Each tile is 1.7986° × 1.7986°,
+# 3 lat-rows × 4 lon-cols, total envelope:
+#   N = 52.1028   S = 46.7109   W = 7.1864   E = 14.3750
+# This buffers the actual Bavaria GPS extent (lon 8.0-13.9, lat 47.2-50.6)
+# from the 1.3 M reference grid `Coordinates1Mil/coordinates_Bavaria_1mil.csv`.
+# Keep the buffer so downstream samplePoints projection can place LUCAS
+# points near the Bavaria edge without falling off a tile.
 # ---------------------------------------------------------------------------
-BAVARIA_BBOX = [8.8, 47.2, 14.0, 50.6]   # [W, S, E, N]
+BAVARIA_BBOX = [7.1864, 46.7109, 14.3750, 52.1028]   # [W, S, E, N]
+# Tile grid (3 rows × 4 cols), W-edge longitudes and N-edge latitudes
+# of each row/col. Used by the tile-cutter to slice downloaded GeoTIFFs.
+TILE_LAT_NORTH = [48.5095, 50.3062, 52.1028]   # N edge of each lat-row
+TILE_LON_WEST  = [7.1864,  8.9831, 10.7797, 12.5763]  # W edge of each lon-col
+TILE_DEG       = 1.7986   # tile width = height in degrees
+TILE_PX        = 979      # pixels per tile side (matches existing rasters)
 
 
 # ---------------------------------------------------------------------------
