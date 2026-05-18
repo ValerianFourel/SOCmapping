@@ -23,8 +23,10 @@ bands_list_order = [
     'Slope', 'Aspect', 'TWI',
 ]
 MAX_OC = 150
-num_epochs = 200
-save_path_predictions_plots = '/home/vfourel/SOCProject/SOCmapping/predictions_plots/3dcnn_plots'
+num_epochs = 250 # 200 for training 
+NUM_EPOCHS_RUN = 16
+
+save_path_predictions_plots = '/home/vfourel/SOCProject/SOCmapping/predictions_plots/Resnet2dcnn_plots'
 file_path_coordinates_Bavaria_1mil = "/home/vfourel/SOCProject/SOCmapping/Data/Coordinates1Mil/coordinates_Bavaria_1mil.csv"
 
 PICTURE_VERSION = f"{str(num_epochs)}_{str(MAX_OC)}_{INFERENCE_TIME}_version"

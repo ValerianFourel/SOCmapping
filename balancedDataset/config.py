@@ -1,13 +1,6 @@
 
 
-# Path resolution — env-var-overridable, walk-up fallback. See SOCmapping/_paths.py.
-import os as _os
-import sys as _sys
-from pathlib import Path as _Path
-_sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
-from _paths import SOC_DATA_DIR_STR as _SOC_DATA_DIR_STR  # noqa: E402
-
-base_path_data = _SOC_DATA_DIR_STR
+base_path_data = '/home/vfourel/SOCProject/SOCmapping/Data'
 
 file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC = f"{base_path_data}/LUCAS_LFU_Lfl_00to23_Bavaria_OC.xlsx"
 
@@ -18,21 +11,23 @@ TIME_BEGINNING = '2007'
 LOADING_TIME_BEGINNING = str(int(TIME_BEGINNING)-time_before)
 TIME_END = '2023'
 INFERENCE_TIME = '2015'
-bands_list_order = ['Elevation','LAI','LST','MODIS_NPP','SoilEvaporation','TotalEvapotranspiration']
+bands_list_order = [
+    # Original 6 — DO NOT REORDER (saved 6-channel checkpoints rely on this order).
+    'Elevation', 'LAI', 'LST', 'MODIS_NPP', 'SoilEvaporation', 'TotalEvapotranspiration',
+    # Bavaria 2002-2023 expansion (14 appended; statics symlinked-as-yearly).
+    'NDVI', 'EVI', 'Precipitation', 'AirTemperature', 'SoilMoisture_layer1', 'SnowDepth',
+    'ClayContent_0_10cm', 'SandContent_0_10cm', 'pH_H2O_0_10cm',
+    'BulkDensity_0_10cm',
+    'CEC_0_10cm',
+    'Slope', 'Aspect', 'TWI',
+]
 MAX_OC = 150
 num_epochs = 100
 LOADING_TIME_BEGINNING_INFERENCE = str(int(INFERENCE_TIME)-time_before)
 NUM_LAYERS = 2
-NUM_HEADS = 8
-
-save_path_predictions_plots = _os.environ.get(
-    'SOC_PREDICTIONS_PLOTS_DIR',
-    f"{base_path_data}/../predictions_plots/simpleTransformer_plots",
-)
-file_path_coordinates_Bavaria_1mil = _os.environ.get(
-    'SOC_COORDS_1MIL_CSV',
-    f"{base_path_data}/Coordinates1Mil/coordinates_Bavaria_1mil.csv",
-)
+NUM_HEADS = 8 
+save_path_predictions_plots = '/home/vfourel/SOCProject/SOCmapping/predictions_plots/simpleTransformer_plots'
+file_path_coordinates_Bavaria_1mil = "/home/vfourel/SOCProject/SOCmapping/Data/Coordinates1Mil/coordinates_Bavaria_1mil.csv"
 PICTURE_VERSION = f"{str(num_epochs)}_{str(MAX_OC)}_{INFERENCE_TIME}_version"
 
 
@@ -89,6 +84,60 @@ SoilEvaporationTensorDataYearly = f'{base_path_data}/RasterTensorData/YearlyValu
 TotalEvapotranspirationTensorDataYearly = f'{base_path_data}/RasterTensorData/YearlyValue/TotalEvapotranspiration'
 
 DataYearly = [elevationTensorData , LAITensorDataYearly , LSTTensorDataYearly, MODIS_NPPTensorDataYearly, SoilEvaporationTensorDataYearly, TotalEvapotranspirationTensorDataYearly ]
+
+# ---------------------------------------------------------------------------
+# Bavaria 2002-2023 expansion — 14 bands appended to bands_list_order.
+# All under YearlyValue/<band>/<year>/ on disk (statics symlinked).
+# ---------------------------------------------------------------------------
+NDVIBandMatrixCoordinates_Yearly                = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates_v2/YearlyValue/NDVI'
+EVIBandMatrixCoordinates_Yearly                 = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates_v2/YearlyValue/EVI'
+PrecipitationBandMatrixCoordinates_Yearly       = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates_v2/YearlyValue/Precipitation'
+AirTemperatureBandMatrixCoordinates_Yearly      = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates_v2/YearlyValue/AirTemperature'
+SoilMoisture_layer1BandMatrixCoordinates_Yearly = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates_v2/YearlyValue/SoilMoisture_layer1'
+SnowDepthBandMatrixCoordinates_Yearly           = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates_v2/YearlyValue/SnowDepth'
+ClayContent_0_10cmBandMatrixCoordinates_Yearly  = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates_v2/YearlyValue/ClayContent_0_10cm'
+SandContent_0_10cmBandMatrixCoordinates_Yearly  = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates_v2/YearlyValue/SandContent_0_10cm'
+pH_H2O_0_10cmBandMatrixCoordinates_Yearly       = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates_v2/YearlyValue/pH_H2O_0_10cm'
+BulkDensity_0_10cmBandMatrixCoordinates_Yearly  = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates_v2/YearlyValue/BulkDensity_0_10cm'
+CEC_0_10cmBandMatrixCoordinates_Yearly          = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates_v2/YearlyValue/CEC_0_10cm'
+SlopeBandMatrixCoordinates_Yearly               = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates_v2/YearlyValue/Slope'
+AspectBandMatrixCoordinates_Yearly              = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates_v2/YearlyValue/Aspect'
+TWIBandMatrixCoordinates_Yearly                 = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates_v2/YearlyValue/TWI'
+
+NDVITensorDataYearly                = f'{base_path_data}/RasterTensorData/YearlyValue/NDVI'
+EVITensorDataYearly                 = f'{base_path_data}/RasterTensorData/YearlyValue/EVI'
+PrecipitationTensorDataYearly       = f'{base_path_data}/RasterTensorData/YearlyValue/Precipitation'
+AirTemperatureTensorDataYearly      = f'{base_path_data}/RasterTensorData/YearlyValue/AirTemperature'
+SoilMoisture_layer1TensorDataYearly = f'{base_path_data}/RasterTensorData/YearlyValue/SoilMoisture_layer1'
+SnowDepthTensorDataYearly           = f'{base_path_data}/RasterTensorData/YearlyValue/SnowDepth'
+ClayContent_0_10cmTensorDataYearly  = f'{base_path_data}/RasterTensorData/YearlyValue/ClayContent_0_10cm'
+SandContent_0_10cmTensorDataYearly  = f'{base_path_data}/RasterTensorData/YearlyValue/SandContent_0_10cm'
+pH_H2O_0_10cmTensorDataYearly       = f'{base_path_data}/RasterTensorData/YearlyValue/pH_H2O_0_10cm'
+BulkDensity_0_10cmTensorDataYearly  = f'{base_path_data}/RasterTensorData/YearlyValue/BulkDensity_0_10cm'
+CEC_0_10cmTensorDataYearly          = f'{base_path_data}/RasterTensorData/YearlyValue/CEC_0_10cm'
+SlopeTensorDataYearly               = f'{base_path_data}/RasterTensorData/YearlyValue/Slope'
+AspectTensorDataYearly              = f'{base_path_data}/RasterTensorData/YearlyValue/Aspect'
+TWITensorDataYearly                 = f'{base_path_data}/RasterTensorData/YearlyValue/TWI'
+
+SamplesCoordinates_Yearly = SamplesCoordinates_Yearly + [
+    NDVIBandMatrixCoordinates_Yearly, EVIBandMatrixCoordinates_Yearly,
+    PrecipitationBandMatrixCoordinates_Yearly, AirTemperatureBandMatrixCoordinates_Yearly,
+    SoilMoisture_layer1BandMatrixCoordinates_Yearly, SnowDepthBandMatrixCoordinates_Yearly,
+    ClayContent_0_10cmBandMatrixCoordinates_Yearly, SandContent_0_10cmBandMatrixCoordinates_Yearly,
+    pH_H2O_0_10cmBandMatrixCoordinates_Yearly, BulkDensity_0_10cmBandMatrixCoordinates_Yearly,
+    CEC_0_10cmBandMatrixCoordinates_Yearly,
+    SlopeBandMatrixCoordinates_Yearly, AspectBandMatrixCoordinates_Yearly,
+    TWIBandMatrixCoordinates_Yearly,
+]
+DataYearly = DataYearly + [
+    NDVITensorDataYearly, EVITensorDataYearly,
+    PrecipitationTensorDataYearly, AirTemperatureTensorDataYearly,
+    SoilMoisture_layer1TensorDataYearly, SnowDepthTensorDataYearly,
+    ClayContent_0_10cmTensorDataYearly, SandContent_0_10cmTensorDataYearly,
+    pH_H2O_0_10cmTensorDataYearly, BulkDensity_0_10cmTensorDataYearly,
+    CEC_0_10cmTensorDataYearly,
+    SlopeTensorDataYearly, AspectTensorDataYearly, TWITensorDataYearly,
+]
 
 #######################################################################
 #SEASON PATHS

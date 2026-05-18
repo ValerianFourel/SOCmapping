@@ -1,17 +1,29 @@
 
 
-base_path_data = '/home/vfourel/SOCProject/SOCmapping/Data'
+# --------------------------------------------------------------------------
+# Path resolution — every absolute path below resolves from environment
+# variables (SOC_PROJECT_ROOT / SOC_DATA_DIR / SOC_WEIGHTS_DIR) with a
+# walk-up fallback, then a legacy hardcoded default. See SOCmapping/_paths.py
+# for the full resolution order. Brought in from main to replace the
+# foreign-user hardcoded path '/home/vfourel/SOCProject/SOCmapping/Data'.
+# --------------------------------------------------------------------------
+import os as _os
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+from _paths import SOC_DATA_DIR_STR as _SOC_DATA_DIR_STR  # noqa: E402
+
+base_path_data = _SOC_DATA_DIR_STR
 
 file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC = f"{base_path_data}/LUCAS_LFU_Lfl_00to23_Bavaria_OC.xlsx"
 
 
-time_before  = 5
-window_size = 5 # working version is size 41
+time_before  = 5 # 5
+window_size = 5 # 41
 TIME_BEGINNING = '2007'
 LOADING_TIME_BEGINNING = str(int(TIME_BEGINNING)-time_before)
 TIME_END = '2023'
 INFERENCE_TIME = '2023'
-LOADING_TIME_BEGINNING_INFERENCE = str(int(INFERENCE_TIME)-time_before)
 bands_list_order = [
     # Original 6 — DO NOT REORDER (saved 6-channel checkpoints rely on this order).
     'Elevation', 'LAI', 'LST', 'MODIS_NPP', 'SoilEvaporation', 'TotalEvapotranspiration',
@@ -22,12 +34,27 @@ bands_list_order = [
     'CEC_0_10cm',
     'Slope', 'Aspect', 'TWI',
 ]
-MAX_OC = 150
+MAX_OC = 90
 num_epochs = 200
-save_path_predictions_plots = '/home/vfourel/SOCProject/SOCmapping/predictions_plots/3dcnn_plots'
-file_path_coordinates_Bavaria_1mil = "/home/vfourel/SOCProject/SOCmapping/Data/Coordinates1Mil/coordinates_Bavaria_1mil.csv"
-
+NUM_EPOCHS_RUN = 250
+LOADING_TIME_BEGINNING_INFERENCE = str(int(INFERENCE_TIME)-time_before)
+NUM_LAYERS = 2
+NUM_HEADS = 8 
+# Derived from SOC_DATA_DIR instead of a foreign-user hardcoded path.
+# Both can still be overridden via the environment if needed:
+#   SOC_PREDICTIONS_PLOTS_DIR=...   (output dir for inference plots)
+#   SOC_COORDS_1MIL_CSV=...         (full path to the 1.3 M reference grid CSV)
+save_path_predictions_plots = _os.environ.get(
+    'SOC_PREDICTIONS_PLOTS_DIR',
+    f"{base_path_data}/../predictions_plots/simpleTFT_plots",
+)
+file_path_coordinates_Bavaria_1mil = _os.environ.get(
+    'SOC_COORDS_1MIL_CSV',
+    f"{base_path_data}/Coordinates1Mil/coordinates_Bavaria_1mil.csv",
+)
 PICTURE_VERSION = f"{str(num_epochs)}_{str(MAX_OC)}_{INFERENCE_TIME}_version"
+hidden_size = 128
+
 def generate_seasonal_list():
     seasons = ['winter', 'spring', 'summer', 'autumn']  # Reordered with winter first
     years = range(2000, 2025)  # 2000 to 2024
@@ -84,7 +111,13 @@ DataYearly = [elevationTensorData , LAITensorDataYearly , LSTTensorDataYearly, M
 
 # ---------------------------------------------------------------------------
 # Bavaria 2002-2023 expansion — 14 bands appended to bands_list_order.
-# All under YearlyValue/<band>/<year>/ on disk (statics symlinked).
+#
+# All 14 bands live under YearlyValue/<band>/<year>/ on disk. Static bands
+# (ClayContent..TWI) have their physical tiles in 2002/ and the years
+# 2003..2023 are directory symlinks created by
+# SamplePoints/tiff_to_tiles.py --materialize-yearly ...   and
+# SamplePoints/compute_dem_derivatives.py (for Slope/Aspect/TWI).
+# The dataloader sees them as regular yearly bands — no code change.
 # ---------------------------------------------------------------------------
 NDVIBandMatrixCoordinates_Yearly                = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates_v2/YearlyValue/NDVI'
 EVIBandMatrixCoordinates_Yearly                 = f'{base_path_data}/OC_LUCAS_LFU_LfL_Coordinates_v2/YearlyValue/EVI'
@@ -116,24 +149,38 @@ SlopeTensorDataYearly               = f'{base_path_data}/RasterTensorData/Yearly
 AspectTensorDataYearly              = f'{base_path_data}/RasterTensorData/YearlyValue/Aspect'
 TWITensorDataYearly                 = f'{base_path_data}/RasterTensorData/YearlyValue/TWI'
 
+# Append the new bands (in bands_list_order) to the master Yearly lists.
 SamplesCoordinates_Yearly = SamplesCoordinates_Yearly + [
-    NDVIBandMatrixCoordinates_Yearly, EVIBandMatrixCoordinates_Yearly,
-    PrecipitationBandMatrixCoordinates_Yearly, AirTemperatureBandMatrixCoordinates_Yearly,
-    SoilMoisture_layer1BandMatrixCoordinates_Yearly, SnowDepthBandMatrixCoordinates_Yearly,
-    ClayContent_0_10cmBandMatrixCoordinates_Yearly, SandContent_0_10cmBandMatrixCoordinates_Yearly,
-    pH_H2O_0_10cmBandMatrixCoordinates_Yearly, BulkDensity_0_10cmBandMatrixCoordinates_Yearly,
+    NDVIBandMatrixCoordinates_Yearly,
+    EVIBandMatrixCoordinates_Yearly,
+    PrecipitationBandMatrixCoordinates_Yearly,
+    AirTemperatureBandMatrixCoordinates_Yearly,
+    SoilMoisture_layer1BandMatrixCoordinates_Yearly,
+    SnowDepthBandMatrixCoordinates_Yearly,
+    ClayContent_0_10cmBandMatrixCoordinates_Yearly,
+    SandContent_0_10cmBandMatrixCoordinates_Yearly,
+    pH_H2O_0_10cmBandMatrixCoordinates_Yearly,
+    BulkDensity_0_10cmBandMatrixCoordinates_Yearly,
     CEC_0_10cmBandMatrixCoordinates_Yearly,
-    SlopeBandMatrixCoordinates_Yearly, AspectBandMatrixCoordinates_Yearly,
+    SlopeBandMatrixCoordinates_Yearly,
+    AspectBandMatrixCoordinates_Yearly,
     TWIBandMatrixCoordinates_Yearly,
 ]
 DataYearly = DataYearly + [
-    NDVITensorDataYearly, EVITensorDataYearly,
-    PrecipitationTensorDataYearly, AirTemperatureTensorDataYearly,
-    SoilMoisture_layer1TensorDataYearly, SnowDepthTensorDataYearly,
-    ClayContent_0_10cmTensorDataYearly, SandContent_0_10cmTensorDataYearly,
-    pH_H2O_0_10cmTensorDataYearly, BulkDensity_0_10cmTensorDataYearly,
+    NDVITensorDataYearly,
+    EVITensorDataYearly,
+    PrecipitationTensorDataYearly,
+    AirTemperatureTensorDataYearly,
+    SoilMoisture_layer1TensorDataYearly,
+    SnowDepthTensorDataYearly,
+    ClayContent_0_10cmTensorDataYearly,
+    SandContent_0_10cmTensorDataYearly,
+    pH_H2O_0_10cmTensorDataYearly,
+    BulkDensity_0_10cmTensorDataYearly,
     CEC_0_10cmTensorDataYearly,
-    SlopeTensorDataYearly, AspectTensorDataYearly, TWITensorDataYearly,
+    SlopeTensorDataYearly,
+    AspectTensorDataYearly,
+    TWITensorDataYearly,
 ]
 
 #######################################################################

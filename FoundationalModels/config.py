@@ -1,17 +1,15 @@
 
-
 base_path_data = '/home/vfourel/SOCProject/SOCmapping/Data'
 
 file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC = f"{base_path_data}/LUCAS_LFU_Lfl_00to23_Bavaria_OC.xlsx"
 
 
 time_before  = 5
-window_size = 5 # working version is size 41
+window_size = 96
 TIME_BEGINNING = '2007'
 LOADING_TIME_BEGINNING = str(int(TIME_BEGINNING)-time_before)
 TIME_END = '2023'
-INFERENCE_TIME = '2023'
-LOADING_TIME_BEGINNING_INFERENCE = str(int(INFERENCE_TIME)-time_before)
+INFERENCE_TIME = '2015'
 bands_list_order = [
     # Original 6 — DO NOT REORDER (saved 6-channel checkpoints rely on this order).
     'Elevation', 'LAI', 'LST', 'MODIS_NPP', 'SoilEvaporation', 'TotalEvapotranspiration',
@@ -23,11 +21,33 @@ bands_list_order = [
     'Slope', 'Aspect', 'TWI',
 ]
 MAX_OC = 150
-num_epochs = 200
-save_path_predictions_plots = '/home/vfourel/SOCProject/SOCmapping/predictions_plots/3dcnn_plots'
+imageSize = 96
+num_epochs = 100
+LOADING_TIME_BEGINNING_INFERENCE = str(int(INFERENCE_TIME)-time_before)
+target_mean_max_oc_150 = 22.523618521341465   
+target_std_max_oc_150 = 20.63063014342527
+#target_mean_max_oc_160 = 22.204912500000002   
+#target_std_max_oc_160 = 19.407142758253574
+save_path_predictions_plots = '/home/vfourel/SOCProject/SOCmapping/predictions_plots/FoundationalModels_plots'
 file_path_coordinates_Bavaria_1mil = "/home/vfourel/SOCProject/SOCmapping/Data/Coordinates1Mil/coordinates_Bavaria_1mil.csv"
-
 PICTURE_VERSION = f"{str(num_epochs)}_{str(MAX_OC)}_{INFERENCE_TIME}_version"
+
+def list_to_dict(bands_list_order):
+    """
+    Converts a list into a dictionary where:
+    - Keys are the indices (0, 1, 2, ...).
+    - Values are the elements from the list.
+
+    Args:
+        bands_list_order (list): A list of values.
+
+    Returns:
+        dict: A dictionary mapping indices to values.
+    """
+    return {i: value for i, value in enumerate(bands_list_order)}
+
+bands_dict = list_to_dict(bands_list_order)
+
 def generate_seasonal_list():
     seasons = ['winter', 'spring', 'summer', 'autumn']  # Reordered with winter first
     years = range(2000, 2025)  # 2000 to 2024
