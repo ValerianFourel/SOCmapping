@@ -332,14 +332,21 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
             wandb.log(log_dict)
             epoch_metrics.append(log_dict)
 
-            # Save model if it has the best R² and meets minimum threshold
+            # Save model if it has the best R² and meets minimum threshold.
+            # IMPORTANT: clone every tensor — model.state_dict() returns
+            # references that share memory with the live parameters, so a
+            # plain assignment is silently overwritten by the next epoch's
+            # optimizer step. The bug surfaces as "saved R² == last R²"
+            # in every fold's summary, regardless of when training peaked.
             if use_test and r_squared > best_r2 and r_squared >= min_r2:
                 best_r2 = r_squared
-                best_model_state = model.state_dict()
+                best_model_state = {k: v.detach().clone()
+                                    for k, v in model.state_dict().items()}
                 wandb.run.summary['best_r2'] = best_r2
             elif not use_test and epoch == num_epochs - 1:
                 best_r2 = 1.0
-                best_model_state = model.state_dict()
+                best_model_state = {k: v.detach().clone()
+                                    for k, v in model.state_dict().items()}
                 wandb.run.summary['best_r2'] = best_r2
 
         accelerator.print(f'Epoch {epoch+1}  (lr={current_lr:.2e}):')
