@@ -52,21 +52,24 @@ LOG_DIR = SWEEP_DIR / 'slurm_logs'
 # ---------------------------------------------------------------------------
 DEFAULT_GRID: list[tuple[str, int, int, int]] = [
     # (variant, d_model, num_heads, num_layers)
-    # variant: 'big' = EnhancedSGT (uses num_layers), 'small' = SimpleSGT
-    # (num_layers is hardcoded to 1 in SimpleSGT and is ignored — pass it as 1).
-    ('big',   48,  2, 1),
-    ('big',   48,  2, 2),
-    ('big',   64,  2, 1),
-    ('big',   64,  2, 2),
-    ('big',   64,  2, 3),
-    ('big',   64,  4, 2),
-    ('big',   96,  4, 2),
-    ('big',  128,  4, 2),
-    # SimpleSGT rescue: simpler architecture, hit R²=+0.12 at fold 9 epoch 1
-    # in earlier exploration. L=1 is hardcoded; --num_layers ignored.
-    ('small', 64,  2, 1),
-    ('small', 96,  2, 1),
-    ('small', 128, 2, 1),
+    # All entries are SimpleSGT ('small'). The known-good config from
+    # manual training is (--model-size small, d=64, h=4, --max-oc 90),
+    # which reached R² ≈ 0.2 transiently (now actually saved after the
+    # train.py best-state fix, commit b5c1cac). This grid sweeps the
+    # immediate neighborhood. SimpleSGT hardcodes 1 transformer layer
+    # and ignores --num_layers, so all entries have L=1.
+    #
+    # Constraint: d_model % num_heads == 0. With h=4 the smallest valid
+    # head_dim (=d/h) is 8 at d=32, which is borderline; included as a
+    # capacity floor.
+    ('small',  32, 2, 1),     # tiny floor (head_dim=16)
+    ('small',  32, 4, 1),     # tiny floor (head_dim=8)
+    ('small',  48, 2, 1),     # head_dim=24
+    ('small',  48, 4, 1),     # head_dim=12
+    ('small',  64, 2, 1),     # head_dim=32
+    ('small',  64, 4, 1),     # ← KNOWN-GOOD (R² ≈ 0.2 at max-oc 90)
+    ('small',  96, 4, 1),     # head_dim=24
+    ('small', 128, 4, 1),     # head_dim=32
 ]
 
 
@@ -135,10 +138,15 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--dry-run', action='store_true',
                    help='Write sbatch scripts but do not submit.')
-    p.add_argument('--epochs', type=int, default=80,
-                   help='Per-config training epochs for screening (default 80).')
+    p.add_argument('--epochs', type=int, default=30,
+                   help='Per-config training epochs for screening (default 30). '
+                        'Earlier sweep diagnostic showed peak epochs cluster at '
+                        '4-15, so 30 is plenty; 80 was waste.')
     p.add_argument('--lr', type=float, default=1e-4)
-    p.add_argument('--max-oc', type=float, default=120.0)
+    p.add_argument('--max-oc', type=float, default=90.0,
+                   help='Default 90 matches the known-good manual run. '
+                        'Sweep this separately (try 80, 90, 100, 120) once an '
+                        'architecture is locked in.')
     p.add_argument('--seed-base', type=int, default=42)
     p.add_argument('--time', type=str, default='02:00:00',
                    help='Slurm wall-time per job. Bump if epochs > 100.')
