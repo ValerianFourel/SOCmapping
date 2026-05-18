@@ -38,8 +38,13 @@ import datetime
 
 # Increase the timeout value
 os.environ["NCCL_BLOCKING_WAIT"] = "1"
-os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1" 
-torch.distributed.init_process_group(backend='nccl', timeout=datetime.timedelta(minutes=20))
+os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
+# Guarded init: only when launched under accelerate/torchrun (RANK is set).
+# Importing this module from a non-distributed context (e.g. run_kfold.py)
+# must NOT trigger init_process_group — Accelerator() will set things up
+# lazily on its own when actually needed.
+if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+    torch.distributed.init_process_group(backend='nccl', timeout=datetime.timedelta(minutes=20))
 
 
 def parse_args():
