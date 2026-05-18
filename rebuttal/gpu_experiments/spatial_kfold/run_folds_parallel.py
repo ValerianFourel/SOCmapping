@@ -3,22 +3,28 @@
 run_folds_parallel.py — parallel orchestrator for run_kfold.py.
 
 Each fold of run_kfold.py is small enough to fit comfortably on one GH200
-(model ~1M params + tiny batches). Running them sequentially wastes 3 of
-the 4 GPUs. This orchestrator launches `--num-parallel` fold subprocesses
-concurrently, each pinned to one GPU via CUDA_VISIBLE_DEVICES, and dispatches
-the remaining folds as GPUs free up.
+(model ~1.2M params + tiny batches, < 5 GB per fold of 96 GB HBM). With
+--folds-per-gpu N, the orchestrator packs N fold subprocesses on each GPU
+so all 10 folds can run simultaneously on 4 GH200s. Each subprocess is
+pinned to one GPU via CUDA_VISIBLE_DEVICES; CUDA time-slices among the
+processes sharing a device.
 
-Usage (drop-in replacement for run_kfold.py):
+Usage — 4 folds at a time, one per GPU (legacy default):
 
     python run_folds_parallel.py \
-        --num-folds 10 \
-        --num-parallel 4 \
+        --num-folds 10 --num-parallel 4 \
+        -- <run_kfold.py args>
+
+Usage — all 10 folds at once on 4 GPUs (3 folds per GPU):
+
+    python run_folds_parallel.py \
+        --num-folds 10 --num-parallel 10 --folds-per-gpu 3 \
         -- \
         --model-size big --num_heads 4 --num_layers 3 \
         --hidden_size 128 --dropout_rate 0.3 \
         --lr 2e-4 --lr-scheduler cosine --lr-min 1e-6 \
         --loss_type l1 --target_transform log \
-        --per-gpu-batch-size 512 --effective-batch-size 512 \
+        --per-gpu-batch-size 256 --effective-batch-size 256 \
         --num-epochs 300 --seed-base 42
 
 Everything AFTER the `--` is forwarded verbatim to each run_kfold.py call.
@@ -53,7 +59,12 @@ def parse():
                    help="Total number of folds (default 10).")
     p.add_argument('--num-parallel', type=int, default=4,
                    help="How many folds to run concurrently. Defaults to "
-                        "min(num_folds, num_gpus_visible).")
+                        "min(num_folds, num_gpus_visible * folds_per_gpu).")
+    p.add_argument('--folds-per-gpu', type=int, default=1,
+                   help="How many fold processes to pack on each GPU. Default 1. "
+                        "Set to 3 to run all 10 folds across 4 GPUs simultaneously "
+                        "(slot_idx %% num_gpus picks the GPU). GH200s have ~96 GB "
+                        "and each fold uses well under 5 GB, so 3 is safe.")
     p.add_argument('--output-dir', type=str,
                    default=str(HERE),
                    help="Directory for per-fold log files (default: this dir).")
@@ -81,10 +92,12 @@ def main():
         print("ERROR: no CUDA GPUs detected.", file=sys.stderr)
         sys.exit(2)
 
-    n_parallel = min(args.num_parallel, num_gpus, args.num_folds)
+    total_slots = num_gpus * args.folds_per_gpu
+    n_parallel = min(args.num_parallel, total_slots, args.num_folds)
+    slot_to_gpu = {slot: slot % num_gpus for slot in range(total_slots)}
     print(f"[orchestrator] {args.num_folds} folds, "
-          f"{num_gpus} GPUs detected, "
-          f"running {n_parallel} in parallel.")
+          f"{num_gpus} GPUs, {args.folds_per_gpu} folds/GPU "
+          f"({total_slots} slots), running {n_parallel} in parallel.")
     print(f"[orchestrator] passthrough args: {' '.join(passthrough)}")
 
     out_dir = Path(args.output_dir)
@@ -92,11 +105,12 @@ def main():
 
     # Build the fold queue
     pending = list(range(args.num_folds))
-    running: dict[int, subprocess.Popen] = {}   # gpu_id -> Popen
-    fold_for_gpu: dict[int, int] = {}            # gpu_id -> fold_idx
-    started_at: dict[int, float] = {}            # fold_idx -> ts
+    running: dict[int, subprocess.Popen] = {}    # slot_idx -> Popen
+    fold_for_slot: dict[int, int] = {}            # slot_idx -> fold_idx
+    started_at: dict[int, float] = {}             # fold_idx -> ts
 
-    def launch(fold_idx: int, gpu_id: int) -> subprocess.Popen:
+    def launch(fold_idx: int, slot_idx: int) -> subprocess.Popen:
+        gpu_id = slot_to_gpu[slot_idx]
         env = os.environ.copy()
         env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
         # Ensure each fold's wandb subdir doesn't collide
@@ -114,41 +128,42 @@ def main():
         proc._log_fh = log_fh
         proc._log_path = log_path
         started_at[fold_idx] = time.time()
-        print(f"[orchestrator] launched fold {fold_idx} on GPU {gpu_id} "
-              f"(PID {proc.pid}, log: {log_path.name})")
+        print(f"[orchestrator] launched fold {fold_idx} on slot {slot_idx} "
+              f"(GPU {gpu_id}, PID {proc.pid}, log: {log_path.name})")
         return proc
 
     # Initial fill
-    for gpu_id in range(n_parallel):
+    for slot_idx in range(n_parallel):
         if not pending:
             break
         fold = pending.pop(0)
-        running[gpu_id] = launch(fold, gpu_id)
-        fold_for_gpu[gpu_id] = fold
+        running[slot_idx] = launch(fold, slot_idx)
+        fold_for_slot[slot_idx] = fold
 
     # Poll loop
     rc_by_fold: dict[int, int] = {}
     while running:
         time.sleep(2)
         finished = []
-        for gpu_id, proc in running.items():
+        for slot_idx, proc in running.items():
             rc = proc.poll()
             if rc is not None:
-                fold = fold_for_gpu[gpu_id]
+                fold = fold_for_slot[slot_idx]
+                gpu_id = slot_to_gpu[slot_idx]
                 dt = time.time() - started_at[fold]
                 status = "OK" if rc == 0 else f"FAILED (rc={rc})"
-                print(f"[orchestrator] fold {fold} on GPU {gpu_id} "
-                      f"{status}  ({dt/60:.1f} min)")
+                print(f"[orchestrator] fold {fold} on slot {slot_idx} "
+                      f"(GPU {gpu_id}) {status}  ({dt/60:.1f} min)")
                 proc._log_fh.close()
                 rc_by_fold[fold] = rc
-                finished.append(gpu_id)
-        for gpu_id in finished:
-            running.pop(gpu_id)
-            fold_for_gpu.pop(gpu_id)
+                finished.append(slot_idx)
+        for slot_idx in finished:
+            running.pop(slot_idx)
+            fold_for_slot.pop(slot_idx)
             if pending:
                 next_fold = pending.pop(0)
-                running[gpu_id] = launch(next_fold, gpu_id)
-                fold_for_gpu[gpu_id] = next_fold
+                running[slot_idx] = launch(next_fold, slot_idx)
+                fold_for_slot[slot_idx] = next_fold
 
     # Summary
     n_ok = sum(1 for rc in rc_by_fold.values() if rc == 0)
