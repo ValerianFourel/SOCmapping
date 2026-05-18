@@ -529,3 +529,5 @@ FoundationalModels/models
 
 **/*.pt
 
+__pycache__/
+*.pyc

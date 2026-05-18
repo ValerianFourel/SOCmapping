@@ -1,8 +1,12 @@
-"""Compute slope, aspect, plan curvature, and TWI from existing Elevation tiles.
+"""Compute slope, aspect, and TWI from existing Elevation tiles.
 
-Inputs:  Data/RasterTensorData/StaticValue/Elevation/ID*.npy   (979x979 int16)
-Outputs: Data/RasterTensorData/StaticValue/{Slope,Aspect,PlanCurvature,TWI}/
+Inputs:  Data/RasterTensorData/StaticValue/Elevation/ID*.npy   (979x979)
+Outputs: Data/RasterTensorData/YearlyValue/{Slope,Aspect,TWI}/<year>/
          (same tile filenames, float32)
+
+The output is materialized under YearlyValue (not StaticValue) so the
+dataloader's `int(year)` parse on the leaf folder name works without
+edits. Year 2002 is the physical anchor; 2003..2023 are symlinks.
 
 Each tile's geo-extent is encoded in the filename:
     IDxxN<top_lat>S<bot_lat>W<left_lon>E<right_lon>.npy
@@ -12,14 +16,16 @@ units (degrees from horizontal). At Bavaria latitudes (~48-50N):
   - 1° latitude  ≈ 111.0 km
   - 1° longitude ≈  71.0 km  (varies with lat: 111 * cos(lat))
 
-After this script runs, append to config.py:
-    bands_list_order = ['Elevation', 'Slope', 'Aspect', 'PlanCurvature', 'TWI',
-                        'LAI', 'LST', 'MODIS_NPP', 'SoilEvaporation',
-                        'TotalEvapotranspiration']
+After this script runs, append to each model's config.py:
+    bands_list_order = [
+        'Elevation', 'LAI', 'LST', 'MODIS_NPP',
+        'SoilEvaporation', 'TotalEvapotranspiration',   # existing 6
+        ..., 'Slope', 'Aspect', 'TWI',                  # appended
+    ]
 
-(Append, don't prepend — preserves checkpoint compatibility for the
-existing channels; the 4 new channels need first-conv re-init via
-load_state_dict(..., strict=False).)
+PlanCurvature (originally listed in the BAND_EXPANSION_PLAN) is dropped
+here — TWI is the stronger SOC predictor (wet soils → high SOC) and
+plan curvature is highly correlated with slope.
 """
 import os
 import re
@@ -32,7 +38,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from _paths import SOC_DATA_DIR_STR
 
 ELEV_DIR = Path(SOC_DATA_DIR_STR) / 'RasterTensorData' / 'StaticValue' / 'Elevation'
-OUT_ROOT = Path(SOC_DATA_DIR_STR) / 'RasterTensorData' / 'StaticValue'
+OUT_ROOT = Path(SOC_DATA_DIR_STR) / 'RasterTensorData'
+ANCHOR_YEAR = 2002
+MAT_YEARS = range(2002, 2024)
+DERIVED_BANDS = ('Slope', 'Aspect', 'TWI')
 
 R_EARTH_M = 6371000.0  # mean Earth radius
 
@@ -80,25 +89,6 @@ def compute_slope_aspect(z: np.ndarray, dy_m: float, dx_m: float) -> tuple[np.nd
     return slope_deg, aspect_deg.astype(np.float32)
 
 
-def compute_plan_curvature(z: np.ndarray, dy_m: float, dx_m: float) -> np.ndarray:
-    """Plan curvature: curvature of contour lines (perpendicular to slope).
-
-    Positive = divergent (ridge-like), negative = convergent (valley-like).
-    Computed as second-derivative combination per Zevenbergen-Thorne 1987.
-    """
-    z = z.astype(np.float32)
-    dzdy, dzdx = np.gradient(z, dy_m, dx_m)
-    d2zdy2, d2zdyx = np.gradient(dzdy, dy_m, dx_m)
-    _,      d2zdx2 = np.gradient(dzdx, dy_m, dx_m)
-    p = dzdx; q = dzdy
-    p2_q2 = p * p + q * q
-    # Avoid /0 on perfectly flat pixels
-    safe = np.where(p2_q2 > 1e-12, p2_q2, 1.0)
-    plan = (d2zdx2 * q * q - 2 * d2zdyx * p * q + d2zdy2 * p * p) / (safe * np.sqrt(safe))
-    plan = np.where(p2_q2 > 1e-12, plan, 0.0).astype(np.float32)
-    return plan
-
-
 def compute_twi(z: np.ndarray, slope_deg: np.ndarray, dy_m: float, dx_m: float) -> np.ndarray:
     """Topographic Wetness Index = ln(specific catchment area / tan(slope)).
 
@@ -128,58 +118,101 @@ def compute_twi(z: np.ndarray, slope_deg: np.ndarray, dy_m: float, dx_m: float) 
     return twi
 
 
-def process_tile(tile_path: Path, out_dirs: dict[str, Path]) -> None:
+def process_tile(tile_path: Path, anchor_dirs: dict[str, Path]) -> None:
+    """Process one Elevation tile → write Slope/Aspect/TWI into anchor year dirs."""
     z = np.load(tile_path)
     n_rows, n_cols = z.shape
     n, s, w, e = parse_bbox_from_filename(tile_path.name)
     dy_m, dx_m = pixel_size_meters(n, s, w, e, n_rows, n_cols)
 
     slope, aspect = compute_slope_aspect(z, dy_m, dx_m)
-    plan = compute_plan_curvature(z, dy_m, dx_m)
     twi = compute_twi(z, slope, dy_m, dx_m)
 
-    np.save(out_dirs['Slope']          / tile_path.name, slope)
-    np.save(out_dirs['Aspect']         / tile_path.name, aspect)
-    np.save(out_dirs['PlanCurvature']  / tile_path.name, plan)
-    np.save(out_dirs['TWI']            / tile_path.name, twi)
+    np.save(anchor_dirs['Slope']  / tile_path.name, slope)
+    np.save(anchor_dirs['Aspect'] / tile_path.name, aspect)
+    np.save(anchor_dirs['TWI']    / tile_path.name, twi)
+
+
+def symlink_years(band: str) -> None:
+    """Symlink YearlyValue/<band>/<year>/ → <band>/<ANCHOR_YEAR>/ for non-anchor years."""
+    band_root = OUT_ROOT / 'YearlyValue' / band
+    anchor_dir = band_root / str(ANCHOR_YEAR)
+    physical_abs = anchor_dir.resolve()
+    for y in MAT_YEARS:
+        if y == ANCHOR_YEAR:
+            continue
+        link = band_root / str(y)
+        if link.exists() or link.is_symlink():
+            if link.is_symlink() and link.resolve() == physical_abs:
+                continue
+            link.unlink()
+        link.symlink_to(physical_abs, target_is_directory=True)
 
 
 def main():
-    out_dirs = {b: OUT_ROOT / b for b in ('Slope', 'Aspect', 'PlanCurvature', 'TWI')}
-    for d in out_dirs.values():
+    # Pipeline state — opt-out via PIPELINE_STATE=off env var.
+    state = None
+    if os.environ.get('PIPELINE_STATE', '').lower() not in ('off', '0', 'false'):
+        try:
+            from pipeline_state import State
+            state = State()
+            state.start_phase('derive')
+        except Exception as ex:
+            print(f'[warn] could not load pipeline_state: {ex}; continuing without state tracking')
+
+    anchor_dirs = {b: OUT_ROOT / 'YearlyValue' / b / str(ANCHOR_YEAR) for b in DERIVED_BANDS}
+    for d in anchor_dirs.values():
         d.mkdir(parents=True, exist_ok=True)
 
     tiles = sorted(ELEV_DIR.glob('ID*.npy'))
-    print(f"Processing {len(tiles)} Elevation tiles → 4 new bands")
+    print(f"Processing {len(tiles)} Elevation tiles → {', '.join(DERIVED_BANDS)} "
+          f"(anchor year {ANCHOR_YEAR}, symlinked across {MAT_YEARS.start}-{MAT_YEARS.stop-1})")
+    n_done = n_skip = 0
     for tp in tiles:
+        # Skip-if-done: all three output tiles exist for this Elevation tile.
+        skip = state is not None and state.is_done('derive', tp.name) and all(
+            (anchor_dirs[b] / tp.name).exists() for b in DERIVED_BANDS
+        )
+        if skip:
+            print(f"  · skip (done): {tp.name}")
+            n_skip += 1
+            continue
         try:
-            process_tile(tp, out_dirs)
+            process_tile(tp, anchor_dirs)
             print(f"  ✓ {tp.name}")
+            n_done += 1
+            if state is not None:
+                state.mark_done('derive', tp.name)
         except Exception as ex:
             print(f"  ✗ {tp.name}: {ex}")
+    print(f"derive summary: {n_done} computed, {n_skip} skipped-as-done")
 
-    # Also clone the bounds_array_Elevation.npy for the new bands — the
-    # samplePoints.py pipeline expects one bounds-array per band, but
-    # since the four new bands share the Elevation tile layout exactly,
-    # they share the same bounds array.
-    bounds_src = OUT_ROOT / 'bounds_array_Elevation.npy'
-    if bounds_src.exists():
-        for b in out_dirs:
-            dst = OUT_ROOT / f'bounds_array_{b}.npy'
+    # Bounds arrays for YearlyValue (one per band, mirrors anchor-year tiles).
+    static_bounds = OUT_ROOT / 'StaticValue' / 'bounds_array_Elevation.npy'
+    if static_bounds.exists():
+        import shutil
+        yearly_tier = OUT_ROOT / 'YearlyValue'
+        yearly_tier.mkdir(parents=True, exist_ok=True)
+        for b in DERIVED_BANDS:
+            dst = yearly_tier / f'bounds_array_{b}.npy'
             if not dst.exists():
-                import shutil
-                shutil.copy(bounds_src, dst)
-                print(f"cloned bounds_array → {dst.name}")
+                shutil.copy(static_bounds, dst)
+                print(f"cloned bounds_array → YearlyValue/{dst.name}")
+
+    # Symlink 2003..2023 to 2002 for each derived band.
+    for b in DERIVED_BANDS:
+        symlink_years(b)
+        print(f"  symlinked {len(MAT_YEARS) - 1} year-dirs for {b}")
+
+    if state is not None:
+        state.finish_phase('derive')
 
     print("\nNext steps:")
-    print("  1. Re-run SamplePoints/samplePoints.py to project LUCAS points onto the 4 new bands")
-    print("     (it will skip already-processed bands and only add the new ones).")
-    print("  2. Append the 4 new band names to bands_list_order in config.py:")
-    print('     bands_list_order = ["Elevation", "Slope", "Aspect", "PlanCurvature", "TWI",')
-    print('                         "LAI", "LST", "MODIS_NPP", "SoilEvaporation",')
-    print('                         "TotalEvapotranspiration"]')
-    print("  3. Retrain with strict=False on any pre-existing checkpoint loading")
-    print("     (input_channels goes from 6 to 10).")
+    print(f"  1. python SamplePoints/project_lucas_coords.py --tier YearlyValue \\")
+    print(f"         --bands {' '.join(DERIVED_BANDS)} --materialize-yearly {' '.join(DERIVED_BANDS)}")
+    print(f"  2. Append {DERIVED_BANDS} to bands_list_order in each model's config.py")
+    print(f"     and add the corresponding path variables.")
+    print(f"  3. Retrain with strict=False on any pre-existing 6-channel checkpoint.")
 
 
 if __name__ == '__main__':

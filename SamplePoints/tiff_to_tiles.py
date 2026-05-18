@@ -81,9 +81,55 @@ def encode_filename(tile_id: int) -> str:
     return f'ID{tile_id}N{fmt(n)}S{fmt(s)}W{fmt(w)}E{fmt(e)}.npy'
 
 
-def cut_tiff(tiff_path: Path, out_dir: Path) -> int:
-    """Slice one Bavaria-envelope GeoTIFF into 12 .npy tiles in out_dir."""
+def _fill_nan(arr: np.ndarray) -> np.ndarray:
+    """Replace NaN/inf pixels with the tile's finite mean.
+
+    `NormalizedMultiRasterDatasetMultiYears.compute_statistics` does not
+    tolerate NaN — a single bad pixel pollutes per-channel mean/std and
+    poisons every downstream sample. SoilGrids/OpenLandMap tiles can
+    have edge or no-data NaNs; ERA5 occasionally has masked pixels.
+    Falls back to 0.0 if the entire tile is NaN (shouldn't happen on
+    Bavaria-land but keeps the pipeline robust).
+    """
+    arr = np.asarray(arr, dtype=np.float32)
+    mask = ~np.isfinite(arr)
+    if mask.any():
+        finite = arr[~mask]
+        fill = float(finite.mean()) if finite.size > 0 else 0.0
+        arr = np.where(mask, fill, arr)
+    return arr
+
+
+def _wipe_stale_tiles(out_dir: Path) -> int:
+    """Remove ID*.npy files in out_dir that don't match a canonical tile name.
+
+    Returns the number of files removed. Used when the tile filename pattern
+    has changed (e.g. when redownloading a band that was previously cut by
+    an older pipeline with different bbox precision in the filenames).
+    Without this, old and new tiles would coexist in the same directory and
+    the dataloader's glob('ID*.npy') would pick one arbitrarily per tile id.
+    """
+    canonical = {encode_filename(tid) for tid in range(12)}
+    removed = 0
+    if out_dir.exists():
+        for existing in out_dir.glob('ID*.npy'):
+            if existing.name not in canonical:
+                existing.unlink()
+                removed += 1
+    return removed
+
+
+def cut_tiff(tiff_path: Path, out_dir: Path, wipe_stale: bool = True) -> int:
+    """Slice one Bavaria-envelope GeoTIFF into 12 canonical-name .npy tiles.
+
+    When wipe_stale=True (default), any pre-existing ID*.npy whose filename
+    doesn't match the canonical 12-tile set is deleted first.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
+    if wipe_stale:
+        n_wiped = _wipe_stale_tiles(out_dir)
+        if n_wiped:
+            print(f"  wiped {n_wiped} stale tile(s) from {out_dir.name}")
     n_written = 0
     with rasterio.open(tiff_path) as src:
         for tid in range(12):
@@ -97,11 +143,37 @@ def cut_tiff(tiff_path: Path, out_dir: Path) -> int:
             except Exception as ex:
                 print(f"  tile {tid}: read failed ({ex})")
                 continue
-            arr = np.asarray(arr, dtype=np.float32)
+            arr = _fill_nan(arr)
             out_path = out_dir / encode_filename(tid)
             np.save(out_path, arr)
             n_written += 1
     return n_written
+
+
+def materialize_static_as_yearly(physical_dir: Path, band_name: str,
+                                  out_root: Path, years: range) -> None:
+    """Symlink every year directory in `years` to point at `physical_dir`.
+
+    Layout produced:
+        out_root/YearlyValue/<band>/<year>/  → symlink → physical_dir/
+
+    The dataloader keys `coordinates.npy` by the last-two folder
+    components (e.g. `'Slope/2003'`), so each year must appear as its
+    own directory. Using directory-level symlinks keeps disk usage at
+    1× the physical tile set per band, instead of 22×.
+    """
+    yearly_root = out_root / 'YearlyValue' / band_name
+    yearly_root.mkdir(parents=True, exist_ok=True)
+    physical_abs = physical_dir.resolve()
+    for y in years:
+        link = yearly_root / str(y)
+        if link.exists() or link.is_symlink():
+            if link.is_symlink() and link.resolve() == physical_abs:
+                continue  # already correct
+            link.unlink()
+        link.symlink_to(physical_abs, target_is_directory=True)
+    print(f"  ✓ {band_name}: symlinked {len(list(years))} year-dirs "
+          f"→ {physical_abs.relative_to(out_root) if physical_abs.is_relative_to(out_root) else physical_abs}")
 
 
 def make_bounds_array(out_static_root: Path, band_name: str) -> None:
@@ -144,29 +216,79 @@ def parse_tiff_filename(name: str) -> dict | None:
     }
 
 
-def cut_all(tiff_dir: Path, out_root: Path) -> None:
-    """Process every TIFF in tiff_dir matching the expected naming pattern."""
+def _output_complete(out_dir: Path) -> bool:
+    """A (band, year) output is complete iff all 12 *canonical-name* tiles exist.
+
+    Checking canonical names (not just any 12 ID*.npy files) means we don't
+    skip a redownload of an existing band that has stale non-canonical tiles
+    from an older pipeline run.
+    """
+    if not out_dir.exists():
+        return False
+    return all((out_dir / encode_filename(tid)).exists() for tid in range(12))
+
+
+def cut_all(tiff_dir: Path, out_root: Path,
+            materialize_yearly: set[str] | None = None,
+            anchor_year: int = 2002,
+            mat_years: range = range(2002, 2024),
+            skip_done: bool = True,
+            state=None) -> None:
+    """Process every TIFF in tiff_dir matching the expected naming pattern.
+
+    Resumable: a TIFF whose 12-tile output already exists is skipped.
+    Also records progress in `state` (pipeline_state.State) if provided,
+    keyed by TIFF basename under the 'cut' phase.
+    """
+    materialize_yearly = set(materialize_yearly or [])
     tiffs = sorted(tiff_dir.glob('*.tif'))
     print(f"Found {len(tiffs)} GeoTIFFs in {tiff_dir}")
     bands_processed = set()
+    materialized = set()
+    n_cut = n_skipped = 0
     for tp in tiffs:
         meta = parse_tiff_filename(tp.name)
         if meta is None:
             print(f"  skip (no match): {tp.name}")
             continue
         band = meta['band']
-        if meta['year'] is None:
+        is_static = meta['year'] is None
+        if is_static and band in materialize_yearly:
+            out_dir = out_root / 'YearlyValue' / band / str(anchor_year)
+            materialized.add(band)
+        elif is_static:
             out_dir = out_root / 'StaticValue' / band
         else:
             out_dir = out_root / 'YearlyValue' / band / str(meta['year'])
-        n = cut_tiff(tp, out_dir)
-        bands_processed.add((meta['year'] is None, band))
-        print(f"  ✓ {tp.name:50}  → {out_dir.relative_to(out_root)}/  ({n} tiles)")
+
+        already_done = skip_done and _output_complete(out_dir) and (
+            state is None or state.is_done('cut', tp.name)
+        )
+        if already_done:
+            n_skipped += 1
+            print(f"  · skip (done): {tp.name:50}  → {out_dir.relative_to(out_root)}/")
+        else:
+            n = cut_tiff(tp, out_dir)
+            n_cut += 1
+            print(f"  ✓ {tp.name:50}  → {out_dir.relative_to(out_root)}/  ({n} tiles)")
+            if state is not None:
+                state.mark_done('cut', tp.name)
+        bands_processed.add((is_static and band not in materialize_yearly, band))
 
     # Emit bounds_array_<band>.npy at the appropriate tier root, once per band
     for is_static, band in bands_processed:
         tier = 'StaticValue' if is_static else 'YearlyValue'
         make_bounds_array(out_root / tier, band)
+    for band in materialized:
+        # Materialized statics live under YearlyValue — drop bounds-array there.
+        make_bounds_array(out_root / 'YearlyValue', band)
+
+    # Symlink year directories for materialized bands.
+    for band in materialized:
+        physical = out_root / 'YearlyValue' / band / str(anchor_year)
+        materialize_static_as_yearly(physical, band, out_root,
+                                     years=[y for y in mat_years if y != anchor_year])
+    print(f"\ncut summary: {n_cut} cut, {n_skipped} skipped-as-done")
 
 
 def main():
@@ -182,21 +304,64 @@ def main():
     ap.add_argument('--year', type=int, help='Year (single-tiff mode, yearly only)')
     ap.add_argument('--tier', choices=['StaticValue', 'YearlyValue'],
                     help='Tier (single-tiff mode)')
+    ap.add_argument('--materialize-yearly', nargs='+', default=[],
+                    metavar='BAND',
+                    help='Static-band names to write into YearlyValue/<band>/<anchor>/ '
+                         'and symlink across mat-years (default 2002–2023).')
+    ap.add_argument('--anchor-year', type=int, default=2002,
+                    help='Physical-data year for --materialize-yearly (default 2002)')
+    ap.add_argument('--mat-years', nargs=2, type=int, default=[2002, 2023],
+                    metavar=('START', 'END'),
+                    help='Year range to symlink for --materialize-yearly (default 2002 2023)')
+    ap.add_argument('--no-skip-done', action='store_true',
+                    help='Re-cut TIFFs even when their output tiles already exist on disk.')
+    ap.add_argument('--no-state', action='store_true',
+                    help='Do not read/write Data/pipeline_state.json.')
     args = ap.parse_args()
 
+    # Pipeline state — opt-out via --no-state.
+    state = None
+    if not args.no_state:
+        try:
+            from pipeline_state import State
+            state = State()
+            state.start_phase('cut')
+        except Exception as ex:
+            print(f'[warn] could not load pipeline_state: {ex}; continuing without state tracking')
+
+    mat_years = range(args.mat_years[0], args.mat_years[1] + 1)
+    mat_set = set(args.materialize_yearly)
+
     if args.tiff is not None:
-        if not (args.band_name and args.tier):
-            ap.error('--tiff requires --band-name and --tier')
-        if args.tier == 'YearlyValue' and args.year is None:
-            ap.error('YearlyValue tier requires --year')
-        out_dir = args.out_root / args.tier / args.band_name
-        if args.year is not None:
-            out_dir = out_dir / str(args.year)
-        n = cut_tiff(args.tiff, out_dir)
-        print(f"✓ cut {n} tiles → {out_dir}")
-        make_bounds_array(args.out_root / args.tier, args.band_name)
+        if not args.band_name:
+            ap.error('--tiff requires --band-name')
+        if mat_set and args.band_name in mat_set:
+            out_dir = args.out_root / 'YearlyValue' / args.band_name / str(args.anchor_year)
+            n = cut_tiff(args.tiff, out_dir)
+            print(f"✓ cut {n} tiles → {out_dir}")
+            make_bounds_array(args.out_root / 'YearlyValue', args.band_name)
+            materialize_static_as_yearly(out_dir, args.band_name, args.out_root,
+                                         years=[y for y in mat_years if y != args.anchor_year])
+        else:
+            if not args.tier:
+                ap.error('--tiff requires --tier (or --materialize-yearly including this band)')
+            if args.tier == 'YearlyValue' and args.year is None:
+                ap.error('YearlyValue tier requires --year')
+            out_dir = args.out_root / args.tier / args.band_name
+            if args.year is not None:
+                out_dir = out_dir / str(args.year)
+            n = cut_tiff(args.tiff, out_dir)
+            print(f"✓ cut {n} tiles → {out_dir}")
+            make_bounds_array(args.out_root / args.tier, args.band_name)
     elif args.tiff_dir is not None:
-        cut_all(args.tiff_dir, args.out_root)
+        cut_all(args.tiff_dir, args.out_root,
+                materialize_yearly=mat_set,
+                anchor_year=args.anchor_year,
+                mat_years=mat_years,
+                skip_done=not args.no_skip_done,
+                state=state)
+        if state is not None:
+            state.finish_phase('cut')
     else:
         ap.error('provide --tiff-dir or --tiff')
 
