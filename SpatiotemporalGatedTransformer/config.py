@@ -28,8 +28,8 @@ MAX_OC = 150
 num_epochs = 270   # 200 works as
 NUM_EPOCHS_RUN = 320 # 250 for when we have a training on all the data validation and training for the mapping Deep Neural Network
 LOADING_TIME_BEGINNING_INFERENCE = str(int(INFERENCE_TIME)-time_before)
-NUM_LAYERS = 2
-NUM_HEADS = 8
+NUM_LAYERS = 3
+NUM_HEADS = 4
 
 # Now derived from SOC_DATA_DIR instead of a foreign-user hardcoded path.
 # Both can still be overridden via the environment if needed:
