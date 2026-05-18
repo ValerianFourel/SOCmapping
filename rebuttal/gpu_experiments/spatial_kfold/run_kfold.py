@@ -931,6 +931,9 @@ def parse_args():
                    help='Skip training. Read all fold_<i>_predictions.parquet '
                         'from OUT_DIR and write the cross-fold summary + '
                         'stratified-by-band tables.')
+    p.add_argument('--out-subdir', type=str, default=None,
+                   help='If set, redirect all kfold outputs to OUT_DIR/<subdir>. '
+                        'Used by the architecture sweep to keep config results separate.')
     p.add_argument('--skip-figure', action='store_true',
                    help='Skip matplotlib figure (faster, lighter deps).')
     return p.parse_args()
@@ -996,7 +999,11 @@ def aggregate_from_disk(args) -> int:
 # Main — sequential, single GPU, one Accelerator for all folds
 # --------------------------------------------------------------------------
 def main():
+    global OUT_DIR
     args = parse_args()
+    if args.out_subdir:
+        OUT_DIR = OUT_DIR / args.out_subdir
+        print(f'[out-subdir] kfold outputs redirected to {OUT_DIR}', flush=True)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     if args.aggregate_only:
