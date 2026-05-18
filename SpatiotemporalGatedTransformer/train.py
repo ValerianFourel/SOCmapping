@@ -8,6 +8,7 @@ from tqdm import tqdm
 from pathlib import Path
 import wandb
 from accelerate import Accelerator
+from accelerate.utils import set_seed
 from dataloader.dataloaderMultiYears import MultiRasterDatasetMultiYears, NormalizedMultiRasterDatasetMultiYears
 from dataloader.dataframe_loader import filter_dataframe, separate_and_add_data
 from config import (TIME_BEGINNING, TIME_END, INFERENCE_TIME, MAX_OC,NUM_EPOCHS_RUN,
@@ -743,6 +744,15 @@ if __name__ == "__main__":
         feature_means = train_dataset_features_norm.get_feature_means()
         feature_stds = train_dataset_features_norm.get_feature_stds()
         target_mean, target_std = compute_training_statistics_oc()
+
+        # Seed every rank IDENTICALLY before the split + rebalance so all
+        # ranks produce the same train_df → same number of steps per epoch.
+        # Without this, each rank's random per-bin oversample yields a
+        # different train-set size (e.g. 18412 vs 19695), the ranks end up
+        # with different step counts per epoch, and the end-of-epoch NCCL
+        # collective deadlocks because the rank with fewer steps stops
+        # calling all-reduce while the others are still stepping.
+        set_seed(42 + run)
 
         # --- Test split FIRST, then per-bin rebalance of the train half --
         # Earlier behaviour computed create_balanced_dataset(df) and threw it
