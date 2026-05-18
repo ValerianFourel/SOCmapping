@@ -19,12 +19,15 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 SWEEP_DIR = HERE / 'sweep'
 
-_TAG_RE = re.compile(r'^d(\d+)_h(\d+)_L(\d+)$')
+_TAG_RE = re.compile(r'^(small_)?d(\d+)_h(\d+)_L(\d+)$')
 
 
-def parse_tag(tag: str) -> tuple[int, int, int] | None:
+def parse_tag(tag: str) -> tuple[str, int, int, int] | None:
     m = _TAG_RE.match(tag)
-    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
+    if not m:
+        return None
+    variant = 'small' if m.group(1) else 'big'
+    return (variant, int(m.group(2)), int(m.group(3)), int(m.group(4)))
 
 
 def collect():
@@ -45,13 +48,14 @@ def collect():
             continue
         ac = j.get('across_folds', {})
         recipe = j.get('recipe', {})
-        d_h_L = parse_tag(d.name)
+        v_d_h_L = parse_tag(d.name)
         fold_r2s = [r.get('r2', float('nan')) for r in j.get('fold_results', [])]
         rows.append({
             'tag': d.name,
-            'd_model':    d_h_L[0],
-            'num_heads':  d_h_L[1],
-            'num_layers': d_h_L[2],
+            'variant':    v_d_h_L[0],
+            'd_model':    v_d_h_L[1],
+            'num_heads':  v_d_h_L[2],
+            'num_layers': v_d_h_L[3],
             'epochs':     recipe.get('num_epochs'),
             'lr':         recipe.get('lr'),
             'max_oc':     recipe.get('max_oc'),
@@ -139,11 +143,11 @@ def main():
         md.append('Ranked by `score = r2_mean − 0.5 × r2_std` '
                   '(rewards high mean, penalizes cross-fold variance).')
         md.append('')
-        md.append('| Rank | tag | d_model | heads | layers | R² mean | R² std | RMSE | MAE | RPIQ | score |')
-        md.append('|------|-----|---------|-------|--------|---------|--------|------|-----|------|-------|')
+        md.append('| Rank | tag | variant | d_model | heads | layers | R² mean | R² std | RMSE | MAE | RPIQ | score |')
+        md.append('|------|-----|---------|---------|-------|--------|---------|--------|------|-----|------|-------|')
         for i, r in enumerate(ok, 1):
-            md.append(f'| {i} | {r["tag"]} | {r["d_model"]} | {r["num_heads"]} | '
-                      f'{r["num_layers"]} | {fmt(r["r2_mean"])} | '
+            md.append(f'| {i} | {r["tag"]} | {r["variant"]} | {r["d_model"]} | '
+                      f'{r["num_heads"]} | {r["num_layers"]} | {fmt(r["r2_mean"])} | '
                       f'{fmt(r["r2_std"])} | {fmt(r["rmse_mean"], 3)} | '
                       f'{fmt(r["mae_mean"], 3)} | {fmt(r["rpiq_mean"], 3)} | '
                       f'{fmt(score(r))} |')
@@ -152,10 +156,10 @@ def main():
             best = ok[0]
             md.append('## Recommended for full 300-epoch retrain')
             md.append('')
-            md.append(f'`--hidden_size {best["d_model"]} '
+            md.append(f'`--model-size {best["variant"]} '
+                      f'--hidden_size {best["d_model"]} '
                       f'--num_heads {best["num_heads"]} '
-                      f'--num_layers {best["num_layers"]} '
-                      f'--model-size big`')
+                      f'--num_layers {best["num_layers"]}`')
         (SWEEP_DIR / 'sweep_ranking.md').write_text('\n'.join(md))
         (SWEEP_DIR / 'sweep_ranking.json').write_text(
             json.dumps({'ranked': ok, 'pending': pending}, indent=2, default=str))

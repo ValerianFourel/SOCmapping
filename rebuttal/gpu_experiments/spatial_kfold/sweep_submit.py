@@ -50,24 +50,34 @@ LOG_DIR = SWEEP_DIR / 'slurm_logs'
 # All entries use --model-size big so --num_layers actually takes effect
 # (SimpleSGT/'small' is hardcoded to 1 layer and silently ignores --num_layers).
 # ---------------------------------------------------------------------------
-DEFAULT_GRID: list[tuple[int, int, int]] = [
-    # (d_model, num_heads, num_layers)
-    (48,  2, 1),    # tiny floor
-    (48,  2, 2),
-    (64,  2, 1),
-    (64,  2, 2),
-    (64,  2, 3),
-    (64,  4, 2),
-    (96,  4, 2),
-    (128, 4, 2),    # mid-size
+DEFAULT_GRID: list[tuple[str, int, int, int]] = [
+    # (variant, d_model, num_heads, num_layers)
+    # variant: 'big' = EnhancedSGT (uses num_layers), 'small' = SimpleSGT
+    # (num_layers is hardcoded to 1 in SimpleSGT and is ignored — pass it as 1).
+    ('big',   48,  2, 1),
+    ('big',   48,  2, 2),
+    ('big',   64,  2, 1),
+    ('big',   64,  2, 2),
+    ('big',   64,  2, 3),
+    ('big',   64,  4, 2),
+    ('big',   96,  4, 2),
+    ('big',  128,  4, 2),
+    # SimpleSGT rescue: simpler architecture, hit R²=+0.12 at fold 9 epoch 1
+    # in earlier exploration. L=1 is hardcoded; --num_layers ignored.
+    ('small', 64,  2, 1),
+    ('small', 96,  2, 1),
+    ('small', 128, 2, 1),
 ]
 
 
-def tag_for(d: int, h: int, L: int) -> str:
-    return f'd{d}_h{h}_L{L}'
+def tag_for(variant: str, d: int, h: int, L: int) -> str:
+    # 'big' tags keep the legacy d<H>_h<HEADS>_L<LAYERS> form so old summaries
+    # remain parseable; 'small' tags get a 'small_' prefix.
+    base = f'd{d}_h{h}_L{L}'
+    return base if variant == 'big' else f'small_{base}'
 
 
-def build_sbatch(tag: str, d: int, h: int, L: int, args) -> str:
+def build_sbatch(tag: str, variant: str, d: int, h: int, L: int, args) -> str:
     out_dir_abs = SWEEP_DIR / tag
     log_path = LOG_DIR / f'{tag}_%j.out'
     cmd = (
@@ -76,7 +86,7 @@ def build_sbatch(tag: str, d: int, h: int, L: int, args) -> str:
         f'--num-folds 10 --num-parallel 10 --folds-per-gpu 3 '
         f'--output-dir {shlex.quote(str(out_dir_abs))} '
         '-- '
-        '--model-size big '
+        f'--model-size {variant} '
         f'--hidden_size {d} --num_heads {h} --num_layers {L} '
         '--dropout_rate 0.5 '
         f'--lr {args.lr} --lr-scheduler cosine --lr-min 1e-6 '
@@ -149,8 +159,9 @@ def main():
 
     if a.grid:
         wanted = set(a.grid.split(','))
-        grid = [(d, h, L) for d, h, L in DEFAULT_GRID if tag_for(d, h, L) in wanted]
-        missing = wanted - {tag_for(d, h, L) for d, h, L in DEFAULT_GRID}
+        grid = [(v, d, h, L) for v, d, h, L in DEFAULT_GRID
+                if tag_for(v, d, h, L) in wanted]
+        missing = wanted - {tag_for(v, d, h, L) for v, d, h, L in DEFAULT_GRID}
         if missing:
             print(f'[sweep] WARNING: unknown tags ignored: {sorted(missing)}',
                   file=sys.stderr)
@@ -161,13 +172,13 @@ def main():
     print(f'[sweep] output root: {SWEEP_DIR}')
 
     submitted = []
-    for d, h, L in grid:
+    for variant, d, h, L in grid:
         if d % h != 0:
             print(f'[sweep] skip d={d} h={h} (hidden_size must be divisible by num_heads)',
                   file=sys.stderr)
             continue
-        tag = tag_for(d, h, L)
-        script_text = build_sbatch(tag, d, h, L, a)
+        tag = tag_for(variant, d, h, L)
+        script_text = build_sbatch(tag, variant, d, h, L, a)
         script_path = SBATCH_DIR / f'{tag}.sbatch'
         script_path.write_text(script_text)
         script_path.chmod(0o755)
