@@ -44,7 +44,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
 # ----- Path setup ---------------------------------------------------------
 # rebuttal/gpu_experiments/spatial_kfold/run_kfold.py → walk up to SOCmapping/
@@ -324,6 +324,51 @@ class _NormalizingWrapper(Dataset):
         return lon, lat, features, oc
 
 
+class _AugmentingWrapper(Dataset):
+    """D4 spatial augmentation for the train loader only.
+
+    Picks a random element of the dihedral group on the (H, W) plane of
+    `features` (last two dims): 4 rotations × 2 flips = 8 equivalence
+    classes. Soil patches have no orientation prior, so this is
+    label-preserving. Different draws of the same row give different views,
+    which is the point — combined with WeightedRandomSampler oversampling,
+    rare-OC rows stop being literal duplicates.
+    """
+    def __init__(self, base, seed: int = 0):
+        self.base = base
+        self._rng = np.random.default_rng(seed)
+
+    def __len__(self):
+        return len(self.base)
+
+    def __getitem__(self, idx):
+        lon, lat, features, oc = self.base[idx]
+        k = int(self._rng.integers(0, 4))
+        if k:
+            features = torch.rot90(features, k=k, dims=[-2, -1])
+        if self._rng.integers(0, 2):
+            features = torch.flip(features, dims=[-1])
+        return lon, lat, features, oc
+
+
+def compute_density_weights(oc_values: np.ndarray, alpha: float = 0.5,
+                             eps: float = 1e-6) -> np.ndarray:
+    """Per-sample weights ∝ kde(log(OC))^(-alpha), normalized to mean 1.
+
+    log(OC) because SOC is approximately log-normal. KDE bandwidth from
+    Scott's rule (scipy default) — not tuned. alpha=0 → uniform,
+    alpha=1 → full inverse-frequency, alpha=0.5 → sqrt-frequency (the
+    standard imbalance-regression compromise; Yang et al. ICML 2021).
+    """
+    from scipy.stats import gaussian_kde
+    log_oc = np.log(np.maximum(oc_values.astype(float), eps))
+    kde = gaussian_kde(log_oc)           # Scott's rule by default
+    density = kde(log_oc)
+    w = np.power(np.maximum(density, eps), -alpha)
+    w = w * (len(w) / w.sum())           # mean weight = 1
+    return w.astype(np.float64)
+
+
 _FULL_FEATURE_STATS_CACHE = None
 
 
@@ -362,10 +407,23 @@ def train_one_fold(args, fold: dict, df: pd.DataFrame,
 
     train_df_raw = df.loc[fold['train_idx']].reset_index(drop=True)
     test_df = df.loc[fold['test_idx']].reset_index(drop=True)
-    train_df = rebalance_by_oc_bin(train_df_raw, n_bins=args.rebalance_n_bins,
-                                    min_ratio=args.rebalance_min_ratio)
 
-    print(f'n_train_raw={len(train_df_raw)}  n_train_rebalanced={len(train_df)}  '
+    # Sampler mode: kde (KDE-density weighted, no duplication) or qcut (legacy
+    # quantile-bin upsampling with literal row duplication).
+    sample_weights: np.ndarray | None = None
+    if args.sampler_mode == 'kde':
+        train_df = train_df_raw
+        sample_weights = compute_density_weights(
+            train_df['OC'].to_numpy(), alpha=args.alpha_density)
+        print(f'KDE sampler: alpha={args.alpha_density}  '
+              f'w in [{sample_weights.min():.3f}, {sample_weights.max():.3f}]  '
+              f'mean={sample_weights.mean():.3f}', flush=True)
+    else:
+        train_df = rebalance_by_oc_bin(
+            train_df_raw, n_bins=args.rebalance_n_bins,
+            min_ratio=args.rebalance_min_ratio)
+
+    print(f'n_train_raw={len(train_df_raw)}  n_train={len(train_df)}  '
           f'n_test={len(test_df)}  n_buffer_excluded={len(fold["buffer_idx"])}',
           flush=True)
     print(f'Test SOC: mean={test_df.OC.mean():.2f} std={test_df.OC.std():.2f} '
@@ -374,9 +432,22 @@ def train_one_fold(args, fold: dict, df: pd.DataFrame,
 
     train_ds = make_dataset(train_df, feature_means, feature_stds)
     test_ds = make_dataset(test_df, feature_means, feature_stds)
+    if args.augment_train:
+        train_ds = _AugmentingWrapper(train_ds, seed=seed)
+        print('Train augmentation: D4 spatial (rot90 × flip)', flush=True)
+
     num_workers = int(os.environ.get('SOC_KFOLD_NUM_WORKERS', 0))
-    train_loader = DataLoader(train_ds, batch_size=args.per_gpu_batch_size,
-                              shuffle=True, num_workers=num_workers, pin_memory=True)
+    if sample_weights is not None:
+        sampler = WeightedRandomSampler(
+            weights=torch.as_tensor(sample_weights, dtype=torch.double),
+            num_samples=len(train_ds), replacement=True)
+        train_loader = DataLoader(train_ds, batch_size=args.per_gpu_batch_size,
+                                  sampler=sampler, num_workers=num_workers,
+                                  pin_memory=True)
+    else:
+        train_loader = DataLoader(train_ds, batch_size=args.per_gpu_batch_size,
+                                  shuffle=True, num_workers=num_workers,
+                                  pin_memory=True)
     test_loader = DataLoader(test_ds, batch_size=args.per_gpu_batch_size,
                              shuffle=False, num_workers=num_workers, pin_memory=True)
 
@@ -481,7 +552,22 @@ def train_one_fold(args, fold: dict, df: pd.DataFrame,
     q1, q3 = np.percentile(test_actual, [25, 75])
     rpiq = float((q3 - q1) / rmse) if rmse > 0 else float('inf')
 
-    return {
+    test_year = test_df['year'].to_numpy()
+    test_alt = (test_df['altitude'].to_numpy() if 'altitude' in test_df.columns
+                else np.full(len(test_df), np.nan))
+
+    # Persist per-fold predictions so --aggregate-only can reconstruct the
+    # cross-fold tables even when folds were launched as separate processes
+    # (via run_folds_parallel.py).
+    per_fold_pred_path = OUT_DIR / f'fold_{fold_id}_predictions.parquet'
+    pd.DataFrame({
+        'GPS_LAT': test_lat, 'GPS_LONG': test_lon,
+        'OC_actual': test_actual, 'OC_predicted': test_pred,
+        'fold_id': fold_id, 'year': test_year, 'altitude': test_alt,
+    }).to_parquet(per_fold_pred_path)
+    print(f'Saved {per_fold_pred_path}', flush=True)
+
+    per_fold_metrics = {
         'fold_id': fold_id,
         'lat_lo': fold['lat_lo'], 'lat_hi': fold['lat_hi'],
         'n_test': int(len(test_df)),
@@ -497,13 +583,16 @@ def train_one_fold(args, fold: dict, df: pd.DataFrame,
         'r2': r2, 'pearson_r2': pearson_r2, 'pearson_r': pearson_r,
         'rmse': rmse, 'mae': mae, 'bias': bias, 'rpiq': rpiq,
         'best_epoch_r2_during_training': float(best_r2),
+    }
+    (OUT_DIR / f'fold_{fold_id}_summary.json').write_text(
+        json.dumps(per_fold_metrics, indent=2, default=str))
+
+    return {
+        **per_fold_metrics,
         '_predictions': {
             'lon': test_lon, 'lat': test_lat,
             'pred': test_pred, 'actual': test_actual,
-            'year': test_df['year'].to_numpy(),
-            'altitude': (test_df['altitude'].to_numpy()
-                          if 'altitude' in test_df.columns
-                          else np.full(len(test_df), np.nan)),
+            'year': test_year, 'altitude': test_alt,
         },
     }
 
@@ -511,6 +600,76 @@ def train_one_fold(args, fold: dict, df: pd.DataFrame,
 # --------------------------------------------------------------------------
 # Reporting (mostly unchanged from previous version)
 # --------------------------------------------------------------------------
+OC_BANDS_GKG: list[tuple[float, float]] = [
+    (0.0, 20.0), (20.0, 40.0), (40.0, 80.0), (80.0, float('inf'))
+]
+
+
+def _band_label(lo: float, hi: float) -> str:
+    return f'[{lo:g}, {hi:g})' if np.isfinite(hi) else f'[{lo:g}, ∞)'
+
+
+def _metrics_for(pred: np.ndarray, actual: np.ndarray) -> dict:
+    """R²/RMSE/MAE/RPIQ on a (pred, actual) pair. NaN-safe."""
+    n = len(actual)
+    if n == 0 or len(pred) != n:
+        return {'n': 0, 'r2': float('nan'), 'pearson_r2': float('nan'),
+                'rmse': float('nan'), 'mae': float('nan'),
+                'bias': float('nan'), 'rpiq': float('nan')}
+    ss_res = float(np.sum((actual - pred) ** 2))
+    ss_tot = float(np.sum((actual - actual.mean()) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float('nan')
+    rmse = float(np.sqrt(ss_res / n))
+    mae = float(np.mean(np.abs(pred - actual)))
+    bias = float((pred - actual).mean())
+    if n >= 2 and np.std(pred) > 0 and np.std(actual) > 0:
+        pr = float(np.corrcoef(pred, actual)[0, 1])
+    else:
+        pr = float('nan')
+    q1, q3 = np.percentile(actual, [25, 75]) if n >= 4 else (np.nan, np.nan)
+    rpiq = float((q3 - q1) / rmse) if rmse > 0 and np.isfinite(q1) else float('nan')
+    return {'n': int(n), 'r2': r2, 'pearson_r2': pr ** 2 if pr == pr else float('nan'),
+            'rmse': rmse, 'mae': mae, 'bias': bias, 'rpiq': rpiq}
+
+
+def _pooled_predictions(fold_results: list[dict]) -> pd.DataFrame:
+    frames = []
+    for r in fold_results:
+        p = r['_predictions']
+        frames.append(pd.DataFrame({
+            'GPS_LAT': p['lat'], 'GPS_LONG': p['lon'],
+            'OC_actual': p['actual'], 'OC_predicted': p['pred'],
+            'fold_id': r['fold_id'], 'year': p['year'],
+            'altitude': p['altitude'],
+        }))
+    return pd.concat(frames, ignore_index=True)
+
+
+def stratified_band_metrics(pooled: pd.DataFrame) -> list[dict]:
+    """Compute per-OC-band metrics on the pooled (across-fold) predictions.
+
+    Reports both the regime-restricted metrics (essential for the rebuttal —
+    answers 'is the headline R² coming from the easy mineral-soil middle?')
+    and an 'all rows' row spanning the full kept range.
+    """
+    actual = pooled['OC_actual'].to_numpy()
+    pred = pooled['OC_predicted'].to_numpy()
+    out = []
+    for lo, hi in OC_BANDS_GKG:
+        mask = (actual >= lo) & (actual < hi)
+        m = _metrics_for(pred[mask], actual[mask])
+        m['band'] = _band_label(lo, hi)
+        m['lo'] = lo
+        m['hi'] = hi
+        out.append(m)
+    m_all = _metrics_for(pred, actual)
+    m_all['band'] = 'all'
+    m_all['lo'] = float(actual.min()) if len(actual) else float('nan')
+    m_all['hi'] = float(actual.max()) if len(actual) else float('nan')
+    out.append(m_all)
+    return out
+
+
 def write_results(fold_results: list[dict], args):
     rows = []
     for r in fold_results:
@@ -528,6 +687,14 @@ def write_results(fold_results: list[dict], args):
     mae_m, mae_s, mae_ci = ci95(summary_df['mae'].to_numpy())
     rpiq_m, rpiq_s, rpiq_ci = ci95(summary_df['rpiq'].to_numpy())
 
+    pooled = _pooled_predictions(fold_results)
+    band_rows = stratified_band_metrics(pooled)
+
+    sampler_mode = getattr(args, 'sampler_mode', 'qcut')
+    alpha_density = getattr(args, 'alpha_density', None)
+    augment_train = getattr(args, 'augment_train', False)
+    max_oc = getattr(args, 'max_oc', None)
+
     summary_json = {
         'fold_results': rows,
         'across_folds': {
@@ -536,6 +703,7 @@ def write_results(fold_results: list[dict], args):
             'mae_mean': mae_m, 'mae_std': mae_s, 'mae_ci95': mae_ci,
             'rpiq_mean': rpiq_m, 'rpiq_std': rpiq_s, 'rpiq_ci95': rpiq_ci,
         },
+        'pooled_by_oc_band': band_rows,
         'original_single_split': ORIGINAL_SINGLE_SPLIT,
         'n_folds': args.num_folds,
         'distance_threshold_km': args.fold_buffer_km,
@@ -548,6 +716,10 @@ def write_results(fold_results: list[dict], args):
             'effective_batch_size': args.effective_batch_size,
             'lr_scheduler': args.lr_scheduler, 'lr_min': args.lr_min,
             'num_heads': args.num_heads, 'num_layers': args.num_layers,
+            'max_oc': max_oc,
+            'sampler_mode': sampler_mode,
+            'alpha_density': alpha_density,
+            'augment_train': augment_train,
             'rebalance_n_bins': args.rebalance_n_bins,
             'rebalance_min_ratio': args.rebalance_min_ratio,
         },
@@ -555,20 +727,33 @@ def write_results(fold_results: list[dict], args):
     (OUT_DIR / 'kfold_results_summary.json').write_text(
         json.dumps(summary_json, indent=2, default=str))
 
+    if sampler_mode == 'kde':
+        sampler_desc = (f'KDE-weighted sampling on log(OC) with α={alpha_density} '
+                        f'(no row duplication; rare-OC samples drawn ~k× more often '
+                        f'per epoch, each draw a fresh augmented patch).')
+    else:
+        sampler_desc = (f'Legacy qcut rebalancing: {args.rebalance_n_bins} OC '
+                        f'quantile bins upsampled (by duplication) to '
+                        f'≥ {args.rebalance_min_ratio:.0%} of the densest bin.')
+    aug_desc = ('D4 spatial augmentation (rot90 × flip) applied to train patches.'
+                if augment_train else 'No train augmentation.')
+
     md = []
     md.append(f'# Spatial {args.num_folds}-fold CV — latitude deciles (equal n)')
     md.append('')
     md.append(f'Each fold\'s test half is one decile of GPS_LAT '
               f'(~{int(100/args.num_folds)}% of points). Train pool is the '
               f'complement, minus a {args.fold_buffer_km} km buffer zone. '
-              f'Per-fold train half rebalanced via 128-qcut OC bins to '
-              f'≥ 75% of the densest bin. EnhancedSGT (heads={args.num_heads}, '
-              f'layers={args.num_layers}, ~{1_120_546 if args.num_heads==4 else "?"} '
-              f'params) trained for {args.num_epochs} epochs with '
-              f'`{args.lr_scheduler}` LR schedule from {args.lr} → '
+              f'**Modeling domain: OC ≤ {max_oc} g/kg** (non-histosol soils, '
+              f'per WRB). {sampler_desc} {aug_desc} EnhancedSGT '
+              f'(heads={args.num_heads}, layers={args.num_layers}) trained for '
+              f'{args.num_epochs} epochs with `{args.lr_scheduler}` LR schedule '
+              f'from {args.lr} → '
               f'{args.lr_min if args.lr_scheduler in ("cosine","cosine_warm_restarts") else "n/a"}, '
               f'Adam, {args.loss_type.upper()} on {args.target_transform}'
               f'-transformed target.')
+    md.append('')
+    md.append('## Per-fold metrics')
     md.append('')
     md.append('| Fold | Lat range | n_test | n_train | R² | RMSE (g/kg) | MAE (g/kg) | RPIQ |')
     md.append('|------|-----------|--------|---------|-----|-------------|------------|------|')
@@ -588,6 +773,22 @@ def write_results(fold_results: list[dict], args):
               f'{ORIGINAL_SINGLE_SPLIT["rmse"]:.3f} | '
               f'{ORIGINAL_SINGLE_SPLIT["mae"]:.3f} | '
               f'{ORIGINAL_SINGLE_SPLIT["rpiq"]:.3f} |')
+    md.append('')
+
+    md.append('## Pooled metrics by OC band (across all folds)')
+    md.append('')
+    md.append('Predictions concatenated across all 10 fold test sets, then binned '
+              'by actual OC. This is the regime-by-regime breakdown — answers the '
+              'reviewer question "where does the R² come from?"')
+    md.append('')
+    md.append('| OC band (g/kg) | n | R² | RMSE (g/kg) | MAE (g/kg) | Bias | RPIQ |')
+    md.append('|-----------------|----|-----|-------------|------------|------|------|')
+    for b in band_rows:
+        if b['n'] == 0:
+            continue
+        md.append(f'| {b["band"]} | {b["n"]} | {b["r2"]:.4f} | '
+                  f'{b["rmse"]:.3f} | {b["mae"]:.3f} | '
+                  f'{b["bias"]:+.3f} | {b["rpiq"]:.3f} |')
     md.append('')
     (OUT_DIR / 'kfold_results.md').write_text('\n'.join(md))
 
@@ -703,13 +904,92 @@ def parse_args():
                         'Default: run all folds sequentially.')
     p.add_argument('--seed-base', type=int, default=42,
                    help='Per-fold seed = seed_base + fold_id.')
+    # ----- Modeling-domain cap (the rebuttal anchor) -----
+    p.add_argument('--max-oc', type=float, default=120.0,
+                   help='Upper OC cap in g/kg applied after loading the parquet. '
+                        '120 = WRB histosol threshold (default; non-histosol soils only). '
+                        'Pass 150 for the legacy no-cap behavior.')
+    # ----- Sampler / rebalancing -----
+    p.add_argument('--sampler-mode', type=str, default='kde',
+                   choices=['kde', 'qcut'],
+                   help='Train sampler: kde = WeightedRandomSampler on '
+                        'kde(log(OC))^(-alpha), no duplication (recommended). '
+                        'qcut = legacy quantile-bin row duplication.')
+    p.add_argument('--alpha-density', type=float, default=0.5,
+                   help='KDE sampler exponent. 0=uniform, 1=full inverse-frequency. '
+                        '0.5 = sqrt-frequency (Yang et al. ICML 2021).')
+    p.add_argument('--augment-train', action=argparse.BooleanOptionalAction,
+                   default=True,
+                   help='Apply D4 spatial augmentation (rot90 × flip) to train '
+                        'patches. Soil has no orientation prior; this is '
+                        'label-preserving. Use --no-augment-train to disable.')
     p.add_argument('--rebalance-n-bins', type=int, default=128,
-                   help='Number of OC quantile bins for per-bin oversample.')
+                   help='[qcut mode only] Number of OC quantile bins.')
     p.add_argument('--rebalance-min-ratio', type=float, default=0.75,
-                   help='Per-bin floor as fraction of densest bin. 0=disable.')
+                   help='[qcut mode only] Per-bin floor as fraction of densest bin.')
+    p.add_argument('--aggregate-only', action='store_true',
+                   help='Skip training. Read all fold_<i>_predictions.parquet '
+                        'from OUT_DIR and write the cross-fold summary + '
+                        'stratified-by-band tables.')
     p.add_argument('--skip-figure', action='store_true',
                    help='Skip matplotlib figure (faster, lighter deps).')
     return p.parse_args()
+
+
+# --------------------------------------------------------------------------
+# Aggregate-only mode — reconstructs fold_results from per-fold parquets
+# --------------------------------------------------------------------------
+def aggregate_from_disk(args) -> int:
+    pred_paths = sorted(OUT_DIR.glob('fold_*_predictions.parquet'))
+    if not pred_paths:
+        print(f'[aggregate-only] no fold_*_predictions.parquet in {OUT_DIR}',
+              file=sys.stderr)
+        return 1
+
+    fold_results = []
+    for pp in pred_paths:
+        fid = int(pp.stem.split('_')[1])
+        p = pd.read_parquet(pp)
+        summary_p = OUT_DIR / f'fold_{fid}_summary.json'
+        if summary_p.exists():
+            meta = json.loads(summary_p.read_text())
+        else:
+            actual = p['OC_actual'].to_numpy()
+            pred = p['OC_predicted'].to_numpy()
+            meta = {'fold_id': fid,
+                    'lat_lo': float(p['GPS_LAT'].min()),
+                    'lat_hi': float(p['GPS_LAT'].max()),
+                    'n_test': len(p), 'n_train': 0, 'n_train_raw': 0,
+                    'n_buffer': 0, 'accum_steps': 0, 'effective_batch_size': 0,
+                    'test_oc_mean': float(actual.mean()),
+                    'test_oc_std': float(actual.std()),
+                    'test_oc_max': float(actual.max()),
+                    'test_pct_gt_50': float(100 * (actual > 50).mean()),
+                    'best_epoch_r2_during_training': float('nan'),
+                    **_metrics_for(pred, actual)}
+        fold_results.append({
+            **meta,
+            '_predictions': {
+                'lon': p['GPS_LONG'].to_numpy(),
+                'lat': p['GPS_LAT'].to_numpy(),
+                'pred': p['OC_predicted'].to_numpy(),
+                'actual': p['OC_actual'].to_numpy(),
+                'year': p['year'].to_numpy() if 'year' in p.columns
+                        else np.zeros(len(p), dtype=int),
+                'altitude': (p['altitude'].to_numpy() if 'altitude' in p.columns
+                             else np.full(len(p), np.nan)),
+            },
+        })
+    fold_results.sort(key=lambda r: r['fold_id'])
+    print(f'[aggregate-only] loaded {len(fold_results)} folds, '
+          f'{sum(len(r["_predictions"]["actual"]) for r in fold_results)} '
+          f'pooled predictions.', flush=True)
+
+    write_results(fold_results, args)
+    write_predictions_parquet(fold_results)
+    print(f'[aggregate-only] wrote kfold_results.md + summary.json + '
+          f'kfold_predictions_all_folds.parquet to {OUT_DIR}', flush=True)
+    return 0
 
 
 # --------------------------------------------------------------------------
@@ -718,9 +998,20 @@ def parse_args():
 def main():
     args = parse_args()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    if args.aggregate_only:
+        rc = aggregate_from_disk(args)
+        sys.exit(rc)
+
     _build_model_ready_dataset()
 
     df = pd.read_parquet(MODEL_READY).reset_index(drop=True)
+    if args.max_oc is not None and args.max_oc > 0:
+        n_before = len(df)
+        df = df[df['OC'] <= args.max_oc].reset_index(drop=True)
+        print(f'Applied --max-oc {args.max_oc:.1f} g/kg: kept {len(df):,}/{n_before:,} '
+              f'({100*len(df)/n_before:.2f}%)  '
+              f'OC max in set = {df["OC"].max():.1f}', flush=True)
     folds_meta = build_folds_latitude_deciles(
         df, n_folds=args.num_folds, buffer_km=args.fold_buffer_km)
     print(f'Loaded {len(df)} rows from {MODEL_READY}', flush=True)

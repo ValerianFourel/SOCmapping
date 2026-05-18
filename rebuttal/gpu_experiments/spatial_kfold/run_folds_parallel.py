@@ -177,6 +177,24 @@ def main():
         print(f"[orchestrator] inspect logs: {out_dir}/fold_<i>_console.log")
         sys.exit(1)
 
+    # Aggregate: read all per-fold predictions and write the cross-fold tables.
+    # Passthrough is reused so the recipe metadata (max_oc, sampler_mode, etc.)
+    # ends up in kfold_results.md / summary.json.
+    print(f"[orchestrator] aggregating cross-fold results …")
+    agg_cmd = [sys.executable, str(RUN_KFOLD),
+               '--aggregate-only',
+               '--num-folds', str(args.num_folds)] + passthrough
+    agg_env = os.environ.copy()
+    agg_env.setdefault('WANDB_MODE', 'disabled')
+    rc = subprocess.call(agg_cmd, env=agg_env, cwd=str(HERE.parents[2]))
+    if rc != 0:
+        print(f"[orchestrator] aggregate-only step failed (rc={rc}). "
+              f"Per-fold parquets are still on disk; rerun manually with "
+              f"`python {RUN_KFOLD.name} --aggregate-only`.")
+        sys.exit(rc)
+    print(f"[orchestrator] kfold_results.md + summary.json written to "
+          f"{out_dir}")
+
 
 if __name__ == "__main__":
     main()
