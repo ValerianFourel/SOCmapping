@@ -531,3 +531,43 @@ FoundationalModels/models
 
 __pycache__/
 *.pyc
+
+# === Generated artifacts (added 2026-05-18 after accidental bulk commit) ===
+
+# Large binary outputs
+*.tif
+*.tiff
+*.pdf
+*.eps
+*.pkl
+*.zip
+
+# Training experiment outputs (run-specific, never code)
+**/output/
+**/output_tft/
+**/split_stats.log
+**/split_stats.txt
+**/training_metrics_*.txt
+**/training_summary_*.txt
+**/model_statistics*.txt
+
+# Map renders (regenerable from scripts)
+Maps/Bavaria_Bands_*/
+Maps/bavaria_landcover_*/
+Maps/bavaria_slope/
+
+# Analysis artifacts
+**/residual_analysis/
+rebuttal/
+balancedDataset/ImagesOutput/
+
+# Archived third-party code (kept locally, not in repo)
+archive/
+**/archive/
+
+# Caches
+**/*_cache.csv
+
+# Session/diagnostic docs (regenerable from chat or per-session)
+SESSION_LOG.md
+DIAGNOSTIC_REPORT.md

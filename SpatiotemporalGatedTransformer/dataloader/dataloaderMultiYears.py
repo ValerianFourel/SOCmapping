@@ -80,8 +80,15 @@ class RasterTensorDataset(Dataset):
         Returns:
         torch.Tensor: window_size x window_size tensor
         """
+        # coordinates.npy stores id_num/x/y as float64; coerce so dict lookup and slice indices work.
+        id_num = int(id_num)
+        x = int(x)
+        y = int(y)
         if id_num not in self.id_to_file:
-            raise ValueError(f"ID {id_num} not found in dataset")
+            raise ValueError(
+                f"ID {id_num} not found in dataset at {self.folder_path} "
+                f"(available IDs: {sorted(self.id_to_file.keys())})"
+            )
 
         # Get the data array
         if id_num in self.data_cache:
