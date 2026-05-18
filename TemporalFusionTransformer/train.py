@@ -164,8 +164,12 @@ def parse_args():
     parser.add_argument('--use_validation', action='store_true', default=False, help='Whether to use validation set')
     parser.add_argument('--output-dir', type=str, default='output', help='Output directory')
     parser.add_argument('--target-val-ratio', type=float, default=0.10,
-                        help='Target validation/test ratio. Default 0.10 = 10% '
-                             'held out (~1,651 of 16,514 Bavaria points).')
+                        help='Upper bound on test ratio. Default 0.10. '
+                             'Treated as a LIMITING FACTOR — the split function '
+                             'may return fewer test points if hitting this exact '
+                             'count would require sacrificing distribution match. '
+                             'Distribution similarity (gates) > distance buffer > '
+                             'count in priority order.')
     parser.add_argument('--use-gpu', action='store_true', default=True, help='Use GPU')
     parser.add_argument('--distance-threshold', type=float, default=0.5,
                         help='Minimum km between any test point and its nearest '
@@ -270,6 +274,26 @@ def parse_args():
                         help='Retry budget for the stratified split (raised '
                              'from the historical 20 so the tighter tolerances '
                              'have room to find a passing split).')
+    # --- Priority order enforcement -----------------------------------
+    # The split function ranks constraints as:
+    #   1. distribution similarity (KS + mean + std + mode tolerances)
+    #   2. spatial buffer (distance_threshold)
+    #   3. count (target_val_ratio = upper bound, not hard target)
+    # By default we now skip the cross-bin top-up that used to bias the
+    # split toward over-survivor bins (high-OC tail in spatially-isolated
+    # regions) just to hit the count target. Pass --no-prioritize-distribution
+    # to restore the legacy behaviour. --strict-match raises instead of
+    # falling back to best-score if no retry satisfies every active gate.
+    parser.add_argument('--strict-match', action='store_true', default=False,
+                        help='Raise RuntimeError if no retry of --split-max-retries '
+                             'satisfies ALL active matching gates. Off by default '
+                             '(best-effort fallback). Use in paper-grade runs to '
+                             'guarantee no silent drift past tolerances.')
+    parser.add_argument('--no-prioritize-distribution', dest='prioritize_distribution',
+                        action='store_false', default=True,
+                        help='Re-enable legacy cross-bin top-up that fills test set '
+                             'to exactly --target-val-ratio at the cost of distribution '
+                             'match. Default (prioritize) treats count as an upper bound.')
     parser.add_argument('--test-oc-max', type=float, default=50.0,
                         help='Upper OC cap for the test set (g/kg). Default '
                              '50.0: points with OC > 50 are reserved for '
@@ -918,6 +942,8 @@ if __name__ == "__main__":
                     mode_tol=args.match_mode_tol if args.match_mode_tol > 0 else None,
                     max_retries=args.split_max_retries,
                     test_oc_max=args.test_oc_max if args.test_oc_max > 0 else None,
+                    strict_match=args.strict_match,
+                    prioritize_distribution=args.prioritize_distribution,
                 )
             else:
                 val_df, train_df, min_distance_stats = create_validation_train_sets(

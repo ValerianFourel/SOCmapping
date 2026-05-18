@@ -309,7 +309,9 @@ def create_stratified_validation_train_sets(df=None,
                                              mean_tol=None,
                                              std_tol=None,
                                              mode_tol=None,
-                                             test_oc_max=None):
+                                             test_oc_max=None,
+                                             strict_match=False,
+                                             prioritize_distribution=True):
     """Stratified-spatial train/val split with optional KS-pvalue gate.
 
     Parameters
@@ -479,10 +481,17 @@ def create_stratified_validation_train_sets(df=None,
             final_val_dists_list.extend(bin_survivors['_min_dist'].values[:take].tolist())
 
         final_val_idx = np.array(final_val_idx_list, dtype=np.int64)
-        # If after per-bin truncation we're still below target (some bins
-        # have very few survivors), top up by taking the next-best survivors
-        # globally, regardless of bin.
-        if len(final_val_idx) < target_val_size:
+        # If after per-bin truncation we're still below target, top up by
+        # taking the next-best survivors. Two modes:
+        #   prioritize_distribution=True (default): skip top-up — keeping
+        #     per-bin proportions intact is more important than hitting the
+        #     count target. Distribution-match takes priority over count
+        #     (treated as an upper bound / "limiting factor").
+        #   prioritize_distribution=False: cross-bin top-up to hit
+        #     target_val_size (legacy behaviour). Tends to pull from the
+        #     over-survivor bins (spatially-isolated high-OC tail), which
+        #     biases the test set.
+        if not prioritize_distribution and len(final_val_idx) < target_val_size:
             remaining = survivor_df.drop(index=final_val_idx, errors='ignore')
             remaining = remaining.sort_values('_min_dist', ascending=False)
             need = target_val_size - len(final_val_idx)
@@ -555,10 +564,37 @@ def create_stratified_validation_train_sets(df=None,
         train_df = pd.concat([train_df, outlier_df_clean], ignore_index=True)
         print(f"Reattached {len(outlier_df)} OC>{test_oc_max} outlier rows "
               f"to train: {n_train_pre} → {len(train_df)}.")
+    # Did the best split actually pass every active gate?
+    gates_ok = ks_pvalue >= ks_pvalue_min
+    if mean_tol is not None: gates_ok = gates_ok and mean_diff <= mean_tol
+    if std_tol  is not None: gates_ok = gates_ok and std_diff  <= std_tol
+    if mode_tol is not None: gates_ok = gates_ok and mode_diff <= mode_tol
+
+    if not gates_ok and strict_match:
+        # Hard fail — the user said distribution match is the first priority,
+        # not best-effort. Refuse to silently degrade.
+        raise RuntimeError(
+            f"Stratified split: --strict-match requested but no retry of "
+            f"{max_retries} satisfied every gate. "
+            f"Best: KS p={ks_pvalue:.4f} (gate {ks_pvalue_min}), "
+            f"mean_diff={mean_diff*100:.2f}% (tol {mean_tol*100 if mean_tol else float('inf')}%), "
+            f"std_diff={std_diff*100:.2f}% (tol {std_tol*100 if std_tol else float('inf')}%), "
+            f"mode_diff={mode_diff:.3f} (tol {mode_tol if mode_tol else float('inf')}). "
+            f"Either loosen --match-*-tol / --distance-threshold, raise "
+            f"--split-max-retries, or pass --no-strict-match to accept the "
+            f"best-effort split.")
     if ks_pvalue < ks_pvalue_min:
         logger.warning(
             f"Stratified split: best KS p-value {ks_pvalue:.4f} < gate {ks_pvalue_min}; "
             f"using best of {max_retries} attempts anyway.")
+    # Print the priority order so the user can confirm what's being enforced.
+    actual_target = max(1, int(round(len(df) * target_val_ratio)))
+    n_test = len(val_df)
+    print(f"Priority order [distribution → distance → count]:  "
+          f"gates {'PASS' if gates_ok else 'BEST-EFFORT'}  |  "
+          f"buffer ≥ {distance_threshold:.2f}km  |  "
+          f"test n={n_test} (target ≤ {actual_target}, "
+          f"distribution priority {'kept' if prioritize_distribution else 'overridden by cross-bin top-up'})")
     # Log all match metrics so the user can see how tight the final split is.
     # When test_oc_max is active, mean/std are evaluated on train[in-range]
     # vs test (apples-to-apples); mode is computed on full train vs test.
