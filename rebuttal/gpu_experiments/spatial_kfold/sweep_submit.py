@@ -73,6 +73,29 @@ DEFAULT_GRID: list[tuple[str, int, int, int]] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Baseline grid — tree ensembles on the SAME 10-fold splits.
+# Each entry: (model, tag_suffix, extra_args_list_passed_to_run_baselines).
+# Bundled into ONE sbatch (--gres=gpu:1) so the 80-feature per-band-stats
+# extraction (~3 min) only runs once and is cached for subsequent configs.
+# ---------------------------------------------------------------------------
+BASELINE_GRID: list[tuple[str, str, list[str]]] = [
+    # XGBoost — vary depth × n_estimators × learning rate
+    ('xgb', 'default',  ['--xgb-n-estimators', '2000', '--xgb-max-depth', '6',
+                          '--xgb-lr', '0.05']),
+    ('xgb', 'shallow',  ['--xgb-n-estimators', '2000', '--xgb-max-depth', '4',
+                          '--xgb-lr', '0.05']),
+    ('xgb', 'deep',     ['--xgb-n-estimators', '1000', '--xgb-max-depth', '8',
+                          '--xgb-lr', '0.05']),
+    ('xgb', 'fast',     ['--xgb-n-estimators', '500',  '--xgb-max-depth', '6',
+                          '--xgb-lr', '0.1']),
+    # Random Forest — vary depth × n_estimators
+    ('rf',  'default',  ['--rf-n-estimators', '500',   '--rf-max-depth', '0']),
+    ('rf',  'shallow',  ['--rf-n-estimators', '500',   '--rf-max-depth', '8']),
+    ('rf',  'deep',     ['--rf-n-estimators', '1000',  '--rf-max-depth', '0']),
+]
+
+
 def tag_for(variant: str, d: int, h: int, L: int) -> str:
     # 'big' tags keep the legacy d<H>_h<HEADS>_L<LAYERS> form so old summaries
     # remain parseable; 'small' tags get a 'small_' prefix.
@@ -133,6 +156,64 @@ echo "---"
 '''
 
 
+def build_baseline_sbatch(args) -> str:
+    """One sbatch script that runs every BASELINE_GRID config in sequence.
+
+    All baselines share the same per-band-statistics feature extraction
+    (~3 min on 14.7k samples). run_baselines.py caches that to a .npz on
+    the shared filesystem, so only the first config in the bundle pays
+    the I/O cost. Each subsequent config just loads the cache and fits
+    its tree ensemble (~30s-2min depending on size).
+
+    1 GPU is enough — XGBoost-GPU and cuML-RF each use a single device.
+    """
+    log_path = LOG_DIR / 'baselines_%j.out'
+    venv_activate = (
+        f'source {shlex.quote(str(args.venv_activate))}'
+        if args.venv_activate else 'true  # no venv activation requested'
+    )
+
+    invocations = []
+    for model, suffix, extra in BASELINE_GRID:
+        extra_str = ' '.join(shlex.quote(a) for a in extra)
+        invocations.append(
+            f'echo "[baselines] === {model}_{suffix} ==="\n'
+            f'WANDB_MODE=disabled PYTHONUNBUFFERED=1 '
+            f'python rebuttal/gpu_experiments/spatial_kfold/run_baselines.py '
+            f'--models {model} --tag-suffix {suffix} '
+            f'--max-oc {args.max_oc} --target-transform log --device cuda '
+            f'{extra_str}'
+        )
+    body = '\n\n'.join(invocations)
+
+    return f'''#!/bin/bash
+#SBATCH --job-name=sgt-baselines
+#SBATCH --partition={args.partition}
+#SBATCH --account={args.account}
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=12
+#SBATCH --gres=gpu:1
+#SBATCH --time=02:00:00
+#SBATCH --output={log_path}
+#SBATCH --error={log_path}
+
+set -euo pipefail
+cd {shlex.quote(str(SOC_ROOT))}
+{venv_activate}
+
+echo "[baselines] node=$(hostname)  job=$SLURM_JOB_ID  gpus=$(nvidia-smi -L | wc -l)"
+echo "[baselines] {len(BASELINE_GRID)} configs to run (XGB + RF variants)"
+echo "[baselines] feature cache: shared across configs at same --max-oc"
+echo "---"
+
+{body}
+
+echo "---"
+echo "[baselines] all configs complete."
+'''
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -158,54 +239,87 @@ def main():
                         'Default: ../venv/bin/activate relative to SOCmapping. '
                         'Pass empty string to skip.')
     p.add_argument('--grid', type=str, default=None,
-                   help='Comma-separated config tags to submit (e.g. "d64_h2_L2,d96_h4_L2"). '
+                   help='Comma-separated SGT config tags to submit. '
                         'Default: all entries in DEFAULT_GRID.')
+    p.add_argument('--baselines', action=argparse.BooleanOptionalAction,
+                   default=True,
+                   help='Also submit the bundled baseline job (RF + XGB variants). '
+                        'Pass --no-baselines to skip; --baselines-only to submit just those.')
+    p.add_argument('--baselines-only', action='store_true',
+                   help='Submit only the baseline bundle, skip SGT configs.')
     a = p.parse_args()
 
     SBATCH_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-    if a.grid:
-        wanted = set(a.grid.split(','))
-        grid = [(v, d, h, L) for v, d, h, L in DEFAULT_GRID
-                if tag_for(v, d, h, L) in wanted]
-        missing = wanted - {tag_for(v, d, h, L) for v, d, h, L in DEFAULT_GRID}
-        if missing:
-            print(f'[sweep] WARNING: unknown tags ignored: {sorted(missing)}',
-                  file=sys.stderr)
-    else:
-        grid = list(DEFAULT_GRID)
+    submitted: list[tuple[str, str]] = []
 
-    print(f'[sweep] {len(grid)} config(s) to submit; epochs={a.epochs}  time={a.time}')
-    print(f'[sweep] output root: {SWEEP_DIR}')
+    # ---- SGT configs ------------------------------------------------------
+    if not a.baselines_only:
+        if a.grid:
+            wanted = set(a.grid.split(','))
+            grid = [(v, d, h, L) for v, d, h, L in DEFAULT_GRID
+                    if tag_for(v, d, h, L) in wanted]
+            missing = wanted - {tag_for(v, d, h, L) for v, d, h, L in DEFAULT_GRID}
+            if missing:
+                print(f'[sweep] WARNING: unknown tags ignored: {sorted(missing)}',
+                      file=sys.stderr)
+        else:
+            grid = list(DEFAULT_GRID)
 
-    submitted = []
-    for variant, d, h, L in grid:
-        if d % h != 0:
-            print(f'[sweep] skip d={d} h={h} (hidden_size must be divisible by num_heads)',
-                  file=sys.stderr)
-            continue
-        tag = tag_for(variant, d, h, L)
-        script_text = build_sbatch(tag, variant, d, h, L, a)
-        script_path = SBATCH_DIR / f'{tag}.sbatch'
-        script_path.write_text(script_text)
-        script_path.chmod(0o755)
+        print(f'[sweep] {len(grid)} SGT config(s) to submit; '
+              f'epochs={a.epochs}  time={a.time}')
+        print(f'[sweep] output root: {SWEEP_DIR}')
+
+        for variant, d, h, L in grid:
+            if d % h != 0:
+                print(f'[sweep] skip d={d} h={h} '
+                      f'(hidden_size must be divisible by num_heads)',
+                      file=sys.stderr)
+                continue
+            tag = tag_for(variant, d, h, L)
+            script_text = build_sbatch(tag, variant, d, h, L, a)
+            script_path = SBATCH_DIR / f'{tag}.sbatch'
+            script_path.write_text(script_text)
+            script_path.chmod(0o755)
+
+            if a.dry_run:
+                print(f'[dry-run] would submit {script_path}')
+                continue
+
+            out = subprocess.run(['sbatch', str(script_path)],
+                                 capture_output=True, text=True)
+            if out.returncode != 0:
+                print(f'[sweep] sbatch FAILED for {tag}: {out.stderr.strip()}',
+                      file=sys.stderr)
+                continue
+            jid = out.stdout.strip().split()[-1]
+            submitted.append((tag, jid))
+            print(f'[sweep] submitted {tag:>18}  job_id={jid}')
+
+    # ---- Baseline bundle (one sbatch with all RF/XGB configs) ------------
+    if a.baselines or a.baselines_only:
+        b_tags = [f'baseline_{m}_{s}' for m, s, _ in BASELINE_GRID]
+        print(f'\n[sweep] baseline bundle: {len(BASELINE_GRID)} configs '
+              f'({", ".join(b_tags)})')
+        baseline_script = SBATCH_DIR / 'baselines.sbatch'
+        baseline_script.write_text(build_baseline_sbatch(a))
+        baseline_script.chmod(0o755)
 
         if a.dry_run:
-            print(f'[dry-run] would submit {script_path}')
-            continue
+            print(f'[dry-run] would submit {baseline_script}')
+        else:
+            out = subprocess.run(['sbatch', str(baseline_script)],
+                                 capture_output=True, text=True)
+            if out.returncode != 0:
+                print(f'[sweep] baseline sbatch FAILED: {out.stderr.strip()}',
+                      file=sys.stderr)
+            else:
+                jid = out.stdout.strip().split()[-1]
+                submitted.append(('baselines (bundle)', jid))
+                print(f'[sweep] submitted {"baselines (bundle)":>18}  job_id={jid}')
 
-        out = subprocess.run(['sbatch', str(script_path)],
-                             capture_output=True, text=True)
-        if out.returncode != 0:
-            print(f'[sweep] sbatch FAILED for {tag}: {out.stderr.strip()}',
-                  file=sys.stderr)
-            continue
-        # Parse "Submitted batch job 12345"
-        jid = out.stdout.strip().split()[-1]
-        submitted.append((tag, jid))
-        print(f'[sweep] submitted {tag:>14}  job_id={jid}')
-
+    # ---- Summary ----------------------------------------------------------
     if a.dry_run:
         print(f'\n[sweep] dry-run complete. Scripts in {SBATCH_DIR}/. '
               f'Re-run without --dry-run to submit.')
