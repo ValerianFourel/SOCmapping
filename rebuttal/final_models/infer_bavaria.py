@@ -6,10 +6,10 @@ prediction map from one trained final model.
 Auto-dispatches between two paths based on the checkpoint contents:
   * Neural network (.pth with EnhancedSGT / SimpleSGT / SimpleTransformerV2
     / Small3DCNN / RefittedCovLSTM weights) → loads via _build_model + the
-    standard MultiRasterDatasetMultiYears feature extractor.
+    1mil-grid MultiRasterDataset1MilMultiYears feature extractor.
   * Tree ensemble (.joblib RandomForest / .json XGBRegressor) → loads via
     the corresponding library + the per-band-statistic feature extractor
-    from run_baselines.py.
+    from run_baselines.py, on the same 1mil-grid mapping dataset.
 
 For both, the prediction grid is the 1mil-point Bavaria reference grid;
 each grid point's covariate window uses target_year = --year (default 2023)
@@ -55,8 +55,13 @@ sys.path.insert(0, str(KFOLD_DIR))
 from run_kfold import _build_model, make_dataset  # noqa: E402
 from run_baselines import _aggregate_cube, inverse_y  # noqa: E402
 from band_subsets import get_band_indices  # noqa: E402
-from dataloaderMultiYears import MultiRasterDatasetMultiYears  # noqa: E402
-from dataframe_loader import separate_and_add_data  # noqa: E402
+# Production-mapping dataloader (built for the 1mil Bavaria grid via
+# MatrixCoordinates_1mil_* paths), NOT the training dataloader. The
+# training loader requires every (lon, lat) to be pre-indexed in the
+# LUCAS coordinates.npy files; the mapping loader has its own
+# 1mil-grid-specific coordinates.npy per band.
+from dataloaderMapping import MultiRasterDataset1MilMultiYears  # noqa: E402
+from dataframe_loader import separate_and_add_data_1mil_inference  # noqa: E402
 from config import time_before, bands_list_order  # noqa: E402
 
 CHECKPOINTS_ROOT = HERE / 'checkpoints'
@@ -78,6 +83,12 @@ def parse():
 
 
 def load_grid(grid_csv: Path, limit: int) -> pd.DataFrame:
+    """Load the 1mil Bavaria grid.
+
+    The mapping dataloader reads lower-case 'longitude'/'latitude'. We
+    also keep GPS_LONG/GPS_LAT aliases so downstream code (parquet
+    writer, scatter plotting) doesn't need to know which loader was used.
+    """
     if not grid_csv.exists():
         raise SystemExit(f'\n[ERROR] grid CSV not found: {grid_csv}\n'
                          f'        Pass --grid-csv /path/to/coordinates_Bavaria_1mil.csv\n')
@@ -85,8 +96,11 @@ def load_grid(grid_csv: Path, limit: int) -> pd.DataFrame:
     cols = {c.lower(): c for c in df.columns}
     lon_col = cols.get('gps_long') or cols.get('lon') or cols.get('longitude') or df.columns[0]
     lat_col = cols.get('gps_lat') or cols.get('lat') or cols.get('latitude') or df.columns[1]
-    df = df.rename(columns={lon_col: 'GPS_LONG', lat_col: 'GPS_LAT'})
-    df = df[['GPS_LONG', 'GPS_LAT']].copy()
+    df = df.rename(columns={lon_col: 'longitude', lat_col: 'latitude'})
+    df = df[['longitude', 'latitude']].copy()
+    # Aliases for downstream consumers that expect GPS_LONG/GPS_LAT.
+    df['GPS_LONG'] = df['longitude']
+    df['GPS_LAT'] = df['latitude']
     if limit > 0:
         df = df.head(limit).reset_index(drop=True)
     return df
@@ -138,14 +152,17 @@ def predict_nn(args, run_dir: Path, grid_df: pd.DataFrame, device) -> np.ndarray
           f'({n_params:,} params)', flush=True)
 
     # Build a dataloader-friendly DataFrame: every grid point gets
-    # year=args.year and a dummy OC column (the dataset only uses (lon, lat,
-    # year, season) to locate covariate tiles).
+    # year=args.year (the mapping dataset uses (lon, lat, year, season)
+    # to locate covariate tiles; no OC required, this is inference).
     grid = grid_df.copy()
     grid['year'] = args.year
-    grid['OC'] = 0.0
     grid['season'] = f'{args.year}_summer'
 
-    sample_paths, data_paths = separate_and_add_data()
+    # 1mil-grid paths from config (MatrixCoordinates_1mil_*) — these point
+    # to per-band coordinates.npy files that index the 1mil grid, not
+    # the LUCAS training coords. Using separate_and_add_data() here would
+    # silently fail every coordinate lookup.
+    sample_paths, data_paths = separate_and_add_data_1mil_inference()
     def flatten(lst):
         out = []
         for x in lst:
@@ -154,8 +171,12 @@ def predict_nn(args, run_dir: Path, grid_df: pd.DataFrame, device) -> np.ndarray
     sample_paths = list(dict.fromkeys(flatten(sample_paths)))
     data_paths = list(dict.fromkeys(flatten(data_paths)))
 
-    ds = MultiRasterDatasetMultiYears(sample_paths, data_paths, grid,
-                                       time_before=time_before)
+    ds = MultiRasterDataset1MilMultiYears(
+        samples_coordinates_array_subfolders=sample_paths,
+        data_array_subfolders=data_paths,
+        dataframe=grid,
+        time_before=time_before,
+    )
 
     # Mirror the training-time bands-list subsetting for inference.
     band_indices_t = torch.as_tensor(
@@ -177,7 +198,10 @@ def predict_nn(args, run_dir: Path, grid_df: pd.DataFrame, device) -> np.ndarray
         first_errors: list[str] = []   # collect a few examples to surface
         for i in range(n):
             try:
-                _, _, f, _ = ds[i]
+                # MultiRasterDataset1MilMultiYears returns (lon, lat, features) —
+                # 3 values, no OC. Same tensor shape as the training loader
+                # (both end with permute(0, 2, 3, 1)).
+                _, _, f = ds[i]
                 f_norm = (f - feature_means[:, None, None]) / feature_stds[:, None, None]
                 # Defensive: replace any leftover NaN/inf with 0 (matches the
                 # behaviour of a well-normalized constant band). A single bad
@@ -192,7 +216,7 @@ def predict_nn(args, run_dir: Path, grid_df: pd.DataFrame, device) -> np.ndarray
                 preds[i] = np.nan
                 n_missing += 1
                 if len(first_errors) < 3:
-                    lon = float(grid_df.GPS_LONG.iloc[i]); lat = float(grid_df.GPS_LAT.iloc[i])
+                    lon = float(grid_df.longitude.iloc[i]); lat = float(grid_df.latitude.iloc[i])
                     first_errors.append(
                         f'i={i}  lon={lon:.4f} lat={lat:.4f}  '
                         f'{type(e).__name__}: {e}')
@@ -267,14 +291,27 @@ def predict_tree(args, run_dir: Path, grid_df: pd.DataFrame) -> np.ndarray:
         raise SystemExit(f'\n[ERROR] no tree model file in {run_dir}\n')
     print(f'[infer-tree] loaded {family} from {run_dir}', flush=True)
 
-    # Build per-band features at each grid point — same recipe as
-    # run_baselines.extract_features_for_df, but for the 1mil grid.
+    # Build per-band features at each grid point — same 80-d recipe as
+    # run_baselines.extract_features_for_df, but driven by the 1mil-grid
+    # mapping dataset (which has the right coordinates.npy per band).
     grid = grid_df.copy()
     grid['year'] = args.year
-    grid['OC'] = 0.0
     grid['season'] = f'{args.year}_summer'
 
-    ds = make_dataset(grid, feature_means=None, feature_stds=None)
+    sample_paths, data_paths = separate_and_add_data_1mil_inference()
+    def _flatten(lst):
+        out = []
+        for x in lst:
+            out += _flatten(x) if isinstance(x, list) else [x]
+        return out
+    sample_paths = list(dict.fromkeys(_flatten(sample_paths)))
+    data_paths = list(dict.fromkeys(_flatten(data_paths)))
+    ds = MultiRasterDataset1MilMultiYears(
+        samples_coordinates_array_subfolders=sample_paths,
+        data_array_subfolders=data_paths,
+        dataframe=grid,
+        time_before=time_before,
+    )
     n = len(ds)
     X = np.empty((n, 80), dtype=np.float32)
     n_missing = 0
@@ -282,13 +319,13 @@ def predict_tree(args, run_dir: Path, grid_df: pd.DataFrame) -> np.ndarray:
     t0 = time.time()
     for i in range(n):
         try:
-            _, _, f, _ = ds[i]
+            _, _, f = ds[i]    # mapping loader returns (lon, lat, features) — 3-tuple
             X[i] = _aggregate_cube(f)
         except Exception as e:
             X[i] = 0.0
             n_missing += 1
             if len(first_errors) < 3:
-                lon = float(grid_df.GPS_LONG.iloc[i]); lat = float(grid_df.GPS_LAT.iloc[i])
+                lon = float(grid_df.longitude.iloc[i]); lat = float(grid_df.latitude.iloc[i])
                 first_errors.append(
                     f'i={i}  lon={lon:.4f} lat={lat:.4f}  '
                     f'{type(e).__name__}: {e}')
