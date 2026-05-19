@@ -83,14 +83,31 @@ DEFAULT_GRID: list[tuple[str, int, int, int]] = [
 # ---------------------------------------------------------------------------
 FAMILY_GRID: list[tuple[str, int, int, int, float]] = [
     # (family, d_model_or_hidden, num_heads, num_layers, dropout)
+    # The classic sibling-architecture grid. Excludes vanilla_transformer —
+    # vanilla has its own VANILLA_GRID below because it answers a different
+    # question (SGT-minus-GRN ablation, not "does another architecture
+    # family work?"). Controlled by --families / --no-families.
     ('3dcnn',              64, 4, 1, 0.5),
     ('cnnlstm',            64, 4, 1, 0.5),
     ('simpletransformer',  64, 4, 1, 0.5),
-    # Parameter-matched-by-hyperparameter ablation: SimpleSGT minus GRN.
-    # At d=128 h=4 vanilla = 215k vs SGT = 363k, so vanilla is SMALLER —
-    # the "is the gating worth its 150k params?" test.
-    ('vanilla_transformer', 64, 4, 1, 0.5),     # ~95k, matches small_d64_h4 ~165k
-    ('vanilla_transformer', 128, 4, 1, 0.5),    # ~215k, paired with small_d128_h4 ~363k
+]
+
+
+# ---------------------------------------------------------------------------
+# Vanilla transformer ablation grid.
+# The "vanilla" baseline is SimpleSGT with the Gated Residual Network
+# (GRN) block replaced by a plain Linear projection — same spatial
+# encoder, same positional embedding, same transformer encoder, same
+# head. The only architectural delta is the gating, so any R² gap
+# between SGT and a parameter-matched vanilla baseline is directly
+# attributable to the gating mechanism. Controlled by --vanilla /
+# --no-vanilla / --vanilla-only flags (parallel to --baselines /
+# --families).
+# ---------------------------------------------------------------------------
+VANILLA_GRID: list[tuple[str, int, int, int, float]] = [
+    # (family, d_model, num_heads, num_layers, dropout)
+    ('vanilla_transformer', 64,  4, 1, 0.5),   # ~95k, paired with sgt small_d64_h4 (~165k)
+    ('vanilla_transformer', 128, 4, 1, 0.5),   # ~215k, paired with sgt small_d128_h4 (~363k)
 ]
 
 
@@ -375,6 +392,15 @@ def main():
                         'to enable. --families-only submits just those.')
     p.add_argument('--families-only', action='store_true',
                    help='Submit only the cross-architecture grid, skip SGT and baselines.')
+    p.add_argument('--vanilla', action=argparse.BooleanOptionalAction,
+                   default=False,
+                   help='Also submit the vanilla-transformer ablation grid '
+                        '(SimpleSGT minus the GRN; VANILLA_GRID in this file). '
+                        'Default off; pass --vanilla to enable, '
+                        '--vanilla-only to submit just those.')
+    p.add_argument('--vanilla-only', action='store_true',
+                   help='Submit only the vanilla-transformer ablation grid, '
+                        'skip SGT, families, and baselines.')
     p.add_argument('--loss-type', type=str, default='l1',
                    choices=['l1', 'mse', 'chi2', 'composite_l1', 'composite_l2'],
                    help='Training loss for neural-network configs (SGT + families). '
@@ -393,7 +419,7 @@ def main():
     submitted: list[tuple[str, str]] = []
 
     # ---- SGT configs ------------------------------------------------------
-    if not a.baselines_only and not a.families_only:
+    if not a.baselines_only and not a.families_only and not a.vanilla_only:
         if a.grid:
             wanted = set(a.grid.split(','))
             grid = [(v, d, h, L) for v, d, h, L in DEFAULT_GRID
@@ -436,7 +462,7 @@ def main():
             print(f'[sweep] submitted {tag:>18}  job_id={jid}')
 
     # ---- Cross-architecture family grid ---------------------------------
-    if a.families or a.families_only:
+    if (a.families and not a.vanilla_only and not a.baselines_only) or a.families_only:
         print(f'\n[sweep] cross-architecture grid: {len(FAMILY_GRID)} configs')
         for family, d, h, L, dropout in FAMILY_GRID:
             tag = family_tag_for(family, d, h, L)
@@ -459,8 +485,33 @@ def main():
             submitted.append((tag, jid))
             print(f'[sweep] submitted {tag:>22}  job_id={jid}')
 
+    # ---- Vanilla-transformer ablation grid ------------------------------
+    if (a.vanilla and not a.baselines_only and not a.families_only) or a.vanilla_only:
+        print(f'\n[sweep] vanilla-transformer ablation grid: '
+              f'{len(VANILLA_GRID)} configs (SimpleSGT minus GRN)')
+        for family, d, h, L, dropout in VANILLA_GRID:
+            tag = family_tag_for(family, d, h, L)
+            script_text = build_family_sbatch(tag, family, d, h, L, dropout, a)
+            script_path = SBATCH_DIR / f'{tag}.sbatch'
+            script_path.write_text(script_text)
+            script_path.chmod(0o755)
+
+            if a.dry_run:
+                print(f'[dry-run] would submit {script_path}')
+                continue
+
+            out = subprocess.run(['sbatch', str(script_path)],
+                                 capture_output=True, text=True)
+            if out.returncode != 0:
+                print(f'[sweep] sbatch FAILED for {tag}: {out.stderr.strip()}',
+                      file=sys.stderr)
+                continue
+            jid = out.stdout.strip().split()[-1]
+            submitted.append((tag, jid))
+            print(f'[sweep] submitted {tag:>26}  job_id={jid}')
+
     # ---- Baseline bundle (one sbatch with all RF/XGB configs) ------------
-    if (a.baselines and not a.families_only) or a.baselines_only:
+    if (a.baselines and not a.families_only and not a.vanilla_only) or a.baselines_only:
         b_tags = [f'baseline_{m}_{s}' for m, s, _ in BASELINE_GRID]
         print(f'\n[sweep] baseline bundle: {len(BASELINE_GRID)} configs '
               f'({", ".join(b_tags)})')
