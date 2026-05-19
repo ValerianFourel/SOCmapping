@@ -88,6 +88,70 @@ from config import (  # noqa: E402
 
 print(_describe_paths(), flush=True)
 
+
+# --------------------------------------------------------------------------
+# Generic model factory — train SGT, 3DCNN, CNNLSTM, or SimpleTransformer
+# under the SAME spatial-CV pipeline. All four take (B, C, H, W, T) input
+# from the SGT dataloader and return a (B,) regression scalar.
+# Sibling architectures are imported lazily inside the factory so a plain
+# --model-family sgt run doesn't pay their import cost.
+# --------------------------------------------------------------------------
+def _build_model(args):
+    family = getattr(args, 'model_family', 'sgt')
+    n_bands = len(bands_list_order)
+
+    if family == 'sgt':
+        return build_sgt_model(args)
+
+    if family == '3dcnn':
+        sib = SOC_CODE_DIR / '3DCNN'
+        if str(sib) not in sys.path:
+            sys.path.insert(0, str(sib))
+        from modelCNNMultiYear import Small3DCNN
+        return Small3DCNN(
+            input_channels=n_bands,
+            input_height=window_size,
+            input_width=window_size,
+            input_time=time_before,
+            dropout_rate=args.dropout_rate,
+        )
+
+    if family == 'cnnlstm':
+        sib = SOC_CODE_DIR / 'CNNLSTM'
+        if str(sib) not in sys.path:
+            sys.path.insert(0, str(sib))
+        from models import RefittedCovLSTM
+        # RefittedCovLSTM has its own internal CNN → fixed feature size of
+        # 128 going into the LSTM (see models.py line ~100: x_cnn.view
+        # (..., 128)). lstm_input_size must therefore be 128. Hidden size
+        # is the LSTM hidden state — we mirror args.hidden_size for that.
+        return RefittedCovLSTM(
+            num_channels=n_bands,
+            lstm_input_size=128,
+            lstm_hidden_size=args.hidden_size,
+            num_layers=args.num_layers,
+            dropout=args.dropout_rate,
+        )
+
+    if family == 'simpletransformer':
+        sib = SOC_CODE_DIR / 'SimpleTransformer'
+        if str(sib) not in sys.path:
+            sys.path.insert(0, str(sib))
+        from modelSimpleTransformerNew import SimpleTransformerV2
+        return SimpleTransformerV2(
+            input_channels=n_bands,
+            input_height=window_size,
+            input_width=window_size,
+            input_time=time_before,
+            num_heads=args.num_heads,
+            num_layers=args.num_layers,
+            dropout_rate=args.dropout_rate,
+        )
+
+    raise ValueError(f'Unknown --model-family: {family!r}. '
+                     f'Choose from: sgt, 3dcnn, cnnlstm, simpletransformer.')
+
+
 # ----- Output paths -------------------------------------------------------
 OUT_DIR = SOC_REBUTTAL_DIR / 'gpu_experiments' / 'spatial_kfold'
 MODEL_READY = SOC_REBUTTAL_DIR / 'model_ready_dataset.parquet'
@@ -459,10 +523,11 @@ def train_one_fold(args, fold: dict, df: pd.DataFrame,
               f'per_gpu_batch={args.per_gpu_batch_size}  accum_steps={accum_steps}  '
               f'effective_batch={effective_batch}', flush=True)
 
-    model = build_sgt_model(args)
+    model = _build_model(args)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f'Model: {type(model).__name__}  ({n_params:,} trainable params)',
-          flush=True)
+    print(f'Model: {type(model).__name__} '
+          f'(family={getattr(args, "model_family", "sgt")}, '
+          f'{n_params:,} trainable params)', flush=True)
 
     # Dummy wandb run for the imported train_model (disabled mode = no-op).
     wandb_run = wandb.init(
@@ -895,6 +960,12 @@ def parse_args():
     p.add_argument('--dropout_rate', type=float, default=0.3)
     p.add_argument('--model-size', type=str, default='big',
                    choices=['small', 'big'])
+    p.add_argument('--model-family', type=str, default='sgt',
+                   choices=['sgt', '3dcnn', 'cnnlstm', 'simpletransformer'],
+                   help='Architecture to train. "sgt" uses the EnhancedSGT/'
+                        'SimpleSGT variants (selected by --model-size). The '
+                        'other three are 20-channel ports of sibling models '
+                        'at the same (5×5×5) spatiotemporal window.')
     p.add_argument('--per-gpu-batch-size', type=int, default=256)
     p.add_argument('--effective-batch-size', type=int, default=2048)
     p.add_argument('--accum-steps', type=int, default=0)

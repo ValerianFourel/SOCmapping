@@ -220,7 +220,7 @@ def train_model(args, model, train_loader, val_loader, num_epochs=100, target_tr
                     best_mae = mae
                     best_rmse = rmse
                     best_rpiq = rpiq
-                    best_model_state = {k: v.cpu() for k, v in model.state_dict().items()}
+                    best_model_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
                     if accelerator.is_main_process:
                         wandb.run.summary["best_r_squared"] = best_r_squared
                         wandb.run.summary["best_mae"] = best_mae

@@ -20,20 +20,27 @@ HERE = Path(__file__).resolve().parent
 SWEEP_DIR = HERE / 'sweep'
 
 _ARCH_TAG_RE = re.compile(r'^(small_)?d(\d+)_h(\d+)_L(\d+)$')
+_FAMILY_TAG_RE = re.compile(r'^(3dcnn|cnnlstm|simpletransformer)_d(\d+)_h(\d+)_L(\d+)$')
 _BASELINE_TAG_RE = re.compile(r'^baseline_([a-z0-9]+)_(.+)$')
 
 
 def parse_tag(tag: str) -> tuple[str, int | None, int | None, int | None, str] | None:
     """Return (variant, d, h, L, model_name).
 
-    For SGT configs: variant in {'big', 'small'}, model_name = 'sgt'.
-    For baselines:  variant = 'baseline', d=h=L=None, model_name in {'xgb','rf',...}.
+    For SGT configs:    variant in {'big', 'small'}, model_name = 'sgt'.
+    For other families: variant = '<family>', model_name = '<family>'
+                        (e.g., 3dcnn, cnnlstm, simpletransformer).
+    For baselines:      variant = 'baseline', d=h=L=None, model_name in {'xgb','rf',...}.
     Returns None if the tag isn't recognized.
     """
     m = _ARCH_TAG_RE.match(tag)
     if m:
         variant = 'small' if m.group(1) else 'big'
         return (variant, int(m.group(2)), int(m.group(3)), int(m.group(4)), 'sgt')
+    m = _FAMILY_TAG_RE.match(tag)
+    if m:
+        fam = m.group(1)
+        return (fam, int(m.group(2)), int(m.group(3)), int(m.group(4)), fam)
     m = _BASELINE_TAG_RE.match(tag)
     if m:
         return ('baseline', None, None, None, m.group(1))

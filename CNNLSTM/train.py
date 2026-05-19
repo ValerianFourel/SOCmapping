@@ -231,14 +231,20 @@ def train_model(model, train_loader, val_loader, num_epochs=num_epochs, accelera
             wandb.log(log_dict)
             epoch_metrics.append(log_dict)
 
-            # Save model if it has the best R² and meets minimum threshold
+            # Save model if it has the best R² and meets minimum threshold.
+            # IMPORTANT: clone the tensors — model.state_dict() returns
+            # references that get mutated by later optimizer steps, so a
+            # plain assignment silently keeps the FINAL-epoch state instead
+            # of the best-epoch state. See SGT commit b5c1cac for details.
             if use_validation and r_squared > best_r2 and r_squared >= min_r2:
                 best_r2 = r_squared
-                best_model_state = model.state_dict()
+                best_model_state = {k: v.detach().clone()
+                                    for k, v in model.state_dict().items()}
                 wandb.run.summary['best_r2'] = best_r2
             elif not use_validation and epoch == num_epochs - 1:
                 best_r2 = 1.0
-                best_model_state = model.state_dict()
+                best_model_state = {k: v.detach().clone()
+                                    for k, v in model.state_dict().items()}
                 wandb.run.summary['best_r2'] = best_r2
         
         accelerator.print(f'Epoch {epoch+1}:')

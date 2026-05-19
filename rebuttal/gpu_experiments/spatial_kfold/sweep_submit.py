@@ -74,6 +74,26 @@ DEFAULT_GRID: list[tuple[str, int, int, int]] = [
 
 
 # ---------------------------------------------------------------------------
+# Cross-architecture grid: one canonical config per sibling family, all
+# trained under the same spatial-kfold pipeline as SGT. Each entry:
+# (family, d_model, num_heads, num_layers). For families that don't use a
+# given hyperparameter (e.g., 3DCNN ignores d_model and num_heads), we still
+# pass a value so the tag is well-formed; --num_heads and --num_layers are
+# silently dropped by Small3DCNN's constructor.
+# ---------------------------------------------------------------------------
+FAMILY_GRID: list[tuple[str, int, int, int, float]] = [
+    # (family, d_model_or_hidden, num_heads, num_layers, dropout)
+    ('3dcnn',             64, 4, 1, 0.5),
+    ('cnnlstm',           64, 4, 1, 0.5),
+    ('simpletransformer', 64, 4, 1, 0.5),
+]
+
+
+def family_tag_for(family: str, d: int, h: int, L: int) -> str:
+    return f'{family}_d{d}_h{h}_L{L}'
+
+
+# ---------------------------------------------------------------------------
 # Baseline grid — tree ensembles on the SAME 10-fold splits.
 # Each entry: (model, tag_suffix, extra_args_list_passed_to_run_baselines).
 # Bundled into ONE sbatch (--gres=gpu:1) so the 80-feature per-band-stats
@@ -162,6 +182,69 @@ cd {shlex.quote(str(SOC_ROOT))}
 {venv_activate}
 
 echo "[sweep] tag={tag}  d={d} h={h} L={L}"
+echo "[sweep] node=$(hostname)  job=$SLURM_JOB_ID  gpus=$(nvidia-smi -L | wc -l)"
+echo "[sweep] cwd=$(pwd)"
+echo "[sweep] cmd:"
+echo "  {cmd}"
+echo "---"
+
+{cmd}
+'''
+
+
+def build_family_sbatch(tag: str, family: str, d: int, h: int, L: int,
+                         dropout: float, args) -> str:
+    """One sbatch per cross-architecture config (3DCNN, CNNLSTM, etc.).
+
+    Uses the same run_folds_parallel.py orchestrator as SGT — only the
+    new --model-family flag changes the model factory in run_kfold.py.
+    Everything else (10 folds, 3 folds/GPU, log target, no rebalancing,
+    D4 augmentation) is identical, so results are directly comparable.
+    """
+    out_dir_abs = sweep_root(args) / tag
+    name_prefix = f'{args.sweep_name}_' if args.sweep_name else ''
+    log_path = LOG_DIR / f'{name_prefix}{tag}_%j.out'
+    cmd = (
+        'WANDB_MODE=disabled PYTHONUNBUFFERED=1 '
+        'python rebuttal/gpu_experiments/spatial_kfold/run_folds_parallel.py '
+        f'--num-folds 10 --num-parallel 10 --folds-per-gpu 3 '
+        f'--output-dir {shlex.quote(str(out_dir_abs))} '
+        '-- '
+        '--model-size small '
+        f'--model-family {family} '
+        f'--hidden_size {d} --num_heads {h} --num_layers {L} '
+        f'--dropout_rate {dropout} '
+        f'--lr {args.lr} --lr-scheduler cosine --lr-min 1e-6 '
+        '--loss_type l1 --target_transform log '
+        '--per-gpu-batch-size 256 --effective-batch-size 256 '
+        f'--num-epochs {args.epochs} --seed-base {args.seed_base} '
+        f'--max-oc {args.max_oc} '
+        '--sampler-mode qcut --rebalance-min-ratio 0 '
+        '--augment-train '
+        f'--out-subdir {out_subdir_arg(args, tag)} '
+        '--skip-figure'
+    )
+    venv_activate = (
+        f'source {shlex.quote(str(args.venv_activate))}'
+        if args.venv_activate else 'true  # no venv activation requested'
+    )
+    return f'''#!/bin/bash
+#SBATCH --job-name=sgt-{tag}
+#SBATCH --partition={args.partition}
+#SBATCH --account={args.account}
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=4
+#SBATCH --cpus-per-task=12
+#SBATCH --gres=gpu:4
+#SBATCH --time={args.time}
+#SBATCH --output={log_path}
+#SBATCH --error={log_path}
+
+set -euo pipefail
+cd {shlex.quote(str(SOC_ROOT))}
+{venv_activate}
+
+echo "[sweep] tag={tag}  family={family}  d={d} h={h} L={L} dropout={dropout}"
 echo "[sweep] node=$(hostname)  job=$SLURM_JOB_ID  gpus=$(nvidia-smi -L | wc -l)"
 echo "[sweep] cwd=$(pwd)"
 echo "[sweep] cmd:"
@@ -274,6 +357,15 @@ def main():
                         '--max-oc 90 --sweep-name oc90, --max-oc 120 '
                         '--sweep-name oc120. Each run keeps its own results; '
                         'sweep_summarize.py walks all sub-sweeps recursively.')
+    p.add_argument('--families', action=argparse.BooleanOptionalAction,
+                   default=False,
+                   help='Also submit the cross-architecture grid '
+                        '(3DCNN, CNNLSTM, SimpleTransformer; FAMILY_GRID in this '
+                        'file). Each family runs under the same kfold pipeline '
+                        'as SGT for direct comparison. Default off; pass --families '
+                        'to enable. --families-only submits just those.')
+    p.add_argument('--families-only', action='store_true',
+                   help='Submit only the cross-architecture grid, skip SGT and baselines.')
     a = p.parse_args()
 
     SBATCH_DIR.mkdir(parents=True, exist_ok=True)
@@ -282,7 +374,7 @@ def main():
     submitted: list[tuple[str, str]] = []
 
     # ---- SGT configs ------------------------------------------------------
-    if not a.baselines_only:
+    if not a.baselines_only and not a.families_only:
         if a.grid:
             wanted = set(a.grid.split(','))
             grid = [(v, d, h, L) for v, d, h, L in DEFAULT_GRID
@@ -324,8 +416,32 @@ def main():
             submitted.append((tag, jid))
             print(f'[sweep] submitted {tag:>18}  job_id={jid}')
 
+    # ---- Cross-architecture family grid ---------------------------------
+    if a.families or a.families_only:
+        print(f'\n[sweep] cross-architecture grid: {len(FAMILY_GRID)} configs')
+        for family, d, h, L, dropout in FAMILY_GRID:
+            tag = family_tag_for(family, d, h, L)
+            script_text = build_family_sbatch(tag, family, d, h, L, dropout, a)
+            script_path = SBATCH_DIR / f'{tag}.sbatch'
+            script_path.write_text(script_text)
+            script_path.chmod(0o755)
+
+            if a.dry_run:
+                print(f'[dry-run] would submit {script_path}')
+                continue
+
+            out = subprocess.run(['sbatch', str(script_path)],
+                                 capture_output=True, text=True)
+            if out.returncode != 0:
+                print(f'[sweep] sbatch FAILED for {tag}: {out.stderr.strip()}',
+                      file=sys.stderr)
+                continue
+            jid = out.stdout.strip().split()[-1]
+            submitted.append((tag, jid))
+            print(f'[sweep] submitted {tag:>22}  job_id={jid}')
+
     # ---- Baseline bundle (one sbatch with all RF/XGB configs) ------------
-    if a.baselines or a.baselines_only:
+    if (a.baselines and not a.families_only) or a.baselines_only:
         b_tags = [f'baseline_{m}_{s}' for m, s, _ in BASELINE_GRID]
         print(f'\n[sweep] baseline bundle: {len(BASELINE_GRID)} configs '
               f'({", ".join(b_tags)})')
