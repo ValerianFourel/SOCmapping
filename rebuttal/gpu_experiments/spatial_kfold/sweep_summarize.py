@@ -19,15 +19,25 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 SWEEP_DIR = HERE / 'sweep'
 
-_TAG_RE = re.compile(r'^(small_)?d(\d+)_h(\d+)_L(\d+)$')
+_ARCH_TAG_RE = re.compile(r'^(small_)?d(\d+)_h(\d+)_L(\d+)$')
+_BASELINE_TAG_RE = re.compile(r'^baseline_([a-z0-9]+)_(.+)$')
 
 
-def parse_tag(tag: str) -> tuple[str, int, int, int] | None:
-    m = _TAG_RE.match(tag)
-    if not m:
-        return None
-    variant = 'small' if m.group(1) else 'big'
-    return (variant, int(m.group(2)), int(m.group(3)), int(m.group(4)))
+def parse_tag(tag: str) -> tuple[str, int | None, int | None, int | None, str] | None:
+    """Return (variant, d, h, L, model_name).
+
+    For SGT configs: variant in {'big', 'small'}, model_name = 'sgt'.
+    For baselines:  variant = 'baseline', d=h=L=None, model_name in {'xgb','rf',...}.
+    Returns None if the tag isn't recognized.
+    """
+    m = _ARCH_TAG_RE.match(tag)
+    if m:
+        variant = 'small' if m.group(1) else 'big'
+        return (variant, int(m.group(2)), int(m.group(3)), int(m.group(4)), 'sgt')
+    m = _BASELINE_TAG_RE.match(tag)
+    if m:
+        return ('baseline', None, None, None, m.group(1))
+    return None
 
 
 def collect():
@@ -48,14 +58,15 @@ def collect():
             continue
         ac = j.get('across_folds', {})
         recipe = j.get('recipe', {})
-        v_d_h_L = parse_tag(d.name)
+        parsed = parse_tag(d.name)
         fold_r2s = [r.get('r2', float('nan')) for r in j.get('fold_results', [])]
         rows.append({
             'tag': d.name,
-            'variant':    v_d_h_L[0],
-            'd_model':    v_d_h_L[1],
-            'num_heads':  v_d_h_L[2],
-            'num_layers': v_d_h_L[3],
+            'variant':    parsed[0],
+            'd_model':    parsed[1],
+            'num_heads':  parsed[2],
+            'num_layers': parsed[3],
+            'model_name': parsed[4],
             'epochs':     recipe.get('num_epochs'),
             'lr':         recipe.get('lr'),
             'max_oc':     recipe.get('max_oc'),
@@ -143,23 +154,29 @@ def main():
         md.append('Ranked by `score = r2_mean − 0.5 × r2_std` '
                   '(rewards high mean, penalizes cross-fold variance).')
         md.append('')
-        md.append('| Rank | tag | variant | d_model | heads | layers | R² mean | R² std | RMSE | MAE | RPIQ | score |')
-        md.append('|------|-----|---------|---------|-------|--------|---------|--------|------|-----|------|-------|')
+        md.append('| Rank | tag | family | variant | d_model | heads | layers | R² mean | R² std | RMSE | MAE | RPIQ | score |')
+        md.append('|------|-----|--------|---------|---------|-------|--------|---------|--------|------|-----|------|-------|')
         for i, r in enumerate(ok, 1):
-            md.append(f'| {i} | {r["tag"]} | {r["variant"]} | {r["d_model"]} | '
-                      f'{r["num_heads"]} | {r["num_layers"]} | {fmt(r["r2_mean"])} | '
-                      f'{fmt(r["r2_std"])} | {fmt(r["rmse_mean"], 3)} | '
-                      f'{fmt(r["mae_mean"], 3)} | {fmt(r["rpiq_mean"], 3)} | '
-                      f'{fmt(score(r))} |')
+            md.append(f'| {i} | {r["tag"]} | {r["model_name"]} | {r["variant"]} | '
+                      f'{fmt(r["d_model"], 0, "—")} | '
+                      f'{fmt(r["num_heads"], 0, "—")} | '
+                      f'{fmt(r["num_layers"], 0, "—")} | '
+                      f'{fmt(r["r2_mean"])} | {fmt(r["r2_std"])} | '
+                      f'{fmt(r["rmse_mean"], 3)} | {fmt(r["mae_mean"], 3)} | '
+                      f'{fmt(r["rpiq_mean"], 3)} | {fmt(score(r))} |')
         md.append('')
         if ok:
             best = ok[0]
             md.append('## Recommended for full 300-epoch retrain')
             md.append('')
-            md.append(f'`--model-size {best["variant"]} '
-                      f'--hidden_size {best["d_model"]} '
-                      f'--num_heads {best["num_heads"]} '
-                      f'--num_layers {best["num_layers"]}`')
+            if best['variant'] in ('big', 'small'):
+                md.append(f'`--model-size {best["variant"]} '
+                          f'--hidden_size {best["d_model"]} '
+                          f'--num_heads {best["num_heads"]} '
+                          f'--num_layers {best["num_layers"]}`')
+            else:
+                md.append(f'Top is a baseline (`{best["tag"]}`). '
+                          f'Use the matching `run_baselines.py` flags to reproduce.')
         (SWEEP_DIR / 'sweep_ranking.md').write_text('\n'.join(md))
         (SWEEP_DIR / 'sweep_ranking.json').write_text(
             json.dumps({'ranked': ok, 'pending': pending}, indent=2, default=str))
