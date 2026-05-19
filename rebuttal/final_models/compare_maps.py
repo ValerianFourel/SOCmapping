@@ -158,6 +158,25 @@ def main():
 
     # ---- Figure: 2-col grid, 20band on left, 6band on right ----
     BAND_COLS = ['20band', '6band']    # column order
+    DOWNSAMPLE_MAX = 150_000   # cap points per panel for fast render
+
+    # Classify panels: nan-mean = broken (rendered as placeholder, never scattered).
+    broken_panels: list[tuple[str, str]] = []
+    for arch_key in arch_order:
+        for band in BAND_COLS:
+            panel = by_arch[arch_key]['panels'].get(band)
+            if panel is None:
+                continue
+            m = panel['summary'].get('mean')
+            if not isinstance(m, (int, float)) or m != m:   # NaN check
+                broken_panels.append((arch_key, band))
+    if broken_panels:
+        print(f'[compare] {len(broken_panels)} panel(s) have NaN summary mean '
+              f'and will render as "(broken — NaN predictions)":')
+        for arch_key, band in broken_panels:
+            run = by_arch[arch_key]['panels'][band]['run_name']
+            print(f'   - {run} (arch={arch_key}, band={band})')
+
     try:
         import matplotlib
         matplotlib.use('Agg')
@@ -168,22 +187,35 @@ def main():
                                   figsize=(11, 4.5 * max(n_rows, 1)),
                                   squeeze=False)
 
-        # Shared colour range, clipped at 100 g/kg for visualization so a
-        # broken model (e.g. XGB shallow 6-band mean ≈ 157) doesn't push the
-        # 98th-percentile vmax to a useless saturation. Predictions ARE
-        # plotted at their true values — only the colour normalization is
-        # clipped — so the "broken" panels render as saturated and are
-        # flagged in the title.
-        all_pred = np.concatenate([
-            by_arch[k]['panels'][band]['df'].predicted_soc.values
-            for k in arch_order
-            for band in BAND_COLS
-            if band in by_arch[k]['panels']
-        ])
-        pred_for_vmax = np.clip(all_pred, 0, 100)
-        vmin = max(0.0, float(np.nanpercentile(pred_for_vmax, 2)))
-        vmax = float(np.nanpercentile(pred_for_vmax, 98))
+        # Shared colour range from valid (non-broken) panels only. Predictions
+        # ARE plotted at their true values — only the colour normalization is
+        # clipped at 100 g/kg — so "broken" tree panels (e.g. XGB shallow
+        # 6-band mean ≈ 157) render as saturated and are flagged in title.
+        valid_preds = []
+        for arch_key in arch_order:
+            for band in BAND_COLS:
+                if (arch_key, band) in broken_panels:
+                    continue
+                panel = by_arch[arch_key]['panels'].get(band)
+                if panel is None:
+                    continue
+                v = panel['df'].predicted_soc.values
+                v = v[np.isfinite(v)]
+                if v.size:
+                    valid_preds.append(v)
+        if valid_preds:
+            all_pred = np.concatenate(valid_preds)
+            pred_for_vmax = np.clip(all_pred, 0, 100)
+            vmin = max(0.0, float(np.nanpercentile(pred_for_vmax, 2)))
+            vmax = float(np.nanpercentile(pred_for_vmax, 98))
+        else:
+            vmin, vmax = 0.0, 80.0
         broken_threshold = 80.0    # mean SOC above this flags as broken
+
+        # RNG for deterministic downsampling — same subset across panels so the
+        # spatial coverage is identical (no apparent density differences just
+        # because two panels random-sampled different points).
+        rng = np.random.default_rng(0)
 
         sc = None
         for i, arch_key in enumerate(arch_order):
@@ -197,9 +229,26 @@ def main():
                               transform=ax.transAxes)
                     ax.set_xticks([]); ax.set_yticks([])
                     continue
+                if (arch_key, band) in broken_panels:
+                    ax.text(0.5, 0.5,
+                            f'(broken — NaN predictions)\n{arch_key}\n[{band}]',
+                            ha='center', va='center', fontsize=9, color='crimson',
+                            transform=ax.transAxes)
+                    ax.set_xticks([]); ax.set_yticks([])
+                    continue
                 df = panel['df']
                 summary = panel['summary']
-                sc = ax.scatter(df.GPS_LONG, df.GPS_LAT, c=df.predicted_soc,
+                # Downsample for speed: 1.3M × 12 panels = ~16M scatter
+                # points crashed the renderer on the user's box. 150k per
+                # panel preserves Bavaria coverage and renders in seconds.
+                if len(df) > DOWNSAMPLE_MAX:
+                    idx = rng.choice(len(df), size=DOWNSAMPLE_MAX, replace=False)
+                    lon = df.GPS_LONG.values[idx]
+                    lat = df.GPS_LAT.values[idx]
+                    soc = df.predicted_soc.values[idx]
+                else:
+                    lon, lat, soc = df.GPS_LONG.values, df.GPS_LAT.values, df.predicted_soc.values
+                sc = ax.scatter(lon, lat, c=soc,
                                   s=1, cmap='YlOrBr', vmin=vmin, vmax=vmax,
                                   alpha=0.85)
                 mean_v = float(summary.get('mean', float('nan')))
@@ -229,9 +278,11 @@ def main():
         fig.suptitle(f'Bavaria-wide SOC predictions, target year {a.year} '
                       f'— 20-band vs 6-band per architecture',
                       fontsize=13, fontweight='bold', y=1.01)
-        fig.tight_layout()
+        # NOTE: skip tight_layout + bbox_inches='tight' — both are slow with
+        # 12 axes × 150k points, and tight_layout warns about colorbar axes
+        # anyway. subplots_adjust above gave the colorbar its space.
         out_png = HERE / f'maps_comparison_{a.year}.png'
-        fig.savefig(out_png, dpi=200, bbox_inches='tight')
+        fig.savefig(out_png, dpi=200)
         plt.close(fig)
         print(f'[compare] saved {out_png}', flush=True)
     except Exception as e:
