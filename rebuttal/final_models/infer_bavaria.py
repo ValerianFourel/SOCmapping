@@ -174,6 +174,7 @@ def predict_nn(args, run_dir: Path, grid_df: pd.DataFrame, device) -> np.ndarray
     with torch.no_grad():
         batch_feats, batch_idx = [], []
         t0 = time.time()
+        first_errors: list[str] = []   # collect a few examples to surface
         for i in range(n):
             try:
                 _, _, f, _ = ds[i]
@@ -187,9 +188,14 @@ def predict_nn(args, run_dir: Path, grid_df: pd.DataFrame, device) -> np.ndarray
                     f_norm = f_norm.index_select(0, band_indices_t)
                 batch_feats.append(f_norm)
                 batch_idx.append(i)
-            except Exception:
+            except Exception as e:
                 preds[i] = np.nan
                 n_missing += 1
+                if len(first_errors) < 3:
+                    lon = float(grid_df.GPS_LONG.iloc[i]); lat = float(grid_df.GPS_LAT.iloc[i])
+                    first_errors.append(
+                        f'i={i}  lon={lon:.4f} lat={lat:.4f}  '
+                        f'{type(e).__name__}: {e}')
             if len(batch_feats) >= args.batch_size or (i == n - 1 and batch_feats):
                 x = torch.stack(batch_feats).float().to(device)
                 out = model(x).cpu().numpy()
@@ -214,6 +220,17 @@ def predict_nn(args, run_dir: Path, grid_df: pd.DataFrame, device) -> np.ndarray
                 print(f'  [{i+1:>7}/{n}] rate {rate:.0f} pts/s', flush=True)
     if n_missing:
         print(f'  [warn] {n_missing} grid points missing covariate tiles', flush=True)
+        if first_errors:
+            print(f'  [warn] first few exceptions raised by the dataset '
+                  f'(use these to diagnose path / coordinate / year mismatch):',
+                  flush=True)
+            for e in first_errors:
+                print(f'    {e}', flush=True)
+        if n_missing == n:
+            raise SystemExit(
+                '\n[ERROR] EVERY grid point failed the dataset lookup '
+                '— there is no actual prediction to save. Diagnose the '
+                'dataset error above before re-running infer_bavaria.\n')
     mean_pred = float(np.nanmean(preds))
     max_oc_train = float(ckpt['args'].get('max_oc', 150.0))
     if mean_pred > max_oc_train * 1.2:
@@ -261,19 +278,37 @@ def predict_tree(args, run_dir: Path, grid_df: pd.DataFrame) -> np.ndarray:
     n = len(ds)
     X = np.empty((n, 80), dtype=np.float32)
     n_missing = 0
+    first_errors: list[str] = []   # collect first few exceptions for diagnosis
     t0 = time.time()
     for i in range(n):
         try:
             _, _, f, _ = ds[i]
             X[i] = _aggregate_cube(f)
-        except Exception:
+        except Exception as e:
             X[i] = 0.0
             n_missing += 1
+            if len(first_errors) < 3:
+                lon = float(grid_df.GPS_LONG.iloc[i]); lat = float(grid_df.GPS_LAT.iloc[i])
+                first_errors.append(
+                    f'i={i}  lon={lon:.4f} lat={lat:.4f}  '
+                    f'{type(e).__name__}: {e}')
         if (i + 1) % 50_000 == 0:
             rate = (i + 1) / (time.time() - t0 + 1e-6)
             print(f'  [{i+1:>7}/{n}] rate {rate:.0f} pts/s', flush=True)
     if n_missing:
         print(f'  [warn] {n_missing} grid points missing covariate tiles', flush=True)
+        if first_errors:
+            print(f'  [warn] first few exceptions raised by the dataset:', flush=True)
+            for e in first_errors:
+                print(f'    {e}', flush=True)
+        if n_missing == n:
+            # Trees would silently "predict" the model's response on X=zeros,
+            # which is a meaningless constant masquerading as a real map.
+            # Refuse to write that.
+            raise SystemExit(
+                '\n[ERROR] EVERY grid point failed the dataset lookup — '
+                'predictions on X=zeros would be a meaningless constant. '
+                'Diagnose the dataset error above before re-running.\n')
 
     # If the trained tree was on a band subset, slice the 80-d feature
     # vector down to its matching columns before prediction.
