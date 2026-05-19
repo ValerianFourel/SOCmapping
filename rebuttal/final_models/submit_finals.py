@@ -29,6 +29,10 @@ SOC_ROOT = HERE.parents[1]
 SBATCH_DIR = HERE / 'sbatch'
 LOG_DIR = HERE / 'slurm_logs'
 
+# Import band_subsets via the spatial_kfold module path
+sys.path.insert(0, str(SOC_ROOT / 'rebuttal' / 'gpu_experiments' / 'spatial_kfold'))
+from band_subsets import band_suffix  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # FINAL_GRID — one production mapping model per family. Hyperparameters
@@ -118,12 +122,13 @@ DEFAULTS = {
 }
 
 
-def build_nn_train_sbatch(cfg: dict, opts: dict) -> str:
-    log = LOG_DIR / f'final_{cfg["run_name"]}_train_%j.out'
+def build_nn_train_sbatch(cfg: dict, opts: dict, bands_list: str) -> str:
+    run_name = cfg["run_name"] + band_suffix(bands_list)
+    log = LOG_DIR / f'final_{run_name}_train_%j.out'
     venv = (f'source {shlex.quote(str(opts["venv_activate"]))}'
             if opts['venv_activate'] else 'true')
     return f'''#!/bin/bash
-#SBATCH --job-name=final-train-{cfg["run_name"]}
+#SBATCH --job-name=final-train-{run_name}
 #SBATCH --partition={opts["partition"]}
 #SBATCH --account={opts["account"]}
 #SBATCH --nodes=1
@@ -138,22 +143,24 @@ set -euo pipefail
 cd {shlex.quote(str(SOC_ROOT))}
 {venv}
 
-echo "[final-train] run_name={cfg["run_name"]}  node=$(hostname)  job=$SLURM_JOB_ID"
+echo "[final-train] run_name={run_name}  bands_list={bands_list}  node=$(hostname)  job=$SLURM_JOB_ID"
 
 WANDB_MODE=disabled PYTHONUNBUFFERED=1 \\
 accelerate launch --num_processes 4 \\
     rebuttal/final_models/train_full.py \\
     --run-name {cfg["run_name"]} \\
+    --bands-list {bands_list} \\
     {cfg["cmd"]}
 '''
 
 
-def build_nn_infer_sbatch(cfg: dict, opts: dict) -> str:
-    log = LOG_DIR / f'final_{cfg["run_name"]}_infer_%j.out'
+def build_nn_infer_sbatch(cfg: dict, opts: dict, bands_list: str) -> str:
+    run_name = cfg["run_name"] + band_suffix(bands_list)
+    log = LOG_DIR / f'final_{run_name}_infer_%j.out'
     venv = (f'source {shlex.quote(str(opts["venv_activate"]))}'
             if opts['venv_activate'] else 'true')
     return f'''#!/bin/bash
-#SBATCH --job-name=final-infer-{cfg["run_name"]}
+#SBATCH --job-name=final-infer-{run_name}
 #SBATCH --partition={opts["partition"]}
 #SBATCH --account={opts["account"]}
 #SBATCH --nodes=1
@@ -168,21 +175,22 @@ set -euo pipefail
 cd {shlex.quote(str(SOC_ROOT))}
 {venv}
 
-echo "[final-infer] run_name={cfg["run_name"]}  year={opts["year"]}  node=$(hostname)  job=$SLURM_JOB_ID"
+echo "[final-infer] run_name={run_name}  year={opts["year"]}  node=$(hostname)  job=$SLURM_JOB_ID"
 
 WANDB_MODE=disabled PYTHONUNBUFFERED=1 \\
 python rebuttal/final_models/infer_bavaria.py \\
-    --run-name {cfg["run_name"]} \\
+    --run-name {run_name} \\
     --year {opts["year"]}
 '''
 
 
-def build_tree_combined_sbatch(cfg: dict, opts: dict) -> str:
-    log = LOG_DIR / f'final_{cfg["run_name"]}_%j.out'
+def build_tree_combined_sbatch(cfg: dict, opts: dict, bands_list: str) -> str:
+    run_name = cfg["run_name"] + band_suffix(bands_list)
+    log = LOG_DIR / f'final_{run_name}_%j.out'
     venv = (f'source {shlex.quote(str(opts["venv_activate"]))}'
             if opts['venv_activate'] else 'true')
     return f'''#!/bin/bash
-#SBATCH --job-name=final-{cfg["run_name"]}
+#SBATCH --job-name=final-{run_name}
 #SBATCH --partition={opts["partition"]}
 #SBATCH --account={opts["account"]}
 #SBATCH --nodes=1
@@ -197,16 +205,17 @@ set -euo pipefail
 cd {shlex.quote(str(SOC_ROOT))}
 {venv}
 
-echo "[final-tree] run_name={cfg["run_name"]}  node=$(hostname)  job=$SLURM_JOB_ID"
+echo "[final-tree] run_name={run_name}  bands_list={bands_list}  node=$(hostname)  job=$SLURM_JOB_ID"
 
 PYTHONUNBUFFERED=1 \\
 python rebuttal/final_models/train_full_baselines.py \\
     --run-name {cfg["run_name"]} \\
+    --bands-list {bands_list} \\
     {cfg["cmd"]}
 
 PYTHONUNBUFFERED=1 \\
 python rebuttal/final_models/infer_bavaria.py \\
-    --run-name {cfg["run_name"]} \\
+    --run-name {run_name} \\
     --year {opts["year"]}
 '''
 
@@ -224,6 +233,13 @@ def parse():
     p.add_argument('--time-baseline', default=DEFAULTS['time_baseline'])
     p.add_argument('--only', type=str, default=None,
                    help='Comma-separated run_names to submit (default: all).')
+    p.add_argument('--bands-lists', type=str, default='full_20,original_6',
+                   help='Comma-separated covariate subsets to train on. '
+                        'Default: "full_20,original_6" generates BOTH variants '
+                        'of every entry in NN_CONFIGS / TREE_CONFIGS, with '
+                        'run_name auto-suffixed with _20band / _6band. '
+                        'Pass just "full_20" or "original_6" to run a single '
+                        'variant.')
     return p.parse_args()
 
 
@@ -255,44 +271,53 @@ def main():
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     only = set(a.only.split(',')) if a.only else None
+    bands_lists = [b.strip() for b in a.bands_lists.split(',') if b.strip()]
+    print(f'[submit] band variants to train: {bands_lists}')
     submitted = []
 
-    # NN configs: train then infer with dependency
-    for cfg in NN_CONFIGS:
-        if only and cfg['run_name'] not in only:
-            continue
-        train_sbatch = SBATCH_DIR / f'{cfg["run_name"]}_train.sbatch'
-        infer_sbatch = SBATCH_DIR / f'{cfg["run_name"]}_infer.sbatch'
-        train_sbatch.write_text(build_nn_train_sbatch(cfg, opts))
-        infer_sbatch.write_text(build_nn_infer_sbatch(cfg, opts))
-        train_sbatch.chmod(0o755); infer_sbatch.chmod(0o755)
+    # NN configs: train then infer with dependency — done for each bands-list
+    for bands_list in bands_lists:
+        suf = band_suffix(bands_list)
+        for cfg in NN_CONFIGS:
+            full_run_name = cfg['run_name'] + suf
+            if only and not (cfg['run_name'] in only or full_run_name in only):
+                continue
+            train_sbatch = SBATCH_DIR / f'{full_run_name}_train.sbatch'
+            infer_sbatch = SBATCH_DIR / f'{full_run_name}_infer.sbatch'
+            train_sbatch.write_text(build_nn_train_sbatch(cfg, opts, bands_list))
+            infer_sbatch.write_text(build_nn_infer_sbatch(cfg, opts, bands_list))
+            train_sbatch.chmod(0o755); infer_sbatch.chmod(0o755)
 
-        if a.dry_run:
-            print(f'[dry-run] would submit (train, then infer): {train_sbatch.name}, {infer_sbatch.name}')
-            continue
+            if a.dry_run:
+                print(f'[dry-run] would submit (train→infer): '
+                      f'{train_sbatch.name}, {infer_sbatch.name}')
+                continue
 
-        train_jid = submit(train_sbatch)
-        if not train_jid:
-            continue
-        infer_jid = submit(infer_sbatch, depends_on=train_jid)
-        submitted.append((cfg['run_name'], train_jid, infer_jid))
-        print(f'[submit] {cfg["run_name"]:>30}: train job={train_jid}  '
-              f'infer job={infer_jid} (waits on {train_jid})')
+            train_jid = submit(train_sbatch)
+            if not train_jid:
+                continue
+            infer_jid = submit(infer_sbatch, depends_on=train_jid)
+            submitted.append((full_run_name, train_jid, infer_jid))
+            print(f'[submit] {full_run_name:>35}: train job={train_jid}  '
+                  f'infer job={infer_jid} (waits on {train_jid})')
 
-    # Tree configs: combined train+infer
-    for cfg in TREE_CONFIGS:
-        if only and cfg['run_name'] not in only:
-            continue
-        sbatch = SBATCH_DIR / f'{cfg["run_name"]}.sbatch'
-        sbatch.write_text(build_tree_combined_sbatch(cfg, opts))
-        sbatch.chmod(0o755)
-        if a.dry_run:
-            print(f'[dry-run] would submit: {sbatch.name}')
-            continue
-        jid = submit(sbatch)
-        if jid:
-            submitted.append((cfg['run_name'], jid, None))
-            print(f'[submit] {cfg["run_name"]:>30}: job={jid} (train+infer combined)')
+    # Tree configs: combined train+infer — also done for each bands-list
+    for bands_list in bands_lists:
+        suf = band_suffix(bands_list)
+        for cfg in TREE_CONFIGS:
+            full_run_name = cfg['run_name'] + suf
+            if only and not (cfg['run_name'] in only or full_run_name in only):
+                continue
+            sbatch = SBATCH_DIR / f'{full_run_name}.sbatch'
+            sbatch.write_text(build_tree_combined_sbatch(cfg, opts, bands_list))
+            sbatch.chmod(0o755)
+            if a.dry_run:
+                print(f'[dry-run] would submit: {sbatch.name}')
+                continue
+            jid = submit(sbatch)
+            if jid:
+                submitted.append((full_run_name, jid, None))
+                print(f'[submit] {full_run_name:>35}: job={jid} (train+infer)')
 
     if a.dry_run:
         print(f'\n[dry-run] scripts in {SBATCH_DIR}/. Re-run without --dry-run.')

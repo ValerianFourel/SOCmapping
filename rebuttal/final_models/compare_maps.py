@@ -41,6 +41,14 @@ DEFAULT_RUNS = [
     ('rf_default',                    'RandomForest (per-band stats)',    'tree'),
 ]
 
+# Auto-expand each run_name across both band-variants so we don't need to
+# repeat the (run_name, label, kind) triples manually for _6band / _20band.
+DEFAULT_RUNS = [
+    (rn + sfx, lbl + f' [{sfx[1:]}]', kind)
+    for rn, lbl, kind in DEFAULT_RUNS
+    for sfx in ('_20band', '_6band')
+]
+
 
 def parse():
     p = argparse.ArgumentParser(description=__doc__,

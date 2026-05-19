@@ -54,9 +54,10 @@ KFOLD_DIR = SOC_ROOT / 'rebuttal' / 'gpu_experiments' / 'spatial_kfold'
 sys.path.insert(0, str(KFOLD_DIR))
 from run_kfold import _build_model, make_dataset  # noqa: E402
 from run_baselines import _aggregate_cube, inverse_y  # noqa: E402
+from band_subsets import get_band_indices  # noqa: E402
 from dataloaderMultiYears import MultiRasterDatasetMultiYears  # noqa: E402
 from dataframe_loader import separate_and_add_data  # noqa: E402
-from config import time_before  # noqa: E402
+from config import time_before, bands_list_order  # noqa: E402
 
 CHECKPOINTS_ROOT = HERE / 'checkpoints'
 MAPS_ROOT = HERE / 'maps'
@@ -142,6 +143,16 @@ def predict_nn(args, run_dir: Path, grid_df: pd.DataFrame, device) -> np.ndarray
     ds = MultiRasterDatasetMultiYears(sample_paths, data_paths, grid,
                                        time_before=time_before)
 
+    # Mirror the training-time bands-list subsetting for inference.
+    band_indices_t = torch.as_tensor(
+        get_band_indices(
+            ckpt['args'].get('bands_list', 'full_20'),
+            list(bands_list_order),
+        ),
+        dtype=torch.long,
+    )
+    do_slice = band_indices_t.numel() < len(bands_list_order)
+
     n = len(ds)
     preds = np.zeros(n, dtype=np.float32)
     apply_target_transform = ckpt['args'].get('target_transform', 'normalize')
@@ -153,6 +164,8 @@ def predict_nn(args, run_dir: Path, grid_df: pd.DataFrame, device) -> np.ndarray
             try:
                 _, _, f, _ = ds[i]
                 f_norm = (f - feature_means[:, None, None]) / feature_stds[:, None, None]
+                if do_slice:
+                    f_norm = f_norm.index_select(0, band_indices_t)
                 batch_feats.append(f_norm)
                 batch_idx.append(i)
             except Exception:
@@ -231,6 +244,18 @@ def predict_tree(args, run_dir: Path, grid_df: pd.DataFrame) -> np.ndarray:
             print(f'  [{i+1:>7}/{n}] rate {rate:.0f} pts/s', flush=True)
     if n_missing:
         print(f'  [warn] {n_missing} grid points missing covariate tiles', flush=True)
+
+    # If the trained tree was on a band subset, slice the 80-d feature
+    # vector down to its matching columns before prediction.
+    bands_used = cfg.get('bands_list', 'full_20')
+    band_indices = get_band_indices(bands_used, list(bands_list_order))
+    if len(band_indices) < len(bands_list_order):
+        col_indices = []
+        for b in band_indices:
+            col_indices.extend([b * 4, b * 4 + 1, b * 4 + 2, b * 4 + 3])
+        X = X[:, col_indices]
+        print(f'[infer-tree] sliced X to {X.shape} for bands_list={bands_used}',
+              flush=True)
 
     pred_raw = np.asarray(model.predict(X), dtype=np.float64).reshape(-1)
     pred = inverse_y(pred_raw, target_transform, mean=mu, std=sd)

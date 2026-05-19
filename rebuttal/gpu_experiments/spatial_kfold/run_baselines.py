@@ -308,6 +308,14 @@ def parse():
                    help='Output goes to OUT_DIR/<output-subdir>/'
                         'baseline_<model>_<tag-suffix>/. Default "sweep". '
                         'For max-oc sensitivity: pass "sweep/oc120" etc.')
+    p.add_argument('--bands-list', type=str, default='full_20',
+                   choices=['full_20', 'original_6'],
+                   help='Covariate subset. Tree features are 80-d per sample '
+                        '(20 bands × {mean, std, min, max}); under '
+                        'original_6 we extract the full 80-d vector once '
+                        'and keep only the 24 columns belonging to the 6 '
+                        'original bands. Cache is shared across runs that '
+                        'use the same max-oc.')
     p.add_argument('--cache-features', action='store_true', default=True,
                    help='Cache extracted features to .npz so re-runs are fast.')
     p.add_argument('--no-cache-features', dest='cache_features',
@@ -351,6 +359,25 @@ def main():
     X, y, lon, lat = extract_features_for_df(df, cache_path=cache_path)
     print(f'[baseline] X={X.shape} y={y.shape}  '
           f'OC range [{y.min():.2f}, {y.max():.2f}]', flush=True)
+
+    # --- Optional band-subset slicing ---
+    # The cache always stores 80-feature vectors (20 bands × {mean,std,min,max}).
+    # When --bands-list=original_6 we keep the 24 columns belonging to the
+    # first 6 bands (Elevation, LAI, LST, MODIS_NPP, SoilEvaporation,
+    # TotalEvapotranspiration), which sit at indices 0..5 of bands_list_order
+    # by construction (see SpatiotemporalGatedTransformer/config.py).
+    from band_subsets import get_band_indices    # noqa: E402  (already on sys.path via HERE)
+    from config import bands_list_order          # noqa: E402  (via SGT sys.path side-effect from run_kfold)
+
+    band_indices = get_band_indices(args.bands_list, list(bands_list_order))
+    if len(band_indices) < len(bands_list_order):
+        # Map each kept band to its 4 columns in X (mean, std, min, max).
+        col_indices = []
+        for b in band_indices:
+            col_indices.extend([b * 4, b * 4 + 1, b * 4 + 2, b * 4 + 3])
+        X = X[:, col_indices]
+        print(f'[baseline] --bands-list={args.bands_list}: sliced X to '
+              f'{X.shape} ({len(band_indices)} bands × 4 stats)', flush=True)
 
     for model_name in models:
         tag = f'baseline_{model_name}_{args.tag_suffix}'

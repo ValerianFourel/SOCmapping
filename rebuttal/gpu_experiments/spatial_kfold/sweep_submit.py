@@ -44,6 +44,10 @@ SWEEP_DIR = HERE / 'sweep'
 SBATCH_DIR = SWEEP_DIR / 'sbatch'
 LOG_DIR = SWEEP_DIR / 'slurm_logs'
 
+# Single source of truth for --bands-list → tag-suffix mapping.
+sys.path.insert(0, str(HERE))
+from band_subsets import band_suffix as _band_suffix  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # Default architecture grid. Each entry: (hidden_size, num_heads, num_layers).
 # Constraint: hidden_size % num_heads == 0 and head_dim >= 16 ideally.
@@ -145,16 +149,32 @@ def tag_for(variant: str, d: int, h: int, L: int) -> str:
     return base if variant == 'big' else f'small_{base}'
 
 
+def _effective_sweep_name(args) -> str:
+    """sweep_name with the --bands-list suffix appended if non-default.
+
+    Default behaviour (full_20) leaves the sweep_name unchanged so the
+    existing 20-band sweep directory tree is preserved. original_6 runs
+    get a "_6band" suffix automatically so they don't collide with
+    20-band outputs at the same --sweep-name."""
+    base = args.sweep_name
+    suf = _band_suffix(getattr(args, 'bands_list', 'full_20'))
+    if suf == '_20band':         # default — keep base unchanged
+        return base
+    return (base + suf) if base else suf.lstrip('_')
+
+
 def sweep_root(args) -> Path:
-    """Effective output root for this sweep run. Honors --sweep-name to
-    namespace max-oc sensitivity runs (sweep/oc90, sweep/oc120, ...)."""
-    return SWEEP_DIR / args.sweep_name if args.sweep_name else SWEEP_DIR
+    """Effective output root for this sweep run. Honors --sweep-name and
+    --bands-list to namespace per-config outputs."""
+    eff = _effective_sweep_name(args)
+    return SWEEP_DIR / eff if eff else SWEEP_DIR
 
 
 def out_subdir_arg(args, tag: str) -> str:
     """The --out-subdir value to pass to run_kfold.py. Includes sweep-name."""
-    if args.sweep_name:
-        return f'sweep/{args.sweep_name}/{tag}'
+    eff = _effective_sweep_name(args)
+    if eff:
+        return f'sweep/{eff}/{tag}'
     return f'sweep/{tag}'
 
 
@@ -183,6 +203,7 @@ def build_sbatch(tag: str, variant: str, d: int, h: int, L: int, args) -> str:
         '--sampler-mode qcut --rebalance-min-ratio 0 '
         '--augment-train '
         f'--out-subdir {out_subdir_arg(args, tag)} '
+        f'--bands-list {args.bands_list} '
         '--skip-figure'
     )
     venv_activate = (
@@ -248,6 +269,7 @@ def build_family_sbatch(tag: str, family: str, d: int, h: int, L: int,
         '--sampler-mode qcut --rebalance-min-ratio 0 '
         '--augment-train '
         f'--out-subdir {out_subdir_arg(args, tag)} '
+        f'--bands-list {args.bands_list} '
         '--skip-figure'
     )
     venv_activate = (
@@ -292,15 +314,15 @@ def build_baseline_sbatch(args) -> str:
 
     1 GPU is enough — XGBoost-GPU and cuML-RF each use a single device.
     """
-    name_prefix = f'{args.sweep_name}_' if args.sweep_name else ''
+    eff_name = _effective_sweep_name(args)
+    name_prefix = f'{eff_name}_' if eff_name else ''
     log_path = LOG_DIR / f'{name_prefix}baselines_%j.out'
     venv_activate = (
         f'source {shlex.quote(str(args.venv_activate))}'
         if args.venv_activate else 'true  # no venv activation requested'
     )
     # Each baseline writes under OUT_DIR/<output_subdir>/baseline_<model>_<suffix>/
-    output_subdir = (f'sweep/{args.sweep_name}' if args.sweep_name
-                     else 'sweep')
+    output_subdir = (f'sweep/{eff_name}' if eff_name else 'sweep')
 
     invocations = []
     for model, suffix, extra in BASELINE_GRID:
@@ -312,6 +334,7 @@ def build_baseline_sbatch(args) -> str:
             f'--models {model} --tag-suffix {suffix} '
             f'--max-oc {args.max_oc} --target-transform log --device cuda '
             f'--output-subdir {shlex.quote(output_subdir)} '
+            f'--bands-list {args.bands_list} '
             f'{extra_str}'
         )
     body = '\n\n'.join(invocations)
@@ -411,6 +434,13 @@ def main():
                    help='Weight on the base term in composite losses (default 1.0).')
     p.add_argument('--chi2-weight', type=float, default=0.1,
                    help='Weight on the chi-square term in composite losses (default 0.1).')
+    p.add_argument('--bands-list', type=str, default='full_20',
+                   choices=['full_20', 'original_6'],
+                   help='Covariate subset (full_20 = revision expansion; '
+                        'original_6 = original-paper subset). Auto-appends '
+                        '"_6band" to the sweep-name namespace so 6-band and '
+                        '20-band runs do not collide. Passed through to '
+                        'run_kfold.py / run_baselines.py.')
     a = p.parse_args()
 
     SBATCH_DIR.mkdir(parents=True, exist_ok=True)

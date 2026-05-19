@@ -59,6 +59,7 @@ from run_kfold import (  # noqa: E402
     MODEL_READY, _build_model_ready_dataset, make_dataset, _build_model,
     _AugmentingWrapper,
 )
+from band_subsets import get_band_indices, band_suffix  # noqa: E402
 import wandb  # noqa: E402  (disabled mode)
 from accelerate import Accelerator  # noqa: E402
 from train import train_model, _resolve_accum_steps, compute_training_statistics_oc  # noqa: E402
@@ -106,6 +107,12 @@ def parse():
                         'best-epoch monitoring. NOT a spatial split — '
                         'this is monitoring only, the saved model is meant '
                         'for production mapping.')
+    p.add_argument('--bands-list', type=str, default='full_20',
+                   choices=['full_20', 'original_6'],
+                   help='Covariate subset (default full_20). Run-name '
+                        'auto-appends "_6band" or "_20band" so the two '
+                        'variants do not overwrite each other under '
+                        'checkpoints/<run-name>/.')
     return p.parse_args()
 
 
@@ -113,9 +120,14 @@ def main():
     args = parse()
     torch.manual_seed(args.seed); np.random.seed(args.seed)
 
+    # Auto-append the bands-list suffix unless the user already encoded it.
+    suf = band_suffix(args.bands_list)
+    if not (args.run_name.endswith('_6band') or args.run_name.endswith('_20band')):
+        args.run_name = args.run_name + suf
     out_dir = CHECKPOINTS_ROOT / args.run_name
     out_dir.mkdir(parents=True, exist_ok=True)
-    print(f'[final] run_name = {args.run_name}', flush=True)
+    print(f'[final] run_name = {args.run_name}  (bands_list={args.bands_list})',
+          flush=True)
     print(f'[final] output dir = {out_dir}', flush=True)
 
     # ---- Data ----
@@ -147,8 +159,11 @@ def main():
     print(f'[final] target_mean={target_mean:.4f}  target_std={target_std:.4f}',
           flush=True)
 
-    train_ds = make_dataset(train_df, feature_means, feature_stds)
-    mon_ds = make_dataset(mon_df, feature_means, feature_stds)
+    _band_indices = get_band_indices(args.bands_list, list(bands_list_order))
+    train_ds = make_dataset(train_df, feature_means, feature_stds,
+                             band_indices=_band_indices)
+    mon_ds = make_dataset(mon_df, feature_means, feature_stds,
+                           band_indices=_band_indices)
     if args.augment_train:
         train_ds = _AugmentingWrapper(train_ds, seed=args.seed)
 

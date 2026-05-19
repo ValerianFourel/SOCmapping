@@ -86,6 +86,10 @@ from config import (  # noqa: E402
     NUM_LAYERS,
 )
 
+# Single source of truth for the --bands-list flag.
+sys.path.insert(0, str(_THIS.parent))
+from band_subsets import get_band_indices, band_suffix  # noqa: E402
+
 print(_describe_paths(), flush=True)
 
 
@@ -98,7 +102,13 @@ print(_describe_paths(), flush=True)
 # --------------------------------------------------------------------------
 def _build_model(args):
     family = getattr(args, 'model_family', 'sgt')
-    n_bands = len(bands_list_order)
+    # Honor --bands-list when building the model: input_channels must
+    # match the dataset's channel-dim after subsetting.
+    band_indices = get_band_indices(
+        getattr(args, 'bands_list', 'full_20'),
+        list(bands_list_order),
+    )
+    n_bands = len(band_indices)
 
     if family == 'sgt':
         return build_sgt_model(args)
@@ -375,7 +385,14 @@ def _flatten(lst):
     return out
 
 
-def make_dataset(df: pd.DataFrame, feature_means=None, feature_stds=None):
+def make_dataset(df: pd.DataFrame, feature_means=None, feature_stds=None,
+                 band_indices=None):
+    """Build the per-sample dataset.
+
+    band_indices, if provided, restricts the channel dim to that subset
+    AFTER normalization (so the caller can pass the full 20-channel
+    feature_means/feature_stds and let the wrapper slice the output).
+    """
     sample_paths, data_paths = separate_and_add_data()
     sample_paths = list(dict.fromkeys(_flatten(sample_paths)))
     data_paths = list(dict.fromkeys(_flatten(data_paths)))
@@ -387,6 +404,8 @@ def make_dataset(df: pd.DataFrame, feature_means=None, feature_stds=None):
     )
     if feature_means is not None and feature_stds is not None:
         ds = _NormalizingWrapper(ds, feature_means, feature_stds)
+    if band_indices is not None and len(band_indices) < len(bands_list_order):
+        ds = _BandSubsetWrapper(ds, band_indices)
     return ds
 
 
@@ -402,6 +421,28 @@ class _NormalizingWrapper(Dataset):
     def __getitem__(self, idx):
         lon, lat, features, oc = self.base[idx]
         features = (features - self.means[:, None, None]) / self.stds[:, None, None]
+        return lon, lat, features, oc
+
+
+class _BandSubsetWrapper(Dataset):
+    """Slice the channel dimension of each sample's features tensor to a
+    chosen subset of bands. Channel ordering follows bands_list_order from
+    SpatiotemporalGatedTransformer/config.py. Applied AFTER normalization
+    so the project-wide 20-channel feature_means/stds remain valid; the
+    cost is a few extra disk reads (the MultiRaster dataset still fetches
+    all 20 bands), but the simplicity is worth it at this dataset scale."""
+    def __init__(self, base, band_indices):
+        self.base = base
+        self.band_indices = torch.as_tensor(list(band_indices), dtype=torch.long)
+
+    def __len__(self):
+        return len(self.base)
+
+    def __getitem__(self, idx):
+        lon, lat, features, oc = self.base[idx]
+        # features: (C, ...) — index along dim 0 to keep only the chosen
+        # channels. Works for both (C, T, H, W) and (C, H, W) layouts.
+        features = features.index_select(0, self.band_indices)
         return lon, lat, features, oc
 
 
@@ -511,8 +552,15 @@ def train_one_fold(args, fold: dict, df: pd.DataFrame,
           f'max={test_df.OC.max():.1f} %>50={100*(test_df.OC>50).mean():.2f}%',
           flush=True)
 
-    train_ds = make_dataset(train_df, feature_means, feature_stds)
-    test_ds = make_dataset(test_df, feature_means, feature_stds)
+    # Resolve --bands-list once and pass to make_dataset for slicing.
+    _band_indices = get_band_indices(
+        getattr(args, 'bands_list', 'full_20'),
+        list(bands_list_order),
+    )
+    train_ds = make_dataset(train_df, feature_means, feature_stds,
+                             band_indices=_band_indices)
+    test_ds = make_dataset(test_df, feature_means, feature_stds,
+                            band_indices=_band_indices)
     if args.augment_train:
         train_ds = _AugmentingWrapper(train_ds, seed=seed)
         print('Train augmentation: D4 spatial (rot90 × flip)', flush=True)
@@ -986,6 +1034,16 @@ def parse_args():
                         'at the same (5×5×5) spatiotemporal window. '
                         '"vanilla_transformer" is the SimpleSGT-minus-GRN '
                         'fair-comparison ablation.')
+    p.add_argument('--bands-list', type=str, default='full_20',
+                   choices=['full_20', 'original_6'],
+                   help='Covariate-stack subset. "full_20" uses every band '
+                        'in bands_list_order (default, the revision band '
+                        'expansion). "original_6" restricts to the 6 bands '
+                        'used in the original submission '
+                        '(Elevation, LAI, LST, MODIS_NPP, SoilEvaporation, '
+                        'TotalEvapotranspiration) for direct comparison. '
+                        'The dataset still fetches all 20 bands; the wrapper '
+                        'slices the channel dim after normalization.')
     p.add_argument('--per-gpu-batch-size', type=int, default=256)
     p.add_argument('--effective-batch-size', type=int, default=2048)
     p.add_argument('--accum-steps', type=int, default=0)

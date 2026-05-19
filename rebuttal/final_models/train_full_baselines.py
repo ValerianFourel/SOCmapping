@@ -43,6 +43,7 @@ KFOLD_DIR = SOC_ROOT / 'rebuttal' / 'gpu_experiments' / 'spatial_kfold'
 sys.path.insert(0, str(KFOLD_DIR))
 from run_kfold import MODEL_READY, _build_model_ready_dataset  # noqa: E402
 from run_baselines import extract_features_for_df, transform_y, inverse_y  # noqa: E402
+from band_subsets import get_band_indices, band_suffix  # noqa: E402
 
 CHECKPOINTS_ROOT = HERE / 'checkpoints'
 
@@ -64,14 +65,22 @@ def parse():
     p.add_argument('--rf-n-estimators', type=int, default=500)
     p.add_argument('--rf-max-depth', type=int, default=0,
                    help='0 = unbounded')
+    p.add_argument('--bands-list', type=str, default='full_20',
+                   choices=['full_20', 'original_6'],
+                   help='Covariate subset (default full_20). Run-name '
+                        'auto-appends "_6band" or "_20band".')
     return p.parse_args()
 
 
 def main():
     args = parse()
+    suf = band_suffix(args.bands_list)
+    if not (args.run_name.endswith('_6band') or args.run_name.endswith('_20band')):
+        args.run_name = args.run_name + suf
     out_dir = CHECKPOINTS_ROOT / args.run_name
     out_dir.mkdir(parents=True, exist_ok=True)
-    print(f'[baseline-final] run_name = {args.run_name}', flush=True)
+    print(f'[baseline-final] run_name = {args.run_name}  '
+          f'(bands_list={args.bands_list})', flush=True)
     print(f'[baseline-final] output dir = {out_dir}', flush=True)
 
     _build_model_ready_dataset()
@@ -88,6 +97,17 @@ def main():
     X, y, lon, lat = extract_features_for_df(df, cache_path=cache_path)
     print(f'[baseline-final] X={X.shape}  y range [{y.min():.2f}, {y.max():.2f}]',
           flush=True)
+
+    # Optional band-subset slicing — same recipe as run_baselines.py
+    from config import bands_list_order        # noqa: E402
+    band_indices = get_band_indices(args.bands_list, list(bands_list_order))
+    if len(band_indices) < len(bands_list_order):
+        col_indices = []
+        for b in band_indices:
+            col_indices.extend([b * 4, b * 4 + 1, b * 4 + 2, b * 4 + 3])
+        X = X[:, col_indices]
+        print(f'[baseline-final] --bands-list={args.bands_list}: sliced X '
+              f'to {X.shape} ({len(band_indices)} bands × 4 stats)', flush=True)
 
     # Target transform — log/normalize/none. Targets are tracked in train
     # space; predictions inverse-transformed before any reporting.
