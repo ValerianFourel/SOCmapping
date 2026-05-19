@@ -103,9 +103,25 @@ def tag_for(variant: str, d: int, h: int, L: int) -> str:
     return base if variant == 'big' else f'small_{base}'
 
 
+def sweep_root(args) -> Path:
+    """Effective output root for this sweep run. Honors --sweep-name to
+    namespace max-oc sensitivity runs (sweep/oc90, sweep/oc120, ...)."""
+    return SWEEP_DIR / args.sweep_name if args.sweep_name else SWEEP_DIR
+
+
+def out_subdir_arg(args, tag: str) -> str:
+    """The --out-subdir value to pass to run_kfold.py. Includes sweep-name."""
+    if args.sweep_name:
+        return f'sweep/{args.sweep_name}/{tag}'
+    return f'sweep/{tag}'
+
+
 def build_sbatch(tag: str, variant: str, d: int, h: int, L: int, args) -> str:
-    out_dir_abs = SWEEP_DIR / tag
-    log_path = LOG_DIR / f'{tag}_%j.out'
+    out_dir_abs = sweep_root(args) / tag
+    # Per-fold console logs stay in a flat slurm_logs/ dir; tag-prefixed
+    # so namespaced sweeps don't collide on log filenames.
+    name_prefix = f'{args.sweep_name}_' if args.sweep_name else ''
+    log_path = LOG_DIR / f'{name_prefix}{tag}_%j.out'
     cmd = (
         'WANDB_MODE=disabled PYTHONUNBUFFERED=1 '
         'python rebuttal/gpu_experiments/spatial_kfold/run_folds_parallel.py '
@@ -122,7 +138,7 @@ def build_sbatch(tag: str, variant: str, d: int, h: int, L: int, args) -> str:
         f'--max-oc {args.max_oc} '
         '--sampler-mode qcut --rebalance-min-ratio 0 '
         '--augment-train '
-        f'--out-subdir sweep/{tag} '
+        f'--out-subdir {out_subdir_arg(args, tag)} '
         '--skip-figure'
     )
     venv_activate = (
@@ -167,11 +183,15 @@ def build_baseline_sbatch(args) -> str:
 
     1 GPU is enough — XGBoost-GPU and cuML-RF each use a single device.
     """
-    log_path = LOG_DIR / 'baselines_%j.out'
+    name_prefix = f'{args.sweep_name}_' if args.sweep_name else ''
+    log_path = LOG_DIR / f'{name_prefix}baselines_%j.out'
     venv_activate = (
         f'source {shlex.quote(str(args.venv_activate))}'
         if args.venv_activate else 'true  # no venv activation requested'
     )
+    # Each baseline writes under OUT_DIR/<output_subdir>/baseline_<model>_<suffix>/
+    output_subdir = (f'sweep/{args.sweep_name}' if args.sweep_name
+                     else 'sweep')
 
     invocations = []
     for model, suffix, extra in BASELINE_GRID:
@@ -182,6 +202,7 @@ def build_baseline_sbatch(args) -> str:
             f'python rebuttal/gpu_experiments/spatial_kfold/run_baselines.py '
             f'--models {model} --tag-suffix {suffix} '
             f'--max-oc {args.max_oc} --target-transform log --device cuda '
+            f'--output-subdir {shlex.quote(output_subdir)} '
             f'{extra_str}'
         )
     body = '\n\n'.join(invocations)
@@ -247,6 +268,12 @@ def main():
                         'Pass --no-baselines to skip; --baselines-only to submit just those.')
     p.add_argument('--baselines-only', action='store_true',
                    help='Submit only the baseline bundle, skip SGT configs.')
+    p.add_argument('--sweep-name', type=str, default='',
+                   help='Namespace outputs under sweep/<sweep-name>/ instead of '
+                        'sweep/ directly. Use for max-oc sensitivity: e.g. '
+                        '--max-oc 90 --sweep-name oc90, --max-oc 120 '
+                        '--sweep-name oc120. Each run keeps its own results; '
+                        'sweep_summarize.py walks all sub-sweeps recursively.')
     a = p.parse_args()
 
     SBATCH_DIR.mkdir(parents=True, exist_ok=True)

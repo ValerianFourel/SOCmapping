@@ -42,26 +42,35 @@ def parse_tag(tag: str) -> tuple[str, int | None, int | None, int | None, str] |
 
 def collect():
     rows = []
-    for d in sorted(SWEEP_DIR.iterdir()):
-        if not d.is_dir() or d.name in ('sbatch', 'slurm_logs'):
+    # Walk recursively so namespaced sweeps (sweep/oc120/<tag>) are merged
+    # into the same ranking alongside flat tags (sweep/<tag>).
+    skip_dirs = {'sbatch', 'slurm_logs', 'baseline_features'}
+    seen_dirs = set()
+    for summary in sorted(SWEEP_DIR.rglob('kfold_results_summary.json')):
+        cfg_dir = summary.parent
+        if cfg_dir in seen_dirs:
             continue
-        if parse_tag(d.name) is None:
+        if any(part in skip_dirs for part in cfg_dir.relative_to(SWEEP_DIR).parts):
             continue
-        summary = d / 'kfold_results_summary.json'
-        if not summary.exists():
-            rows.append({'tag': d.name, 'status': 'no summary yet', 'r2_mean': None})
+        seen_dirs.add(cfg_dir)
+        rel_parts = cfg_dir.relative_to(SWEEP_DIR).parts
+        base_tag = rel_parts[-1]
+        sweep_group = '/'.join(rel_parts[:-1]) or '(top)'
+        parsed = parse_tag(base_tag)
+        if parsed is None:
             continue
         try:
             j = json.loads(summary.read_text())
         except Exception as e:
-            rows.append({'tag': d.name, 'status': f'parse error: {e}', 'r2_mean': None})
+            rows.append({'tag': base_tag, 'sweep_group': sweep_group,
+                         'status': f'parse error: {e}', 'r2_mean': None})
             continue
         ac = j.get('across_folds', {})
         recipe = j.get('recipe', {})
-        parsed = parse_tag(d.name)
         fold_r2s = [r.get('r2', float('nan')) for r in j.get('fold_results', [])]
         rows.append({
-            'tag': d.name,
+            'tag': base_tag,
+            'sweep_group': sweep_group,
             'variant':    parsed[0],
             'd_model':    parsed[1],
             'num_heads':  parsed[2],
@@ -126,15 +135,14 @@ def main():
         ok = ok[:a.top]
 
     # Console table
-    print(f'\n{"rank":>4}  {"tag":<14}  {"params":>7}  {"R2 mean":>9}  '
+    print(f'\n{"rank":>4}  {"group":<10}  {"tag":<22}  {"R2 mean":>9}  '
           f'{"R2 std":>7}  {"RMSE":>7}  {"MAE":>7}  {"RPIQ":>6}  {"score":>7}  '
           f'{"per-fold R2"}')
-    print('-' * 110)
+    print('-' * 130)
     for i, r in enumerate(ok, 1):
         s = score(r)
         per_fold = ' '.join(fmt(v, 2) for v in r.get('r2_per_fold', [])[:10])
-        print(f'{i:>4}  {r["tag"]:<14}  '
-              f'{"":>7}  '
+        print(f'{i:>4}  {r.get("sweep_group", "(top)"):<10}  {r["tag"]:<22}  '
               f'{fmt(r["r2_mean"]):>9}  '
               f'{fmt(r["r2_std"]):>7}  '
               f'{fmt(r["rmse_mean"], 3):>7}  '
@@ -154,10 +162,11 @@ def main():
         md.append('Ranked by `score = r2_mean − 0.5 × r2_std` '
                   '(rewards high mean, penalizes cross-fold variance).')
         md.append('')
-        md.append('| Rank | tag | family | variant | d_model | heads | layers | R² mean | R² std | RMSE | MAE | RPIQ | score |')
-        md.append('|------|-----|--------|---------|---------|-------|--------|---------|--------|------|-----|------|-------|')
+        md.append('| Rank | group | tag | family | variant | d_model | heads | layers | R² mean | R² std | RMSE | MAE | RPIQ | score |')
+        md.append('|------|-------|-----|--------|---------|---------|-------|--------|---------|--------|------|-----|------|-------|')
         for i, r in enumerate(ok, 1):
-            md.append(f'| {i} | {r["tag"]} | {r["model_name"]} | {r["variant"]} | '
+            md.append(f'| {i} | {r.get("sweep_group", "(top)")} | {r["tag"]} | '
+                      f'{r["model_name"]} | {r["variant"]} | '
                       f'{fmt(r["d_model"], 0, "—")} | '
                       f'{fmt(r["num_heads"], 0, "—")} | '
                       f'{fmt(r["num_layers"], 0, "—")} | '

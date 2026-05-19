@@ -304,6 +304,10 @@ def parse():
                    help='cuda or cpu (XGBoost device; RF uses cuML if cuda).')
     p.add_argument('--tag-suffix', type=str, default='default',
                    help='Output subdir is baseline_<model>_<tag-suffix>.')
+    p.add_argument('--output-subdir', type=str, default='sweep',
+                   help='Output goes to OUT_DIR/<output-subdir>/'
+                        'baseline_<model>_<tag-suffix>/. Default "sweep". '
+                        'For max-oc sensitivity: pass "sweep/oc120" etc.')
     p.add_argument('--cache-features', action='store_true', default=True,
                    help='Cache extracted features to .npz so re-runs are fast.')
     p.add_argument('--no-cache-features', dest='cache_features',
@@ -350,7 +354,8 @@ def main():
 
     for model_name in models:
         tag = f'baseline_{model_name}_{args.tag_suffix}'
-        out_dir = OUT_DIR / 'sweep' / tag
+        # output_subdir is a relative path like 'sweep' or 'sweep/oc120'
+        out_dir = OUT_DIR / args.output_subdir / tag
         out_dir.mkdir(parents=True, exist_ok=True)
         print(f'\n========== {tag}  →  {out_dir} ==========', flush=True)
 
