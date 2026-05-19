@@ -110,6 +110,20 @@ def predict_nn(args, run_dir: Path, grid_df: pd.DataFrame, device) -> np.ndarray
 
     feature_means = torch.as_tensor(stats['feature_means'], dtype=torch.float32)
     feature_stds = torch.as_tensor(stats['feature_stds'], dtype=torch.float32)
+    # Mirror run_kfold._NormalizingWrapper: clamp stds and sanitize means
+    # so a constant-valued covariate (std == 0) doesn't divide-by-zero into
+    # ±inf and then NaN through every NN layer. Training already clamps to
+    # 1e-8; inference must do the same or every prediction comes out NaN.
+    feature_means = torch.nan_to_num(feature_means, nan=0.0, posinf=0.0, neginf=0.0)
+    feature_stds = torch.clamp(
+        torch.nan_to_num(feature_stds, nan=1.0, posinf=1.0, neginf=1.0),
+        min=1e-8,
+    )
+    n_zero_std = int((feature_stds <= 1e-8).sum().item())
+    if n_zero_std:
+        print(f'[infer-nn] WARNING: {n_zero_std} band(s) had std≈0 in stats.json; '
+              f'clamped to 1e-8 (matches training-time normalizer). '
+              f'These channels contribute ~0 signal.', flush=True)
     target_mean = float(stats['target_mean'])
     target_std = float(stats['target_std'])
 
@@ -164,6 +178,11 @@ def predict_nn(args, run_dir: Path, grid_df: pd.DataFrame, device) -> np.ndarray
             try:
                 _, _, f, _ = ds[i]
                 f_norm = (f - feature_means[:, None, None]) / feature_stds[:, None, None]
+                # Defensive: replace any leftover NaN/inf with 0 (matches the
+                # behaviour of a well-normalized constant band). A single bad
+                # pixel propagates through every conv/linear layer otherwise.
+                if not torch.isfinite(f_norm).all():
+                    f_norm = torch.nan_to_num(f_norm, nan=0.0, posinf=0.0, neginf=0.0)
                 if do_slice:
                     f_norm = f_norm.index_select(0, band_indices_t)
                 batch_feats.append(f_norm)
