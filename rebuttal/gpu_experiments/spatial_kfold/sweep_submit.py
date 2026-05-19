@@ -152,7 +152,9 @@ def build_sbatch(tag: str, variant: str, d: int, h: int, L: int, args) -> str:
         f'--hidden_size {d} --num_heads {h} --num_layers {L} '
         '--dropout_rate 0.5 '
         f'--lr {args.lr} --lr-scheduler cosine --lr-min 1e-6 '
-        '--loss_type l1 --target_transform log '
+        f'--loss_type {args.loss_type} '
+        f'--loss-alpha {args.loss_alpha} --chi2-weight {args.chi2_weight} '
+        '--target_transform log '
         '--per-gpu-batch-size 256 --effective-batch-size 256 '
         f'--num-epochs {args.epochs} --seed-base {args.seed_base} '
         f'--max-oc {args.max_oc} '
@@ -215,7 +217,9 @@ def build_family_sbatch(tag: str, family: str, d: int, h: int, L: int,
         f'--hidden_size {d} --num_heads {h} --num_layers {L} '
         f'--dropout_rate {dropout} '
         f'--lr {args.lr} --lr-scheduler cosine --lr-min 1e-6 '
-        '--loss_type l1 --target_transform log '
+        f'--loss_type {args.loss_type} '
+        f'--loss-alpha {args.loss_alpha} --chi2-weight {args.chi2_weight} '
+        '--target_transform log '
         '--per-gpu-batch-size 256 --effective-batch-size 256 '
         f'--num-epochs {args.epochs} --seed-base {args.seed_base} '
         f'--max-oc {args.max_oc} '
@@ -366,6 +370,16 @@ def main():
                         'to enable. --families-only submits just those.')
     p.add_argument('--families-only', action='store_true',
                    help='Submit only the cross-architecture grid, skip SGT and baselines.')
+    p.add_argument('--loss-type', type=str, default='l1',
+                   choices=['l1', 'mse', 'chi2', 'composite_l1', 'composite_l2'],
+                   help='Training loss for neural-network configs (SGT + families). '
+                        'composite_l1/composite_l2 add a Pearson chi-square term '
+                        '(see train.py:_composite_loss). Default l1. Ignored by '
+                        'the tree-baseline bundle.')
+    p.add_argument('--loss-alpha', type=float, default=1.0,
+                   help='Weight on the base term in composite losses (default 1.0).')
+    p.add_argument('--chi2-weight', type=float, default=0.1,
+                   help='Weight on the chi-square term in composite losses (default 0.1).')
     a = p.parse_args()
 
     SBATCH_DIR.mkdir(parents=True, exist_ok=True)
