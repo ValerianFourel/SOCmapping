@@ -98,10 +98,17 @@ def main():
     # ---- Cross-model pairwise correlation (Pearson, on common grid points) ----
     # Align all maps on (round(GPS_LONG, 5), round(GPS_LAT, 5)).
     aligned = {}
-    base_keys = None
     for run_name, label, kind, df, _ in runs_with_data:
         keys = list(zip(np.round(df.GPS_LONG, 5), np.round(df.GPS_LAT, 5)))
         s = pd.Series(df.predicted_soc.values, index=keys, name=run_name)
+        # Drop duplicate (lat, lon) labels (keep first) — required for
+        # pd.concat(..., join='inner'). Duplicates occur because the
+        # 1mil Bavaria grid has repeated coordinates at 5-decimal rounding.
+        n_before = len(s)
+        s = s[~s.index.duplicated(keep='first')]
+        if len(s) < n_before:
+            print(f'   [{run_name}] dropped {n_before - len(s):,} duplicate '
+                  f'(lat, lon) keys before alignment', flush=True)
         aligned[run_name] = s
     aligned_df = pd.concat(aligned.values(), axis=1, join='inner')
     aligned_df.columns = [r[0] for r in runs_with_data]
@@ -121,43 +128,107 @@ def main():
                 'pearson_r': float(corr.loc[a_, b_]),
             }
 
-    # ---- Figure: side-by-side maps ----
-    n_runs = len(runs_with_data)
-    ncols = min(n_runs, 3)
-    nrows = (n_runs + ncols - 1) // ncols
+    # ---- Pair runs by architecture and band variant for the figure layout ----
+    def _split_run(rn: str):
+        """Return (arch_key, band_variant) where band_variant ∈
+        {'20band', '6band', ''}."""
+        if rn.endswith('_6band'):
+            return rn[:-6], '6band'
+        if rn.endswith('_20band'):
+            return rn[:-7], '20band'
+        return rn, ''
+
+    # Group runs by arch_key, preserving the DEFAULT_RUNS-given label/kind.
+    by_arch: dict[str, dict] = {}
+    arch_order: list[str] = []
+    for run_name, label, kind, df, summary in runs_with_data:
+        arch_key, band = _split_run(run_name)
+        # Strip the bracketed " [20band]" / " [6band]" suffix from the
+        # label so the architecture-row label is clean.
+        base_label = label
+        for tag in (' [20band]', ' [6band]'):
+            if base_label.endswith(tag):
+                base_label = base_label[: -len(tag)]
+        if arch_key not in by_arch:
+            by_arch[arch_key] = {'base_label': base_label, 'kind': kind, 'panels': {}}
+            arch_order.append(arch_key)
+        by_arch[arch_key]['panels'][band or '20band'] = {
+            'run_name': run_name, 'df': df, 'summary': summary,
+        }
+
+    # ---- Figure: 2-col grid, 20band on left, 6band on right ----
+    BAND_COLS = ['20band', '6band']    # column order
     try:
         import matplotlib
         matplotlib.use('Agg')
         import matplotlib.pyplot as plt
-        fig, axes = plt.subplots(nrows, ncols,
-                                  figsize=(5.5 * ncols, 5 * nrows),
+
+        n_rows = len(arch_order)
+        fig, axes = plt.subplots(n_rows, 2,
+                                  figsize=(11, 4.5 * max(n_rows, 1)),
                                   squeeze=False)
-        # Shared color range across panels for fair visual comparison.
-        all_preds = np.concatenate([df.predicted_soc.values
-                                      for _, _, _, df, _ in runs_with_data])
-        vmin = max(0.0, float(np.nanpercentile(all_preds, 2)))
-        vmax = float(np.nanpercentile(all_preds, 98))
-        for k, (run_name, label, kind, df, summary) in enumerate(runs_with_data):
-            r, c = k // ncols, k % ncols
-            ax = axes[r][c]
-            sc = ax.scatter(df.GPS_LONG, df.GPS_LAT, c=df.predicted_soc,
-                              s=1, cmap='YlOrBr', vmin=vmin, vmax=vmax,
-                              alpha=0.85)
-            mean_str = f'{summary.get("mean", float("nan")):.2f}'
-            ax.set_title(f'{label}\nmean = {mean_str} g/kg', fontsize=10)
-            ax.set_xlabel('Lon'); ax.set_ylabel('Lat')
-            ax.set_aspect('equal', adjustable='box')
-        # Turn off unused subplots
-        for k in range(len(runs_with_data), nrows * ncols):
-            r, c = k // ncols, k % ncols
-            axes[r][c].axis('off')
+
+        # Shared colour range, clipped at 100 g/kg for visualization so a
+        # broken model (e.g. XGB shallow 6-band mean ≈ 157) doesn't push the
+        # 98th-percentile vmax to a useless saturation. Predictions ARE
+        # plotted at their true values — only the colour normalization is
+        # clipped — so the "broken" panels render as saturated and are
+        # flagged in the title.
+        all_pred = np.concatenate([
+            by_arch[k]['panels'][band]['df'].predicted_soc.values
+            for k in arch_order
+            for band in BAND_COLS
+            if band in by_arch[k]['panels']
+        ])
+        pred_for_vmax = np.clip(all_pred, 0, 100)
+        vmin = max(0.0, float(np.nanpercentile(pred_for_vmax, 2)))
+        vmax = float(np.nanpercentile(pred_for_vmax, 98))
+        broken_threshold = 80.0    # mean SOC above this flags as broken
+
+        sc = None
+        for i, arch_key in enumerate(arch_order):
+            entry = by_arch[arch_key]
+            for j, band in enumerate(BAND_COLS):
+                ax = axes[i][j]
+                panel = entry['panels'].get(band)
+                if panel is None:
+                    ax.text(0.5, 0.5, f'(not run yet)\n{arch_key}\n[{band}]',
+                              ha='center', va='center', fontsize=9, color='gray',
+                              transform=ax.transAxes)
+                    ax.set_xticks([]); ax.set_yticks([])
+                    continue
+                df = panel['df']
+                summary = panel['summary']
+                sc = ax.scatter(df.GPS_LONG, df.GPS_LAT, c=df.predicted_soc,
+                                  s=1, cmap='YlOrBr', vmin=vmin, vmax=vmax,
+                                  alpha=0.85)
+                mean_v = float(summary.get('mean', float('nan')))
+                warning = '  ⚠ broken' if (mean_v == mean_v and mean_v > broken_threshold) else ''
+                ax.set_title(f'mean = {mean_v:.2f} g/kg{warning}', fontsize=9)
+                ax.set_xlabel('Lon', fontsize=8); ax.set_ylabel('Lat', fontsize=8)
+                ax.set_aspect('equal', adjustable='box')
+                ax.tick_params(labelsize=7)
+            # Row label on the leftmost axis
+            axes[i][0].set_ylabel(f'{entry["base_label"]}\nLat', fontsize=9)
+
+        # Column headers
+        if n_rows > 0:
+            axes[0][0].annotate('20-band stack', xy=(0.5, 1.10),
+                                  xycoords='axes fraction', ha='center',
+                                  fontsize=11, fontweight='bold')
+            axes[0][1].annotate('6-band stack (original-paper subset)',
+                                  xy=(0.5, 1.10), xycoords='axes fraction',
+                                  ha='center', fontsize=11, fontweight='bold')
+
         # Shared colorbar
-        fig.subplots_adjust(right=0.92)
-        cbar_ax = fig.add_axes([0.94, 0.20, 0.012, 0.62])
-        fig.colorbar(sc, cax=cbar_ax, label='Predicted SOC (g/kg)')
+        if sc is not None:
+            fig.subplots_adjust(right=0.92)
+            cbar_ax = fig.add_axes([0.94, 0.20, 0.012, 0.62])
+            cbar = fig.colorbar(sc, cax=cbar_ax,
+                                  label=f'Predicted SOC (g/kg, clipped to {int(vmax)})')
         fig.suptitle(f'Bavaria-wide SOC predictions, target year {a.year} '
-                      f'— full-data trained, identical inference grid',
-                      fontsize=12, fontweight='bold', y=1.01)
+                      f'— 20-band vs 6-band per architecture',
+                      fontsize=13, fontweight='bold', y=1.01)
         fig.tight_layout()
         out_png = HERE / f'maps_comparison_{a.year}.png'
         fig.savefig(out_png, dpi=200, bbox_inches='tight')
@@ -204,6 +275,28 @@ def main():
                   f'{s["mean_abs_diff"]:.2f} | {s["mean_signed_diff"]:+.3f} | '
                   f'{s["std_diff"]:.2f} | {s["pearson_r"]:.3f} |')
     md.append('')
+    # ---- 20-band vs 6-band side-by-side per architecture ----
+    md.append('## 20-band vs 6-band (per architecture)')
+    md.append('')
+    md.append('Each row pairs the same architecture trained on the full 20-band '
+              'covariate stack (revision expansion) versus the original 6-band '
+              'subset. "—" means that variant has not finished training yet.')
+    md.append('')
+    md.append('| Architecture | 20-band mean | 20-band std | 6-band mean | 6-band std | Δ mean (6−20) |')
+    md.append('|---|---|---|---|---|---|')
+    for arch_key in arch_order:
+        entry = by_arch[arch_key]
+        p20 = entry['panels'].get('20band', {}).get('summary', {})
+        p6  = entry['panels'].get('6band',  {}).get('summary', {})
+        m20 = p20.get('mean'); s20 = p20.get('std')
+        m6  = p6.get('mean');  s6  = p6.get('std')
+        cell = lambda v, prec=2: f'{v:.{prec}f}' if isinstance(v, (int, float)) and v == v else '—'
+        delta = (m6 - m20) if (isinstance(m20, (int, float)) and isinstance(m6, (int, float))) else None
+        md.append(f'| **{entry["base_label"]}** | {cell(m20)} | {cell(s20)} | '
+                  f'{cell(m6)} | {cell(s6)} | '
+                  f'{cell(delta)} |')
+    md.append('')
+
     md.append('## Interpretation')
     md.append('')
     md.append('- High pairwise correlation (>0.7) indicates models agree on '

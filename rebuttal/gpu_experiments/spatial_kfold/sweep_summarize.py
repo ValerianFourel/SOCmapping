@@ -183,6 +183,48 @@ def main():
                       f'{fmt(r["rmse_mean"], 3)} | {fmt(r["mae_mean"], 3)} | '
                       f'{fmt(r["rpiq_mean"], 3)} | {fmt(score(r))} |')
         md.append('')
+
+        # -- 20-band vs 6-band pair view --
+        # Every (sweep_group, tag) that has both a "*_6band" namespace AND
+        # a matching non-suffixed namespace is paired here for direct
+        # comparison.
+        def _strip_bands(g: str) -> tuple[str, str]:
+            """Return (base_group, band_label). 'oc150_6band' → ('oc150', '6band');
+            'oc150' → ('oc150', '20band' [implicit default]); other → (g, '')."""
+            if g.endswith('_6band'):
+                return g[:-6], '6band'
+            if g.endswith('_20band'):
+                return g[:-7], '20band'
+            return g, '20band'   # assume default = 20-band
+
+        pairs: dict[tuple[str, str], dict] = {}  # (base_group, tag) → {band → row}
+        for r in ok:
+            base, band = _strip_bands(r.get('sweep_group') or '')
+            key = (base, r['tag'])
+            pairs.setdefault(key, {})[band] = r
+
+        paired = {k: v for k, v in pairs.items() if '6band' in v and '20band' in v}
+        if paired:
+            md.append('## 20-band vs 6-band paired comparison')
+            md.append('')
+            md.append(f'{len(paired)} (base sweep × tag) pairs have BOTH '
+                      f'a 20-band and a 6-band run available. Δ R² and Δ '
+                      f'fold-0 R² isolate the band-set effect for the '
+                      f'same architecture and same evaluation protocol.')
+            md.append('')
+            md.append('| Base sweep | Tag | R² mean 20b | R² mean 6b | Δ (6b−20b) | Fold-0 20b | Fold-0 6b | Δ fold-0 |')
+            md.append('|---|---|---|---|---|---|---|---|')
+            for (base, tag), variants in sorted(paired.items()):
+                r20 = variants['20band']; r6 = variants['6band']
+                f0_20 = r20.get('r2_per_fold', [float('nan')])[0]
+                f0_6  = r6.get('r2_per_fold',  [float('nan')])[0]
+                d_mean = r6['r2_mean'] - r20['r2_mean']
+                d_f0 = f0_6 - f0_20
+                md.append(f'| {base} | {tag} | {r20["r2_mean"]:.4f} | '
+                          f'{r6["r2_mean"]:.4f} | {d_mean:+.4f} | '
+                          f'{f0_20:+.3f} | {f0_6:+.3f} | {d_f0:+.3f} |')
+            md.append('')
+
         if ok:
             best = ok[0]
             md.append('## Recommended for full 300-epoch retrain')

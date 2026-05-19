@@ -181,7 +181,12 @@ def predict_nn(args, run_dir: Path, grid_df: pd.DataFrame, device) -> np.ndarray
                     y_gkg = out * target_std + target_mean
                 else:
                     y_gkg = out
-                y_gkg = np.clip(y_gkg, 0.0, None)
+                # Upper clip at 2× training cap so a degenerate model
+                # (e.g. exp(log_pred) running away in early epochs) can't
+                # produce predictions far outside the training-target range
+                # that would dominate downstream visualization colour scales.
+                _max_oc_train = float(ckpt['args'].get('max_oc', 150.0))
+                y_gkg = np.clip(y_gkg, 0.0, 2.0 * _max_oc_train)
                 for j, gi in enumerate(batch_idx):
                     preds[gi] = float(y_gkg[j])
                 batch_feats.clear(); batch_idx.clear()
@@ -190,6 +195,12 @@ def predict_nn(args, run_dir: Path, grid_df: pd.DataFrame, device) -> np.ndarray
                 print(f'  [{i+1:>7}/{n}] rate {rate:.0f} pts/s', flush=True)
     if n_missing:
         print(f'  [warn] {n_missing} grid points missing covariate tiles', flush=True)
+    mean_pred = float(np.nanmean(preds))
+    max_oc_train = float(ckpt['args'].get('max_oc', 150.0))
+    if mean_pred > max_oc_train * 1.2:
+        print(f'[infer-nn] WARNING: mean prediction = {mean_pred:.1f} g/kg '
+              f'exceeds max_oc_train × 1.2 = {max_oc_train * 1.2:.1f}. '
+              f'Model likely overshooting in log-target space.', flush=True)
     return preds
 
 
@@ -259,7 +270,20 @@ def predict_tree(args, run_dir: Path, grid_df: pd.DataFrame) -> np.ndarray:
 
     pred_raw = np.asarray(model.predict(X), dtype=np.float64).reshape(-1)
     pred = inverse_y(pred_raw, target_transform, mean=mu, std=sd)
-    pred = np.clip(pred, 0.0, None)
+    # Upper clip at 2× training cap. Tree models trained on small
+    # feature subsets (e.g. 6-band XGB shallow) can collapse to
+    # predicting near the training max in log-target space, which after
+    # exp() becomes a mean ≈ exp(log(max_oc)) — well above the
+    # physically-meaningful range. Clip for visualization sanity; the
+    # broken-model warning is surfaced separately by compare_maps.
+    max_oc_train = float(cfg.get('max_oc', 150.0))
+    pred = np.clip(pred, 0.0, 2.0 * max_oc_train)
+    mean_pred = float(np.nanmean(pred))
+    if mean_pred > max_oc_train * 1.2:
+        print(f'[infer-tree] WARNING: mean prediction = {mean_pred:.1f} g/kg '
+              f'exceeds max_oc_train × 1.2 = {max_oc_train * 1.2:.1f}. '
+              f'Model likely collapsed in log-target space on this feature set.',
+              flush=True)
     return pred.astype(np.float32)
 
 
