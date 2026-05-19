@@ -490,7 +490,8 @@ def train_one_fold(args, fold: dict, df: pd.DataFrame,
         lr_min=args.lr_min,
         lr_gamma=args.lr_gamma,
         lr_restart_T0=args.lr_restart_T0,
-        chi2_weight=getattr(args, 'chi2_weight', 0.01),
+        loss_alpha=getattr(args, 'loss_alpha', 1.0),
+        chi2_weight=getattr(args, 'chi2_weight', 0.1),
     )
 
     wandb_run.finish()
@@ -879,12 +880,15 @@ def parse_args():
     p.add_argument('--num_heads', type=int, default=NUM_HEADS)
     p.add_argument('--num_layers', type=int, default=NUM_LAYERS)
     p.add_argument('--loss_type', type=str, default='l1',
-                   choices=['l1', 'mse', 'chi2', 'l1_chi2', 'mse_chi2'],
-                   help='"chi2" suffix adds a Pearson chi-square term '
-                        '(in original g/kg space) scaled by --chi2-weight.')
-    p.add_argument('--chi2-weight', type=float, default=0.01,
-                   help='Coefficient on the chi-square component in composite '
-                        'losses (l1_chi2 / mse_chi2). Ignored for plain l1/mse.')
+                   choices=['l1', 'mse', 'chi2', 'composite_l1', 'composite_l2'],
+                   help='composite_l1/composite_l2 add a Pearson chi-square term '
+                        '(in original g/kg space): '
+                        'loss = loss_alpha × base + chi2_weight × chi-square.')
+    p.add_argument('--loss-alpha', type=float, default=1.0,
+                   help='Weight on the base term in composite losses (default 1.0).')
+    p.add_argument('--chi2-weight', type=float, default=0.1,
+                   help='Weight on the chi-square term in composite losses '
+                        '(default 0.1). Ignored for plain l1/mse.')
     p.add_argument('--target_transform', type=str, default='normalize',
                    choices=['none', 'log', 'normalize'])
     p.add_argument('--hidden_size', type=int, default=hidden_size)

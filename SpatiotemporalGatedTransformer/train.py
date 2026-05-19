@@ -54,12 +54,16 @@ def parse_args():
     parser.add_argument('--num_heads', type=int, default=NUM_HEADS, help='Number of attention heads')
     parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of transformer layers')
     parser.add_argument('--loss_type', type=str, default='l1',
-                        choices=['l1', 'mse', 'chi2', 'l1_chi2', 'mse_chi2'],
-                        help='Training loss. "chi2" suffix adds a Pearson chi-square term '
-                             'in original (g/kg) space scaled by --chi2-weight.')
-    parser.add_argument('--chi2-weight', type=float, default=0.01,
-                        help='Coefficient on the chi-square term in composite losses '
-                             '(l1_chi2 / mse_chi2). Ignored for plain l1/mse/chi2.')
+                        choices=['l1', 'mse', 'chi2', 'composite_l1', 'composite_l2'],
+                        help='Training loss. composite_l1/composite_l2 add a '
+                             'Pearson chi-square term in original g/kg space: '
+                             'loss = loss_alpha × base + chi2_weight × chi-square.')
+    parser.add_argument('--loss-alpha', type=float, default=1.0,
+                        help='Weight on the base term (L1 / MSE) in composite losses. '
+                             'Default 1.0; user-spec example uses 0.5.')
+    parser.add_argument('--chi2-weight', type=float, default=0.1,
+                        help='Weight on the chi-square term in composite losses. '
+                             'Default 0.1; ignored for plain l1/mse.')
     parser.add_argument('--target_transform', type=str, default='normalize', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
     parser.add_argument('--use_test', action=argparse.BooleanOptionalAction, default=True, help='Whether to use a held-out test set (use --no-use_test to disable)')
     parser.add_argument('--output-dir', type=str, default='output', help='Output directory')
@@ -138,36 +142,45 @@ def _resolve_accum_steps(args, num_processes):
     return max(1, target // per_step)
 
 def _composite_loss(outputs, targets, loss_type, target_transform,
-                    target_mean, target_std, chi2_weight, eps=1e-3):
-    """Training loss with optional Pearson chi-square component.
+                    target_mean, target_std,
+                    loss_alpha=1.0, chi2_weight=0.1, eps=1e-3):
+    """Composite training loss for SGT.
 
-    Base term (in TRAINING space):
-        l1  / l1_chi2 → L1
-        mse / mse_chi2 → MSE
-        chi2 → no base term
+    Loss types:
+        l1            → F.l1_loss(outputs, targets)
+        mse           → F.mse_loss(outputs, targets)
+        chi2          → Pearson χ² alone (in original g/kg space)
+        composite_l1  → α × L1  + β × χ²
+        composite_l2  → α × MSE + β × χ²
 
-    Chi-square term (in ORIGINAL g/kg space): mean((ŷ - y)² / (|y| + eps)).
-    For log target_transform we exp() both outputs and targets first (with
-    outputs clamped to [-5, 6] so exp doesn't explode early in training);
-    for normalize we denormalize. This makes the chi-square component
-    statistically meaningful for SOC (a heteroscedastic, log-normal target).
+    χ² formula (Pearson goodness-of-fit, original g/kg space):
+        χ² = mean( (ŷ - y)² / (y + ε) )
+
+    Implementation notes:
+      • Base term (L1 / MSE) is computed in TRAINING space (whatever
+        target_transform applied). χ² is computed in ORIGINAL space, so
+        log/normalize transforms are inverted first.
+      • For log target_transform, outputs are clamped to [-3, 6] before
+        exp() so exp(huge) doesn't blow up the χ² term early in training
+        (still permits y_pred ∈ [0.05, 403] g/kg, well past max_oc=150).
+      • Denominator is clamped to ≥ ε to be safe even under normalize
+        target_transform where denormalized targets can briefly go ≤ 0.
+      • α controls the base-loss weight, β = chi2_weight controls χ².
     """
-    if loss_type in ('l1', 'l1_chi2'):
+    if loss_type in ('l1', 'composite_l1'):
         base = F.l1_loss(outputs, targets)
-    elif loss_type in ('mse', 'mse_chi2'):
+    elif loss_type in ('mse', 'composite_l2'):
         base = F.mse_loss(outputs, targets)
     elif loss_type == 'chi2':
         base = outputs.new_zeros(())
     else:
         raise ValueError(f"Unknown loss_type: {loss_type}")
 
-    if loss_type not in ('chi2', 'l1_chi2', 'mse_chi2'):
+    if loss_type not in ('chi2', 'composite_l1', 'composite_l2'):
         return base
 
     if target_transform == 'log':
-        # Clamp pred BEFORE exp; targets are already log(OC) in [-0.17, 5.01]
-        # for OC ∈ [0.84, 150], so they don't need clamping.
-        y_pred = torch.exp(torch.clamp(outputs, -5.0, 6.0))
+        y_pred = torch.exp(torch.clamp(outputs, -3.0, 6.0))
         y_target = torch.exp(targets)
     elif target_transform == 'normalize':
         y_pred = outputs * target_std + target_mean
@@ -176,29 +189,29 @@ def _composite_loss(outputs, targets, loss_type, target_transform,
         y_pred = outputs
         y_target = targets
 
-    chi2 = torch.mean((y_pred - y_target) ** 2 / (torch.abs(y_target) + eps))
+    denom = torch.clamp(y_target, min=eps)
+    chi2 = ((y_pred - y_target) ** 2 / denom).mean()
+
     if loss_type == 'chi2':
         return chi2
-    return base + chi2_weight * chi2
+    return loss_alpha * base + chi2_weight * chi2
 
 
 def train_model(model, train_loader, test_loader,target_mean,target_std, num_epochs=num_epochs, accelerator=None, lr=0.001,
                 loss_type='l1', target_transform='none', min_r2=0.5, use_test=True,
                 accum_steps=1, lr_scheduler='none', lr_min=1e-6, lr_gamma=0.99,
-                lr_restart_T0=50, chi2_weight=0.01):
+                lr_restart_T0=50, loss_alpha=1.0, chi2_weight=0.1):
     # Test-time logging keeps the base criterion (composite loss is for training
     # gradient only — chi2 component would dominate the test loss display
     # otherwise, making it hard to compare across loss types).
-    base_type = ('mse' if loss_type in ('mse', 'mse_chi2')
-                 else 'chi2' if loss_type == 'chi2' else 'l1')
+    base_type = ('mse' if loss_type in ('mse', 'composite_l2')
+                 else 'l1')      # l1, composite_l1, and chi2 all display as L1
     if base_type == 'l1':
         criterion = nn.L1Loss()
     elif base_type == 'mse':
         criterion = nn.MSELoss()
-    elif base_type == 'chi2':
-        criterion = nn.L1Loss()      # display-only; the real loss is in _composite_loss
 
-    if loss_type not in ('l1', 'mse', 'chi2', 'l1_chi2', 'mse_chi2'):
+    if loss_type not in ('l1', 'mse', 'chi2', 'composite_l1', 'composite_l2'):
         raise ValueError(f"Unknown loss type: {loss_type}")
 
     optimizer = optim.Adam(model.parameters(), lr=lr)
@@ -263,7 +276,8 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
                 outputs = model(features)
                 loss = _composite_loss(
                     outputs, targets, loss_type, target_transform,
-                    target_mean, target_std, chi2_weight,
+                    target_mean, target_std,
+                    loss_alpha=loss_alpha, chi2_weight=chi2_weight,
                 ) / accum_steps
                 accelerator.backward(loss)
 
@@ -962,7 +976,8 @@ if __name__ == "__main__":
             lr_min=args.lr_min,
             lr_gamma=args.lr_gamma,
             lr_restart_T0=args.lr_restart_T0,
-            chi2_weight=getattr(args, 'chi2_weight', 0.01),
+            loss_alpha=getattr(args, 'loss_alpha', 1.0),
+            chi2_weight=getattr(args, 'chi2_weight', 0.1),
         )
 
         # Store metrics
