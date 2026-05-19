@@ -1,0 +1,290 @@
+#!/usr/bin/env python3
+"""
+rebuttal/final_models/submit_finals.py — submit the full set of final-model
+training+inference jobs for the Geoderma rebuttal pivot.
+
+Each entry in FINAL_GRID is one production-mapping model. For neural-net
+families, we submit one 4-GPU training job followed by a dependent
+1-GPU inference job. For tree baselines (RF/XGB) we bundle train+infer
+into one 1-GPU job.
+
+Output structure (under rebuttal/final_models/):
+    checkpoints/<run_name>/    trained weights + stats + config + log
+    maps/<run_name>/           bavaria_<year>_predictions.parquet + .png + .json
+
+Run on the login node:
+    python rebuttal/final_models/submit_finals.py
+    # or dry-run:
+    python rebuttal/final_models/submit_finals.py --dry-run
+"""
+from __future__ import annotations
+import argparse
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+SOC_ROOT = HERE.parents[1]
+SBATCH_DIR = HERE / 'sbatch'
+LOG_DIR = HERE / 'slurm_logs'
+
+
+# ---------------------------------------------------------------------------
+# FINAL_GRID — one production mapping model per family. Hyperparameters
+# are the spatial-CV winners from the sweep_summarize ranking. All trained
+# on the FULL 16k dataset (only a 5% RANDOM monitor holdout for best-state
+# tracking; not used to bound performance).
+# ---------------------------------------------------------------------------
+NN_CONFIGS = [
+    # SGT (winner): SimpleSGT d=128, h=4, L=1 with composite_l2 at max-oc 150
+    {
+        'run_name': 'sgt_d128_h4_L1',
+        'cmd': (
+            '--model-family sgt --model-size small '
+            '--hidden_size 128 --num_heads 4 --num_layers 1 '
+            '--dropout_rate 0.5 '
+            '--lr 1e-4 --lr-scheduler cosine --lr-min 1e-6 '
+            '--loss_type composite_l2 --loss-alpha 0.5 --chi2-weight 0.1 '
+            '--target_transform log --max-oc 150 '
+            '--per-gpu-batch-size 256 --effective-batch-size 256 '
+            '--num-epochs 60 --seed 42 --augment-train'
+        ),
+    },
+    # SimpleTransformerV2 (11.2M params; comparison transformer at max-oc 150,
+    # plain L1 because composite_l2 destabilizes it per the spatial-CV sweep)
+    {
+        'run_name': 'simpletransformer_d64_h4_L1',
+        'cmd': (
+            '--model-family simpletransformer --model-size small '
+            '--hidden_size 64 --num_heads 4 --num_layers 1 '
+            '--dropout_rate 0.5 '
+            '--lr 1e-4 --lr-scheduler cosine --lr-min 1e-6 '
+            '--loss_type l1 --target_transform log --max-oc 150 '
+            '--per-gpu-batch-size 256 --effective-batch-size 256 '
+            '--num-epochs 60 --seed 42 --augment-train'
+        ),
+    },
+    # CNNLSTM (93k params; competitive baseline)
+    {
+        'run_name': 'cnnlstm_d64_h4_L1',
+        'cmd': (
+            '--model-family cnnlstm --model-size small '
+            '--hidden_size 64 --num_heads 4 --num_layers 1 '
+            '--dropout_rate 0.5 '
+            '--lr 1e-4 --lr-scheduler cosine --lr-min 1e-6 '
+            '--loss_type l1 --target_transform log --max-oc 150 '
+            '--per-gpu-batch-size 256 --effective-batch-size 256 '
+            '--num-epochs 60 --seed 42 --augment-train'
+        ),
+    },
+]
+
+TREE_CONFIGS = [
+    {'run_name': 'rf_default',
+     'cmd': ('--model rf --rf-n-estimators 500 --rf-max-depth 0 '
+             '--max-oc 150 --target-transform log')},
+    {'run_name': 'xgb_shallow',
+     'cmd': ('--model xgb --xgb-n-estimators 2000 --xgb-max-depth 4 --xgb-lr 0.05 '
+             '--max-oc 150 --target-transform log')},
+]
+
+DEFAULTS = {
+    'partition': 'booster',
+    'account': 'scifi',
+    'time_train': '01:30:00',
+    'time_infer': '02:00:00',
+    'time_baseline': '02:30:00',
+    'venv_activate': str(SOC_ROOT.parent / 'venv' / 'bin' / 'activate'),
+    'year': 2023,
+}
+
+
+def build_nn_train_sbatch(cfg: dict, opts: dict) -> str:
+    log = LOG_DIR / f'final_{cfg["run_name"]}_train_%j.out'
+    venv = (f'source {shlex.quote(str(opts["venv_activate"]))}'
+            if opts['venv_activate'] else 'true')
+    return f'''#!/bin/bash
+#SBATCH --job-name=final-train-{cfg["run_name"]}
+#SBATCH --partition={opts["partition"]}
+#SBATCH --account={opts["account"]}
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=4
+#SBATCH --cpus-per-task=12
+#SBATCH --gres=gpu:4
+#SBATCH --time={opts["time_train"]}
+#SBATCH --output={log}
+#SBATCH --error={log}
+
+set -euo pipefail
+cd {shlex.quote(str(SOC_ROOT))}
+{venv}
+
+echo "[final-train] run_name={cfg["run_name"]}  node=$(hostname)  job=$SLURM_JOB_ID"
+
+WANDB_MODE=disabled PYTHONUNBUFFERED=1 \\
+accelerate launch --num_processes 4 \\
+    rebuttal/final_models/train_full.py \\
+    --run-name {cfg["run_name"]} \\
+    {cfg["cmd"]}
+'''
+
+
+def build_nn_infer_sbatch(cfg: dict, opts: dict) -> str:
+    log = LOG_DIR / f'final_{cfg["run_name"]}_infer_%j.out'
+    venv = (f'source {shlex.quote(str(opts["venv_activate"]))}'
+            if opts['venv_activate'] else 'true')
+    return f'''#!/bin/bash
+#SBATCH --job-name=final-infer-{cfg["run_name"]}
+#SBATCH --partition={opts["partition"]}
+#SBATCH --account={opts["account"]}
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=12
+#SBATCH --gres=gpu:1
+#SBATCH --time={opts["time_infer"]}
+#SBATCH --output={log}
+#SBATCH --error={log}
+
+set -euo pipefail
+cd {shlex.quote(str(SOC_ROOT))}
+{venv}
+
+echo "[final-infer] run_name={cfg["run_name"]}  year={opts["year"]}  node=$(hostname)  job=$SLURM_JOB_ID"
+
+WANDB_MODE=disabled PYTHONUNBUFFERED=1 \\
+python rebuttal/final_models/infer_bavaria.py \\
+    --run-name {cfg["run_name"]} \\
+    --year {opts["year"]}
+'''
+
+
+def build_tree_combined_sbatch(cfg: dict, opts: dict) -> str:
+    log = LOG_DIR / f'final_{cfg["run_name"]}_%j.out'
+    venv = (f'source {shlex.quote(str(opts["venv_activate"]))}'
+            if opts['venv_activate'] else 'true')
+    return f'''#!/bin/bash
+#SBATCH --job-name=final-{cfg["run_name"]}
+#SBATCH --partition={opts["partition"]}
+#SBATCH --account={opts["account"]}
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=12
+#SBATCH --gres=gpu:1
+#SBATCH --time={opts["time_baseline"]}
+#SBATCH --output={log}
+#SBATCH --error={log}
+
+set -euo pipefail
+cd {shlex.quote(str(SOC_ROOT))}
+{venv}
+
+echo "[final-tree] run_name={cfg["run_name"]}  node=$(hostname)  job=$SLURM_JOB_ID"
+
+PYTHONUNBUFFERED=1 \\
+python rebuttal/final_models/train_full_baselines.py \\
+    --run-name {cfg["run_name"]} \\
+    {cfg["cmd"]}
+
+PYTHONUNBUFFERED=1 \\
+python rebuttal/final_models/infer_bavaria.py \\
+    --run-name {cfg["run_name"]} \\
+    --year {opts["year"]}
+'''
+
+
+def parse():
+    p = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('--dry-run', action='store_true')
+    p.add_argument('--partition', default=DEFAULTS['partition'])
+    p.add_argument('--account', default=DEFAULTS['account'])
+    p.add_argument('--venv-activate', default=DEFAULTS['venv_activate'])
+    p.add_argument('--year', type=int, default=DEFAULTS['year'])
+    p.add_argument('--time-train', default=DEFAULTS['time_train'])
+    p.add_argument('--time-infer', default=DEFAULTS['time_infer'])
+    p.add_argument('--time-baseline', default=DEFAULTS['time_baseline'])
+    p.add_argument('--only', type=str, default=None,
+                   help='Comma-separated run_names to submit (default: all).')
+    return p.parse_args()
+
+
+def submit(script_path: Path, depends_on: str | None = None) -> str | None:
+    cmd = ['sbatch']
+    if depends_on:
+        cmd += ['--dependency=afterok:' + depends_on]
+    cmd += [str(script_path)]
+    out = subprocess.run(cmd, capture_output=True, text=True)
+    if out.returncode != 0:
+        print(f'[submit] FAILED for {script_path.name}: {out.stderr.strip()}',
+              file=sys.stderr)
+        return None
+    return out.stdout.strip().split()[-1]
+
+
+def main():
+    a = parse()
+    opts = {
+        'partition': a.partition,
+        'account': a.account,
+        'venv_activate': a.venv_activate,
+        'year': a.year,
+        'time_train': a.time_train,
+        'time_infer': a.time_infer,
+        'time_baseline': a.time_baseline,
+    }
+    SBATCH_DIR.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    only = set(a.only.split(',')) if a.only else None
+    submitted = []
+
+    # NN configs: train then infer with dependency
+    for cfg in NN_CONFIGS:
+        if only and cfg['run_name'] not in only:
+            continue
+        train_sbatch = SBATCH_DIR / f'{cfg["run_name"]}_train.sbatch'
+        infer_sbatch = SBATCH_DIR / f'{cfg["run_name"]}_infer.sbatch'
+        train_sbatch.write_text(build_nn_train_sbatch(cfg, opts))
+        infer_sbatch.write_text(build_nn_infer_sbatch(cfg, opts))
+        train_sbatch.chmod(0o755); infer_sbatch.chmod(0o755)
+
+        if a.dry_run:
+            print(f'[dry-run] would submit (train, then infer): {train_sbatch.name}, {infer_sbatch.name}')
+            continue
+
+        train_jid = submit(train_sbatch)
+        if not train_jid:
+            continue
+        infer_jid = submit(infer_sbatch, depends_on=train_jid)
+        submitted.append((cfg['run_name'], train_jid, infer_jid))
+        print(f'[submit] {cfg["run_name"]:>30}: train job={train_jid}  '
+              f'infer job={infer_jid} (waits on {train_jid})')
+
+    # Tree configs: combined train+infer
+    for cfg in TREE_CONFIGS:
+        if only and cfg['run_name'] not in only:
+            continue
+        sbatch = SBATCH_DIR / f'{cfg["run_name"]}.sbatch'
+        sbatch.write_text(build_tree_combined_sbatch(cfg, opts))
+        sbatch.chmod(0o755)
+        if a.dry_run:
+            print(f'[dry-run] would submit: {sbatch.name}')
+            continue
+        jid = submit(sbatch)
+        if jid:
+            submitted.append((cfg['run_name'], jid, None))
+            print(f'[submit] {cfg["run_name"]:>30}: job={jid} (train+infer combined)')
+
+    if a.dry_run:
+        print(f'\n[dry-run] scripts in {SBATCH_DIR}/. Re-run without --dry-run.')
+        return
+    if submitted:
+        print(f'\n[submit] {len(submitted)} pipelines queued. Watch with:')
+        print(f'  squeue -u $USER')
+        print(f'[submit] When all infer jobs finish, generate the comparison figure with:')
+        print(f'  python rebuttal/final_models/compare_maps.py')
+
+
+if __name__ == '__main__':
+    main()

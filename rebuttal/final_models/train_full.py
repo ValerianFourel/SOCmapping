@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+"""
+rebuttal/final_models/train_full.py — train ONE neural-network architecture
+on the entire LUCAS/LfL/LfU dataset (no spatial holdout) to produce a
+production-ready mapping model.
+
+The spatial-CV sweep (rebuttal/gpu_experiments/spatial_kfold/) is for
+*evaluating* generalization. For *producing maps*, we re-train each
+winning architecture using the full data — same hyperparameters, same
+augmentation, same target transform, but train_idx = all rows. A small
+5% random holdout monitors convergence; the saved checkpoint corresponds
+to the highest-monitoring-R² epoch (best-state save, post b5c1cac fix).
+
+Outputs (under rebuttal/final_models/checkpoints/<run-name>/):
+    final_model.pth        weights + minimal metadata
+    stats.json             target_mean, target_std, feature_means/stds
+    train_log.txt          per-epoch training log
+    config.json            full args used
+
+Run:
+    python rebuttal/final_models/train_full.py \\
+        --run-name sgt_d128_h4_L1 \\
+        --model-family sgt --model-size small \\
+        --hidden_size 128 --num_heads 4 --num_layers 1 \\
+        --dropout_rate 0.5 --lr 1e-4 --lr-scheduler cosine --lr-min 1e-6 \\
+        --loss_type composite_l2 --loss-alpha 0.5 --chi2-weight 0.1 \\
+        --target_transform log --max-oc 150 \\
+        --augment-train --num-epochs 60 \\
+        --per-gpu-batch-size 256 --effective-batch-size 256
+"""
+from __future__ import annotations
+import argparse
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+os.environ.setdefault('WANDB_MODE', 'disabled')
+
+import numpy as np
+import pandas as pd
+import torch
+from torch.utils.data import DataLoader
+
+HERE = Path(__file__).resolve().parent
+SOC_ROOT = HERE.parents[1]
+sys.path.insert(0, str(SOC_ROOT))
+from _paths import SOC_REBUTTAL_DIR  # noqa: E402
+
+SGT_DIR = SOC_ROOT / 'SpatiotemporalGatedTransformer'
+sys.path.insert(0, str(SGT_DIR))
+sys.path.insert(0, str(SGT_DIR / 'dataloader'))
+
+# Reuse k-fold infrastructure where it fits.
+KFOLD_DIR = SOC_ROOT / 'rebuttal' / 'gpu_experiments' / 'spatial_kfold'
+sys.path.insert(0, str(KFOLD_DIR))
+from run_kfold import (  # noqa: E402
+    MODEL_READY, _build_model_ready_dataset, make_dataset, _build_model,
+    _AugmentingWrapper,
+)
+import wandb  # noqa: E402  (disabled mode)
+from accelerate import Accelerator  # noqa: E402
+from train import train_model, _resolve_accum_steps, compute_training_statistics_oc  # noqa: E402
+from config import bands_list_order, hidden_size, time_before, window_size, NUM_HEADS, NUM_LAYERS  # noqa: E402
+
+CHECKPOINTS_ROOT = HERE / 'checkpoints'
+
+
+def parse():
+    p = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('--run-name', type=str, required=True,
+                   help='Identifier for the checkpoint folder, e.g. sgt_d128_h4_L1.')
+    # Mirror run_kfold's CLI for the shared flags ----------------------------
+    p.add_argument('--lr', type=float, default=1e-4)
+    p.add_argument('--num_heads', type=int, default=NUM_HEADS)
+    p.add_argument('--num_layers', type=int, default=NUM_LAYERS)
+    p.add_argument('--loss_type', type=str, default='l1',
+                   choices=['l1', 'mse', 'chi2', 'composite_l1', 'composite_l2'])
+    p.add_argument('--loss-alpha', type=float, default=1.0)
+    p.add_argument('--chi2-weight', type=float, default=0.1)
+    p.add_argument('--target_transform', type=str, default='log',
+                   choices=['none', 'log', 'normalize'])
+    p.add_argument('--hidden_size', type=int, default=hidden_size)
+    p.add_argument('--dropout_rate', type=float, default=0.5)
+    p.add_argument('--model-size', type=str, default='small',
+                   choices=['small', 'big'])
+    p.add_argument('--model-family', type=str, default='sgt',
+                   choices=['sgt', '3dcnn', 'cnnlstm', 'simpletransformer'])
+    p.add_argument('--per-gpu-batch-size', type=int, default=256)
+    p.add_argument('--effective-batch-size', type=int, default=256)
+    p.add_argument('--accum-steps', type=int, default=0)
+    p.add_argument('--num-epochs', type=int, default=60)
+    p.add_argument('--lr-scheduler', type=str, default='cosine',
+                   choices=['none', 'cosine', 'cosine_warm_restarts', 'exponential'])
+    p.add_argument('--lr-min', type=float, default=1e-6)
+    p.add_argument('--lr-gamma', type=float, default=0.99)
+    p.add_argument('--lr-restart-T0', type=int, default=50)
+    p.add_argument('--seed', type=int, default=42)
+    p.add_argument('--max-oc', type=float, default=120.0)
+    p.add_argument('--augment-train', action=argparse.BooleanOptionalAction,
+                   default=True)
+    p.add_argument('--monitor-frac', type=float, default=0.05,
+                   help='Fraction of full data held out at RANDOM for '
+                        'best-epoch monitoring. NOT a spatial split — '
+                        'this is monitoring only, the saved model is meant '
+                        'for production mapping.')
+    return p.parse_args()
+
+
+def main():
+    args = parse()
+    torch.manual_seed(args.seed); np.random.seed(args.seed)
+
+    out_dir = CHECKPOINTS_ROOT / args.run_name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    print(f'[final] run_name = {args.run_name}', flush=True)
+    print(f'[final] output dir = {out_dir}', flush=True)
+
+    # ---- Data ----
+    _build_model_ready_dataset()
+    df = pd.read_parquet(MODEL_READY).reset_index(drop=True)
+    if args.max_oc and args.max_oc > 0:
+        n_before = len(df)
+        df = df[df['OC'] <= args.max_oc].reset_index(drop=True)
+        print(f'[final] max-oc {args.max_oc:.1f}: kept {len(df):,}/{n_before:,}',
+              flush=True)
+
+    # Random monitor holdout
+    rng = np.random.default_rng(args.seed)
+    n = len(df)
+    perm = rng.permutation(n)
+    n_mon = int(round(args.monitor_frac * n))
+    train_idx = perm[n_mon:]
+    mon_idx = perm[:n_mon]
+    train_df = df.iloc[train_idx].reset_index(drop=True)
+    mon_df = df.iloc[mon_idx].reset_index(drop=True)
+    print(f'[final] train n={len(train_df)}  monitor n={len(mon_df)} '
+          f'(fraction {args.monitor_frac:.2%}, RANDOM — not spatial)', flush=True)
+
+    # Feature statistics — computed once over the FULL df (matches the k-fold
+    # convention and the paper's pipeline).
+    from run_kfold import compute_full_feature_statistics
+    feature_means, feature_stds = compute_full_feature_statistics()
+    target_mean, target_std = compute_training_statistics_oc()
+    print(f'[final] target_mean={target_mean:.4f}  target_std={target_std:.4f}',
+          flush=True)
+
+    train_ds = make_dataset(train_df, feature_means, feature_stds)
+    mon_ds = make_dataset(mon_df, feature_means, feature_stds)
+    if args.augment_train:
+        train_ds = _AugmentingWrapper(train_ds, seed=args.seed)
+
+    num_workers = int(os.environ.get('SOC_KFOLD_NUM_WORKERS', 0))
+    train_loader = DataLoader(train_ds, batch_size=args.per_gpu_batch_size,
+                               shuffle=True, num_workers=num_workers, pin_memory=True)
+    mon_loader = DataLoader(mon_ds, batch_size=args.per_gpu_batch_size,
+                             shuffle=False, num_workers=num_workers, pin_memory=True)
+
+    # ---- Accelerator & gradient accumulation ----
+    accelerator = Accelerator()
+    accum_steps = _resolve_accum_steps(args, accelerator.num_processes)
+    effective = accelerator.num_processes * args.per_gpu_batch_size * accum_steps
+    if accelerator.is_main_process:
+        print(f'[final] num_gpus={accelerator.num_processes}  '
+              f'per_gpu_batch={args.per_gpu_batch_size}  '
+              f'accum_steps={accum_steps}  effective_batch={effective}',
+              flush=True)
+
+    # ---- Model ----
+    model = _build_model(args)
+    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f'[final] Model: {type(model).__name__}  family={args.model_family}  '
+          f'({n_params:,} trainable params)', flush=True)
+
+    wandb_run = wandb.init(project='socmapping-final',
+                            name=args.run_name,
+                            config=vars(args), reinit=True)
+
+    # ---- Train ----
+    t0 = time.time()
+    (model, _, _, best_state, best_r2, epoch_metrics
+     ) = train_model(
+        model, train_loader, mon_loader,
+        target_mean=target_mean, target_std=target_std,
+        num_epochs=args.num_epochs,
+        accelerator=accelerator,
+        lr=args.lr,
+        loss_type=args.loss_type,
+        target_transform=args.target_transform,
+        min_r2=-float('inf'),
+        use_test=True,
+        accum_steps=accum_steps,
+        lr_scheduler=args.lr_scheduler,
+        lr_min=args.lr_min,
+        lr_gamma=args.lr_gamma,
+        lr_restart_T0=args.lr_restart_T0,
+        loss_alpha=args.loss_alpha,
+        chi2_weight=args.chi2_weight,
+    )
+    elapsed = time.time() - t0
+    wandb_run.finish()
+    print(f'[final] training done in {elapsed/60:.1f} min  best_r2 (monitor) = {best_r2:.4f}',
+          flush=True)
+
+    # ---- Save ----
+    pth = out_dir / 'final_model.pth'
+    accelerator.save({
+        'model_state_dict': best_state,
+        'family': args.model_family,
+        'model_size': args.model_size,
+        'd_model': args.hidden_size,
+        'num_heads': args.num_heads,
+        'num_layers': args.num_layers,
+        'dropout_rate': args.dropout_rate,
+        'best_r2_monitor': float(best_r2),
+        'n_train': int(len(train_df)),
+        'n_monitor': int(len(mon_df)),
+        'args': vars(args),
+    }, pth)
+    print(f'[final] saved {pth}', flush=True)
+
+    stats = {
+        'target_mean': float(target_mean),
+        'target_std': float(target_std),
+        'feature_means': feature_means.tolist() if hasattr(feature_means, 'tolist') else list(feature_means),
+        'feature_stds':  feature_stds.tolist() if hasattr(feature_stds, 'tolist') else list(feature_stds),
+        'bands_list_order': list(bands_list_order),
+        'time_before': int(time_before),
+        'window_size': int(window_size),
+    }
+    (out_dir / 'stats.json').write_text(json.dumps(stats, indent=2, default=str))
+    (out_dir / 'config.json').write_text(json.dumps(vars(args), indent=2, default=str))
+    (out_dir / 'train_log.txt').write_text(
+        '\n'.join(f'epoch {m.get("epoch", "?"):>3}  '
+                  f'train_loss={m.get("train_loss_avg", float("nan")):.4f}  '
+                  f'test_loss={m.get("test_loss", float("nan")):.4f}  '
+                  f'r2={m.get("r_squared", float("nan")):+.4f}  '
+                  f'rmse={m.get("rmse", float("nan")):.3f}  '
+                  f'mae={m.get("mae", float("nan")):.3f}'
+                  for m in epoch_metrics))
+    print(f'[final] saved stats.json, config.json, train_log.txt to {out_dir}',
+          flush=True)
+
+
+if __name__ == '__main__':
+    main()
