@@ -51,6 +51,24 @@ NN_CONFIGS = [
             '--num-epochs 60 --seed 42 --augment-train'
         ),
     },
+    # Parameter-matched-by-hyperparameter ablation: SimpleSGT minus the
+    # Gated Residual Network. Same d_model=128, h=4, L=1 as the SGT winner;
+    # vanilla is 215k params vs SGT's 363k, so it's *smaller*. If R²
+    # ties SGT, the gating doesn't earn its 148k overhead. If SGT beats
+    # this baseline, the gating's value is empirically demonstrated.
+    {
+        'run_name': 'vanilla_transformer_d128_h4_L1',
+        'cmd': (
+            '--model-family vanilla_transformer --model-size small '
+            '--hidden_size 128 --num_heads 4 --num_layers 1 '
+            '--dropout_rate 0.5 '
+            '--lr 1e-4 --lr-scheduler cosine --lr-min 1e-6 '
+            '--loss_type composite_l2 --loss-alpha 0.5 --chi2-weight 0.1 '
+            '--target_transform log --max-oc 150 '
+            '--per-gpu-batch-size 256 --effective-batch-size 256 '
+            '--num-epochs 60 --seed 42 --augment-train'
+        ),
+    },
     # SimpleTransformerV2 (11.2M params; comparison transformer at max-oc 150,
     # plain L1 because composite_l2 destabilizes it per the spatial-CV sweep)
     {

@@ -33,11 +33,12 @@ MAPS_ROOT = HERE / 'maps'
 # Display order + nice labels for the figure.
 # (run_name, display label, family_kind)
 DEFAULT_RUNS = [
-    ('sgt_d128_h4_L1',           'SimpleSGT (363k)',           'sgt'),
-    ('simpletransformer_d64_h4_L1', 'SimpleTransformerV2 (11.2M)', 'transformer'),
-    ('cnnlstm_d64_h4_L1',        'CNNLSTM (93k)',              'cnnlstm'),
-    ('xgb_shallow',              'XGBoost (per-band stats)',   'tree'),
-    ('rf_default',               'RandomForest (per-band stats)', 'tree'),
+    ('sgt_d128_h4_L1',                'SimpleSGT — gated (363k)',         'sgt'),
+    ('vanilla_transformer_d128_h4_L1', 'Vanilla transformer — no gate (215k)', 'vanilla'),
+    ('simpletransformer_d64_h4_L1',   'SimpleTransformerV2 (11.2M)',      'transformer'),
+    ('cnnlstm_d64_h4_L1',             'CNNLSTM (93k)',                    'cnnlstm'),
+    ('xgb_shallow',                   'XGBoost (per-band stats)',         'tree'),
+    ('rf_default',                    'RandomForest (per-band stats)',    'tree'),
 ]
 
 

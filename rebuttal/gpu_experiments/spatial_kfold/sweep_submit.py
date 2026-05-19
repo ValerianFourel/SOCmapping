@@ -83,9 +83,14 @@ DEFAULT_GRID: list[tuple[str, int, int, int]] = [
 # ---------------------------------------------------------------------------
 FAMILY_GRID: list[tuple[str, int, int, int, float]] = [
     # (family, d_model_or_hidden, num_heads, num_layers, dropout)
-    ('3dcnn',             64, 4, 1, 0.5),
-    ('cnnlstm',           64, 4, 1, 0.5),
-    ('simpletransformer', 64, 4, 1, 0.5),
+    ('3dcnn',              64, 4, 1, 0.5),
+    ('cnnlstm',            64, 4, 1, 0.5),
+    ('simpletransformer',  64, 4, 1, 0.5),
+    # Parameter-matched-by-hyperparameter ablation: SimpleSGT minus GRN.
+    # At d=128 h=4 vanilla = 215k vs SGT = 363k, so vanilla is SMALLER —
+    # the "is the gating worth its 150k params?" test.
+    ('vanilla_transformer', 64, 4, 1, 0.5),     # ~95k, matches small_d64_h4 ~165k
+    ('vanilla_transformer', 128, 4, 1, 0.5),    # ~215k, paired with small_d128_h4 ~363k
 ]
 
 

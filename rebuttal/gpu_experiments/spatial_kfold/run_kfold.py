@@ -148,8 +148,25 @@ def _build_model(args):
             dropout_rate=args.dropout_rate,
         )
 
+    if family == 'vanilla_transformer':
+        # Same input convention and architecture as SimpleSGT (d_model is
+        # a free knob, decoupled from input shape) but the gated residual
+        # network is replaced by a plain Linear → fair-comparison ablation
+        # for the "is SGT's gating worth it?" question.
+        from VanillaSpatiotemporalTransformer import VanillaSpatiotemporalTransformer
+        return VanillaSpatiotemporalTransformer(
+            input_channels=n_bands,
+            height=window_size,
+            width=window_size,
+            time_steps=time_before,
+            d_model=args.hidden_size,
+            num_heads=args.num_heads,
+            dropout=args.dropout_rate,
+        )
+
     raise ValueError(f'Unknown --model-family: {family!r}. '
-                     f'Choose from: sgt, 3dcnn, cnnlstm, simpletransformer.')
+                     f'Choose from: sgt, 3dcnn, cnnlstm, simpletransformer, '
+                     f'vanilla_transformer.')
 
 
 # ----- Output paths -------------------------------------------------------
@@ -961,11 +978,14 @@ def parse_args():
     p.add_argument('--model-size', type=str, default='big',
                    choices=['small', 'big'])
     p.add_argument('--model-family', type=str, default='sgt',
-                   choices=['sgt', '3dcnn', 'cnnlstm', 'simpletransformer'],
+                   choices=['sgt', '3dcnn', 'cnnlstm', 'simpletransformer',
+                            'vanilla_transformer'],
                    help='Architecture to train. "sgt" uses the EnhancedSGT/'
                         'SimpleSGT variants (selected by --model-size). The '
-                        'other three are 20-channel ports of sibling models '
-                        'at the same (5×5×5) spatiotemporal window.')
+                        'other four are 20-channel ports of sibling models '
+                        'at the same (5×5×5) spatiotemporal window. '
+                        '"vanilla_transformer" is the SimpleSGT-minus-GRN '
+                        'fair-comparison ablation.')
     p.add_argument('--per-gpu-batch-size', type=int, default=256)
     p.add_argument('--effective-batch-size', type=int, default=2048)
     p.add_argument('--accum-steps', type=int, default=0)

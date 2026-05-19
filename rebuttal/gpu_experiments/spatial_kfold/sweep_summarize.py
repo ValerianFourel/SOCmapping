@@ -20,7 +20,9 @@ HERE = Path(__file__).resolve().parent
 SWEEP_DIR = HERE / 'sweep'
 
 _ARCH_TAG_RE = re.compile(r'^(small_)?d(\d+)_h(\d+)_L(\d+)$')
-_FAMILY_TAG_RE = re.compile(r'^(3dcnn|cnnlstm|simpletransformer)_d(\d+)_h(\d+)_L(\d+)$')
+_FAMILY_TAG_RE = re.compile(
+    r'^(3dcnn|cnnlstm|simpletransformer|vanilla_transformer)'
+    r'_d(\d+)_h(\d+)_L(\d+)$')
 _BASELINE_TAG_RE = re.compile(r'^baseline_([a-z0-9]+)_(.+)$')
 
 
