@@ -54,7 +54,7 @@ import torch
 HERE = Path(__file__).resolve().parent
 SOC_ROOT = HERE.parent
 sys.path.insert(0, str(SOC_ROOT))
-from _paths import SOC_DATA_DIR, SOC_REBUTTAL_DIR    # noqa: E402
+from _paths import SOC_DATA_DIR, SOC_REBUTTAL_DIR, SOC_WEIGHTS_DIR  # noqa: E402
 
 SGT_DIR = SOC_ROOT / 'SpatiotemporalGatedTransformer'
 sys.path.insert(0, str(SGT_DIR))
@@ -65,15 +65,17 @@ from dataloaderMultiYears import MultiRasterDatasetMultiYears  # noqa: E402
 from dataframe_loader import separate_and_add_data   # noqa: E402
 from config import time_before                       # noqa: E402
 
+# Resolved via SOC_WEIGHTS_DIR. Override with SOC_WEIGHTS_DIR=/path/to/Weights
+# in the environment, or pass --checkpoint / --analysis-pkl directly.
 DEFAULT_PTH = (
-    SOC_ROOT.parent / 'Weights-ResidualsModels-MappingInference-SOCmapping' /
+    SOC_WEIGHTS_DIR /
     'TemporalFusionTransformer' /
     'residualModels1mil_normalize_composite_l2_v2' /
     'TFT_model_BEST_OVERALL_from_run_1_MAX_OC_150_TIME_BEGINNING_2007_TIME_END_2023_'
     'TRANSFORM_normalize_LOSS_composite_l2_R2_0.6909.pth'
 )
 DEFAULT_PKL = (
-    SOC_ROOT.parent / 'Weights-ResidualsModels-MappingInference-SOCmapping' /
+    SOC_WEIGHTS_DIR /
     'Archive' / 'residual_analysis1mil_normalize_composite_l2_v2_TemporalFusionTransformer' /
     'analysis_results.pkl'
 )
@@ -99,6 +101,27 @@ def parse():
 
 
 def load_model(args, device):
+    if not Path(args.checkpoint).exists():
+        raise SystemExit(
+            f'\n[ERROR] Model A checkpoint not found at:\n'
+            f'    {args.checkpoint}\n'
+            f'SOC_WEIGHTS_DIR currently resolves to:\n'
+            f'    {SOC_WEIGHTS_DIR}\n'
+            f'Either:\n'
+            f'  (1) export SOC_WEIGHTS_DIR=/path/to/Weights-…/ to point at the\n'
+            f'      directory containing TemporalFusionTransformer/…; or\n'
+            f'  (2) scp the Model A checkpoint and its analysis_results.pkl\n'
+            f'      from the laptop (see rebuttal docs for the rsync recipe).\n'
+            f'  (3) pass --checkpoint /path/to/model.pth --analysis-pkl /path/to/analysis_results.pkl\n'
+        )
+    if not Path(args.analysis_pkl).exists():
+        raise SystemExit(
+            f'\n[ERROR] analysis_results.pkl not found at:\n'
+            f'    {args.analysis_pkl}\n'
+            f'The pkl carries the target_mean / target_std / feature_means / '
+            f'feature_stds used during Model A training. It must be transferred '
+            f'along with the .pth.\n'
+        )
     ckpt = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
     sd = {k.replace('module.', '', 1): v for k, v in ckpt['model_state_dict'].items()}
     analysis = pickle.load(open(args.analysis_pkl, 'rb'))
