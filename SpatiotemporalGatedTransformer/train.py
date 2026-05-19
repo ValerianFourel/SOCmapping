@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import pandas as pd
@@ -52,7 +53,13 @@ def parse_args():
     parser.add_argument('--lr', type=float, default=0.0002, help='Learning rate')
     parser.add_argument('--num_heads', type=int, default=NUM_HEADS, help='Number of attention heads')
     parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of transformer layers')
-    parser.add_argument('--loss_type', type=str, default='l1', choices=['l1', 'mse'], help='Type of loss function')
+    parser.add_argument('--loss_type', type=str, default='l1',
+                        choices=['l1', 'mse', 'chi2', 'l1_chi2', 'mse_chi2'],
+                        help='Training loss. "chi2" suffix adds a Pearson chi-square term '
+                             'in original (g/kg) space scaled by --chi2-weight.')
+    parser.add_argument('--chi2-weight', type=float, default=0.01,
+                        help='Coefficient on the chi-square term in composite losses '
+                             '(l1_chi2 / mse_chi2). Ignored for plain l1/mse/chi2.')
     parser.add_argument('--target_transform', type=str, default='normalize', choices=['none', 'log', 'normalize'], help='Transformation to apply to targets')
     parser.add_argument('--use_test', action=argparse.BooleanOptionalAction, default=True, help='Whether to use a held-out test set (use --no-use_test to disable)')
     parser.add_argument('--output-dir', type=str, default='output', help='Output directory')
@@ -130,15 +137,68 @@ def _resolve_accum_steps(args, num_processes):
     target = max(args.effective_batch_size, per_step)
     return max(1, target // per_step)
 
+def _composite_loss(outputs, targets, loss_type, target_transform,
+                    target_mean, target_std, chi2_weight, eps=1e-3):
+    """Training loss with optional Pearson chi-square component.
+
+    Base term (in TRAINING space):
+        l1  / l1_chi2 → L1
+        mse / mse_chi2 → MSE
+        chi2 → no base term
+
+    Chi-square term (in ORIGINAL g/kg space): mean((ŷ - y)² / (|y| + eps)).
+    For log target_transform we exp() both outputs and targets first (with
+    outputs clamped to [-5, 6] so exp doesn't explode early in training);
+    for normalize we denormalize. This makes the chi-square component
+    statistically meaningful for SOC (a heteroscedastic, log-normal target).
+    """
+    if loss_type in ('l1', 'l1_chi2'):
+        base = F.l1_loss(outputs, targets)
+    elif loss_type in ('mse', 'mse_chi2'):
+        base = F.mse_loss(outputs, targets)
+    elif loss_type == 'chi2':
+        base = outputs.new_zeros(())
+    else:
+        raise ValueError(f"Unknown loss_type: {loss_type}")
+
+    if loss_type not in ('chi2', 'l1_chi2', 'mse_chi2'):
+        return base
+
+    if target_transform == 'log':
+        # Clamp pred BEFORE exp; targets are already log(OC) in [-0.17, 5.01]
+        # for OC ∈ [0.84, 150], so they don't need clamping.
+        y_pred = torch.exp(torch.clamp(outputs, -5.0, 6.0))
+        y_target = torch.exp(targets)
+    elif target_transform == 'normalize':
+        y_pred = outputs * target_std + target_mean
+        y_target = targets * target_std + target_mean
+    else:
+        y_pred = outputs
+        y_target = targets
+
+    chi2 = torch.mean((y_pred - y_target) ** 2 / (torch.abs(y_target) + eps))
+    if loss_type == 'chi2':
+        return chi2
+    return base + chi2_weight * chi2
+
+
 def train_model(model, train_loader, test_loader,target_mean,target_std, num_epochs=num_epochs, accelerator=None, lr=0.001,
                 loss_type='l1', target_transform='none', min_r2=0.5, use_test=True,
                 accum_steps=1, lr_scheduler='none', lr_min=1e-6, lr_gamma=0.99,
-                lr_restart_T0=50):
-    if loss_type == 'l1':
+                lr_restart_T0=50, chi2_weight=0.01):
+    # Test-time logging keeps the base criterion (composite loss is for training
+    # gradient only — chi2 component would dominate the test loss display
+    # otherwise, making it hard to compare across loss types).
+    base_type = ('mse' if loss_type in ('mse', 'mse_chi2')
+                 else 'chi2' if loss_type == 'chi2' else 'l1')
+    if base_type == 'l1':
         criterion = nn.L1Loss()
-    elif loss_type == 'mse':
+    elif base_type == 'mse':
         criterion = nn.MSELoss()
-    else:
+    elif base_type == 'chi2':
+        criterion = nn.L1Loss()      # display-only; the real loss is in _composite_loss
+
+    if loss_type not in ('l1', 'mse', 'chi2', 'l1_chi2', 'mse_chi2'):
         raise ValueError(f"Unknown loss type: {loss_type}")
 
     optimizer = optim.Adam(model.parameters(), lr=lr)
@@ -201,7 +261,10 @@ def train_model(model, train_loader, test_loader,target_mean,target_std, num_epo
             sync_ctx = contextlib.nullcontext() if is_last_micro else accelerator.no_sync(model)
             with sync_ctx:
                 outputs = model(features)
-                loss = criterion(outputs, targets) / accum_steps
+                loss = _composite_loss(
+                    outputs, targets, loss_type, target_transform,
+                    target_mean, target_std, chi2_weight,
+                ) / accum_steps
                 accelerator.backward(loss)
 
             running_loss += loss.item() * accum_steps  # un-scale for logging
@@ -899,6 +962,7 @@ if __name__ == "__main__":
             lr_min=args.lr_min,
             lr_gamma=args.lr_gamma,
             lr_restart_T0=args.lr_restart_T0,
+            chi2_weight=getattr(args, 'chi2_weight', 0.01),
         )
 
         # Store metrics
