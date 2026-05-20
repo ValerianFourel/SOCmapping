@@ -100,6 +100,38 @@ NN_CONFIGS = [
             '--num-epochs 60 --seed 42 --augment-train'
         ),
     },
+    # LightweightTransformer — true transformer-only baseline at matched
+    # parameter scale (~240k at 20-band, ~194k at 6-band). The CNN-frontend
+    # ablation companion to vanilla_transformer. Same recipe as vanilla
+    # (composite_l2) for clean A/B in the maps figure.
+    {
+        'run_name': 'lightweight_transformer_d128_h4_L1',
+        'cmd': (
+            '--model-family lightweight_transformer --model-size small '
+            '--hidden_size 128 --num_heads 4 --num_layers 1 '
+            '--dropout_rate 0.5 '
+            '--lr 1e-4 --lr-scheduler cosine --lr-min 1e-6 '
+            '--loss_type composite_l2 --loss-alpha 0.5 --chi2-weight 0.1 '
+            '--target_transform log --max-oc 150 '
+            '--per-gpu-batch-size 256 --effective-batch-size 256 '
+            '--num-epochs 60 --seed 42 --augment-train'
+        ),
+    },
+    # 3DCNN (failed family — included for completeness in the comparison
+    # figure; spatial-CV showed R²=-0.76 so the map will be poor but the
+    # negative result IS the result).
+    {
+        'run_name': '3dcnn_d64_h4_L1',
+        'cmd': (
+            '--model-family 3dcnn --model-size small '
+            '--hidden_size 64 --num_heads 4 --num_layers 1 '
+            '--dropout_rate 0.5 '
+            '--lr 1e-4 --lr-scheduler cosine --lr-min 1e-6 '
+            '--loss_type l1 --target_transform log --max-oc 150 '
+            '--per-gpu-batch-size 256 --effective-batch-size 256 '
+            '--num-epochs 60 --seed 42 --augment-train'
+        ),
+    },
 ]
 
 TREE_CONFIGS = [
