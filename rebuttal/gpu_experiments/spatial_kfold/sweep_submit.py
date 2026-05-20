@@ -132,10 +132,39 @@ VANILLA_GRID: list[tuple[str, int, int, int, float]] = [
 # ---------------------------------------------------------------------------
 SIMPLETRANSFORMER_ABLATION_GRID: list[tuple[str, int, int, int, float]] = [
     # (family, d_model, num_heads, num_layers, dropout)
-    ('simpletransformer',  16, 2, 1, 0.5),   # head_dim=8, smallest
-    ('simpletransformer',  32, 4, 1, 0.5),   # head_dim=8
-    ('simpletransformer',  64, 4, 1, 0.5),   # head_dim=16  (same as FAMILY_GRID default)
-    ('simpletransformer', 128, 4, 1, 0.5),   # head_dim=32
+    # NOTE: SimpleTransformerV2 ignores d_model and forces it to C*H*W,
+    # so all of these end up at ~11M params (20-band) / ~1.7M (6-band).
+    # Kept for completeness but USE LIGHTWEIGHT_TRANSFORMER_GRID for a
+    # parameter-controllable transformer-alone comparison.
+    ('simpletransformer',  16, 2, 1, 0.5),
+    ('simpletransformer',  32, 4, 1, 0.5),
+    ('simpletransformer',  64, 4, 1, 0.5),
+    ('simpletransformer', 128, 4, 1, 0.5),
+]
+
+
+# ---------------------------------------------------------------------------
+# Lightweight transformer ablation: TRUE transformer-only baseline (no CNN
+# spatial encoder) at parameter counts matched to vanilla_transformer.
+#
+# Whereas SimpleTransformerV2 silently forces d_model = C*H*W (yielding
+# ~11.2M params at 20 bands regardless of --hidden_size), the
+# LightweightTransformer class respects --hidden_size and --num_layers,
+# so this grid genuinely sweeps the 85k-370k parameter range — directly
+# comparable to vanilla_transformer's 95k-215k. Together with VANILLA_GRID
+# this gives a clean CNN-frontend ablation at matched scale:
+#   SGT (CNN + GRN + Transformer)     vs vanilla (CNN + Transformer)  → gating
+#   vanilla (CNN + Transformer)       vs lightweight (Transformer)    → CNN frontend
+#
+# Controlled by --lightweight-transformer / --lightweight-transformer-only.
+# ---------------------------------------------------------------------------
+LIGHTWEIGHT_TRANSFORMER_GRID: list[tuple[str, int, int, int, float]] = [
+    # (family, d_model, num_heads, num_layers, dropout)
+    ('lightweight_transformer',  64, 4, 1, 0.5),   # ~85k  (paired with vanilla d=64)
+    ('lightweight_transformer',  96, 4, 1, 0.5),   # ~155k
+    ('lightweight_transformer', 128, 4, 1, 0.5),   # ~240k (paired with vanilla d=128)
+    ('lightweight_transformer',  64, 4, 2, 0.5),   # ~150k
+    ('lightweight_transformer', 128, 4, 2, 0.5),   # ~370k
 ]
 
 
@@ -459,6 +488,16 @@ def main():
     p.add_argument('--simpletransformer-ablation-only', action='store_true',
                    help='Submit only the SimpleTransformer ablation grid, '
                         'skip everything else.')
+    p.add_argument('--lightweight-transformer',
+                   action=argparse.BooleanOptionalAction, default=False,
+                   help='Also submit LightweightTransformer grid — true '
+                        'transformer-only baseline at d ∈ {64,96,128} × '
+                        'L ∈ {1,2}, 85k-370k params. Pairs with VANILLA_GRID '
+                        'for the CNN-frontend ablation at matched scale. '
+                        'Default off.')
+    p.add_argument('--lightweight-transformer-only', action='store_true',
+                   help='Submit ONLY the LightweightTransformer grid, '
+                        'skip SGT/families/vanilla/simpletransformer/baselines.')
     p.add_argument('--loss-type', type=str, default='l1',
                    choices=['l1', 'mse', 'chi2', 'composite_l1', 'composite_l2'],
                    help='Training loss for neural-network configs (SGT + families). '
@@ -485,7 +524,8 @@ def main():
 
     # ---- SGT configs ------------------------------------------------------
     if (not a.baselines_only and not a.families_only and not a.vanilla_only
-            and not a.simpletransformer_ablation_only):
+            and not a.simpletransformer_ablation_only
+            and not a.lightweight_transformer_only):
         if a.grid:
             wanted = set(a.grid.split(','))
             grid = [(v, d, h, L) for v, d, h, L in DEFAULT_GRID
@@ -529,7 +569,8 @@ def main():
 
     # ---- Cross-architecture family grid ---------------------------------
     if ((a.families and not a.vanilla_only and not a.baselines_only
-            and not a.simpletransformer_ablation_only)
+            and not a.simpletransformer_ablation_only
+            and not a.lightweight_transformer_only)
             or a.families_only):
         print(f'\n[sweep] cross-architecture grid: {len(FAMILY_GRID)} configs')
         for family, d, h, L, dropout in FAMILY_GRID:
@@ -555,7 +596,8 @@ def main():
 
     # ---- Vanilla-transformer ablation grid ------------------------------
     if ((a.vanilla and not a.baselines_only and not a.families_only
-            and not a.simpletransformer_ablation_only)
+            and not a.simpletransformer_ablation_only
+            and not a.lightweight_transformer_only)
             or a.vanilla_only):
         print(f'\n[sweep] vanilla-transformer ablation grid: '
               f'{len(VANILLA_GRID)} configs (SimpleSGT minus GRN)')
@@ -616,9 +658,47 @@ def main():
             submitted.append((tag, jid))
             print(f'[sweep] submitted {tag:>30}  job_id={jid}')
 
+    # ---- LightweightTransformer grid (true transformer-only baseline) ---
+    # Pairs with VANILLA_GRID for the CNN-frontend ablation at matched
+    # parameter scale (LightweightTransformer ≈ 85k-370k, vanilla ≈
+    # 95k-215k; SimpleTransformerV2 ≈ 11M which is too unfair).
+    if ((a.lightweight_transformer and not a.baselines_only
+            and not a.families_only and not a.vanilla_only
+            and not a.simpletransformer_ablation_only)
+            or a.lightweight_transformer_only):
+        print(f'\n[sweep] LightweightTransformer grid: '
+              f'{len(LIGHTWEIGHT_TRANSFORMER_GRID)} configs '
+              f'(transformer-alone, controlled d_model)')
+        for family, d, h, L, dropout in LIGHTWEIGHT_TRANSFORMER_GRID:
+            if d % h != 0:
+                print(f'[sweep] skip {family}_d{d}_h{h} '
+                      f'(hidden_size must be divisible by num_heads)',
+                      file=sys.stderr)
+                continue
+            tag = family_tag_for(family, d, h, L)
+            script_text = build_family_sbatch(tag, family, d, h, L, dropout, a)
+            script_path = SBATCH_DIR / f'{tag}.sbatch'
+            script_path.write_text(script_text)
+            script_path.chmod(0o755)
+
+            if a.dry_run:
+                print(f'[dry-run] would submit {script_path}')
+                continue
+
+            out = subprocess.run(['sbatch', str(script_path)],
+                                 capture_output=True, text=True)
+            if out.returncode != 0:
+                print(f'[sweep] sbatch FAILED for {tag}: {out.stderr.strip()}',
+                      file=sys.stderr)
+                continue
+            jid = out.stdout.strip().split()[-1]
+            submitted.append((tag, jid))
+            print(f'[sweep] submitted {tag:>34}  job_id={jid}')
+
     # ---- Baseline bundle (one sbatch with all RF/XGB configs) ------------
     if ((a.baselines and not a.families_only and not a.vanilla_only
-            and not a.simpletransformer_ablation_only)
+            and not a.simpletransformer_ablation_only
+            and not a.lightweight_transformer_only)
             or a.baselines_only):
         b_tags = [f'baseline_{m}_{s}' for m, s, _ in BASELINE_GRID]
         print(f'\n[sweep] baseline bundle: {len(BASELINE_GRID)} configs '

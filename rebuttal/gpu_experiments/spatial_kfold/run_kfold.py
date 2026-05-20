@@ -174,9 +174,28 @@ def _build_model(args):
             dropout=args.dropout_rate,
         )
 
+    if family == 'lightweight_transformer':
+        # Pure-transformer baseline — same head + same d_model/heads/layers
+        # contract as vanilla_transformer, but the spatial Conv2d+AvgPool
+        # block is replaced by a flat Linear projection. Isolates "what
+        # does the CNN spatial encoder buy you?" at matched parameter
+        # scale (vanilla and lightweight both honour --hidden_size and land
+        # in the 85k-370k param band, unlike SimpleTransformerV2 at 11M).
+        from LightweightTransformer import LightweightTransformer
+        return LightweightTransformer(
+            input_channels=n_bands,
+            height=window_size,
+            width=window_size,
+            time_steps=time_before,
+            d_model=args.hidden_size,
+            num_heads=args.num_heads,
+            num_layers=args.num_layers,
+            dropout=args.dropout_rate,
+        )
+
     raise ValueError(f'Unknown --model-family: {family!r}. '
                      f'Choose from: sgt, 3dcnn, cnnlstm, simpletransformer, '
-                     f'vanilla_transformer.')
+                     f'vanilla_transformer, lightweight_transformer.')
 
 
 # ----- Output paths -------------------------------------------------------
@@ -1027,7 +1046,7 @@ def parse_args():
                    choices=['small', 'big'])
     p.add_argument('--model-family', type=str, default='sgt',
                    choices=['sgt', '3dcnn', 'cnnlstm', 'simpletransformer',
-                            'vanilla_transformer'],
+                            'vanilla_transformer', 'lightweight_transformer'],
                    help='Architecture to train. "sgt" uses the EnhancedSGT/'
                         'SimpleSGT variants (selected by --model-size). The '
                         'other four are 20-channel ports of sibling models '

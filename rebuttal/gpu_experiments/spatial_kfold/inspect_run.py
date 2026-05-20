@@ -67,11 +67,21 @@ ARCH_DESCRIPTIONS = {
         'architecture as SimpleSGT minus the gate block.'
     ),
     'simpletransformer': (
-        'SimpleTransformerV2 (transformer-only, NO CNN frontend): '
-        'flatten (C, T, H, W) → large linear input embedding → '
-        'multi-layer Transformer encoder → MLP head. Parameter count '
-        'dominated by the input embedding layer (~11.2M at 20 bands, '
-        '~1.7M at 6 bands, d=64 h=4 L=1).'
+        'SimpleTransformerV2 (transformer-only, NO CNN frontend, '
+        'BUT d_model HARDCODED to C*H*W): flatten (C, T, H, W) → '
+        'large linear embedding → multi-layer Transformer encoder → '
+        '4-layer MLP head (512→256→128→1). Param count is locked at '
+        '~11.2M (20 bands) regardless of --hidden_size flag. '
+        'For a controllable transformer-alone baseline, see '
+        'lightweight_transformer.'
+    ),
+    'lightweight_transformer': (
+        'LightweightTransformer (TRUE transformer-only baseline, NO CNN, '
+        'd_model respected): flatten per-timestep input → Linear(C·H·W '
+        '→ d_model) → LayerNorm → Transformer encoder (pre-norm, '
+        'ff=2·d_model) → MLP head matching SGT/Vanilla. ~85k-370k '
+        'params at d ∈ {64, 96, 128} × L ∈ {1, 2}. The clean '
+        'CNN-frontend ablation companion to vanilla_transformer.'
     ),
     '3dcnn': (
         'Small3DCNN (CNN-only, NO transformer): 3D convolutions over '
@@ -94,7 +104,7 @@ ARCH_DESCRIPTIONS = {
 # Family aliases used in tag patterns (must match sweep_summarize.parse_tag).
 _ARCH_TAG_RE = re.compile(r'^(small_)?d(\d+)_h(\d+)_L(\d+)$')
 _FAMILY_TAG_RE = re.compile(
-    r'^(3dcnn|cnnlstm|simpletransformer|vanilla_transformer)'
+    r'^(3dcnn|cnnlstm|simpletransformer|vanilla_transformer|lightweight_transformer)'
     r'_d(\d+)_h(\d+)_L(\d+)$')
 _BASELINE_TAG_RE = re.compile(r'^baseline_([a-z0-9]+)_(.+)$')
 
@@ -386,13 +396,21 @@ PRESETS = {
         ],
     },
     'cnn-frontend': {
-        'description': 'CNN-frontend ablation: CNN + transformer (vanilla) vs '
-                       'transformer alone (SimpleTransformer). Isolates the '
-                       'value of the per-band 1×1 spatial encoder.',
+        'description': 'CNN-frontend ablation at MATCHED parameter scale: '
+                       'CNN + transformer (vanilla) vs transformer alone '
+                       '(lightweight_transformer). Both honour --hidden_size '
+                       'so they land at ~85k-370k. SimpleTransformerV2 also '
+                       'included for reference (11.2M, unfair scale).',
         'tags': [
-            'vanilla_transformer_d128_h4_L1',    # CNN + transformer, ~215k
-            'vanilla_transformer_d64_h4_L1',     # CNN + transformer, ~95k
-            'simpletransformer_d64_h4_L1',       # transformer alone, ~11.2M
+            # CNN + transformer
+            'vanilla_transformer_d64_h4_L1',           # ~95k
+            'vanilla_transformer_d128_h4_L1',          # ~215k
+            # Transformer alone (parameter-controllable)
+            'lightweight_transformer_d64_h4_L1',       # ~85k  ← matched to vanilla d=64
+            'lightweight_transformer_d128_h4_L1',      # ~240k ← matched to vanilla d=128
+            'lightweight_transformer_d128_h4_L2',      # ~370k (deeper)
+            # Transformer alone (uncontrolled, 11.2M for reference)
+            'simpletransformer_d64_h4_L1',
         ],
     },
     'architecture': {
