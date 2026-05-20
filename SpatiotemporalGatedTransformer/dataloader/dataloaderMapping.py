@@ -36,9 +36,14 @@ class RasterTensorDataset1Mil(Dataset):
         if data is None:
             data = np.load(self.id_to_file[id_num])
             self.data_cache[id_num] = data
+        # Cast x, y to int up front. coordinates.npy stores them as
+        # numpy.float64, which trickled into the padded-window branch as
+        # float slice indices and crashed ~0.4% of grid points (edge
+        # pixels). One cast covers both branches.
+        x = int(x); y = int(y)
         half_window = window_size // 2
-        x_start, x_end = int(max(0, x - half_window)), int(min(data.shape[0], x + half_window + 1))
-        y_start, y_end = int(max(0, y - half_window)), int(min(data.shape[1], y + half_window + 1))
+        x_start, x_end = max(0, x - half_window), min(data.shape[0], x + half_window + 1)
+        y_start, y_end = max(0, y - half_window), min(data.shape[1], y + half_window + 1)
         window = data[x_start:x_end, y_start:y_end]
         if window.shape != (window_size, window_size):
             padded_window = np.zeros((window_size, window_size))

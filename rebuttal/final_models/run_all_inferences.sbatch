@@ -6,7 +6,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=12
 #SBATCH --gres=gpu:1
-#SBATCH --time=01:30:00
+#SBATCH --time=03:00:00
 #SBATCH --output=rebuttal/final_models/maps/infer_all_%j.out
 #SBATCH --error=rebuttal/final_models/maps/infer_all_%j.out
 
@@ -61,8 +61,23 @@ TREE_RUNS=(
 run_one() {
     local r="$1"
     local d="rebuttal/final_models/checkpoints/$r"
+    local s="rebuttal/final_models/maps/$r/bavaria_2023_summary.json"
     if [[ ! -d "$d" ]]; then
         echo "[skip] $r — no checkpoint directory at $d (training not finished?)"
+        return 0
+    fi
+    # Idempotency: skip runs whose summary already exists with a finite,
+    # non-NaN mean. Lets a re-submission pick up where a previous time-out
+    # left off, without redoing the slow ones that already finished.
+    if [[ -f "$s" ]] && python -c "
+import json, math, sys
+try:
+    m = json.load(open('$s'))['mean']
+    sys.exit(0 if isinstance(m, (int, float)) and not math.isnan(m) else 1)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null; then
+        echo "[skip] $r — output already exists with finite mean (idempotent)"
         return 0
     fi
     echo "=== $r ==="
