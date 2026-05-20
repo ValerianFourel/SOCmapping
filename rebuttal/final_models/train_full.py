@@ -41,7 +41,7 @@ os.environ.setdefault('WANDB_MODE', 'disabled')
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
 HERE = Path(__file__).resolve().parent
 SOC_ROOT = HERE.parents[1]
@@ -57,7 +57,7 @@ KFOLD_DIR = SOC_ROOT / 'rebuttal' / 'gpu_experiments' / 'spatial_kfold'
 sys.path.insert(0, str(KFOLD_DIR))
 from run_kfold import (  # noqa: E402
     MODEL_READY, _build_model_ready_dataset, make_dataset, _build_model,
-    _AugmentingWrapper,
+    _AugmentingWrapper, compute_density_weights,
 )
 from band_subsets import get_band_indices, band_suffix  # noqa: E402
 import wandb  # noqa: E402  (disabled mode)
@@ -114,6 +114,22 @@ def parse():
                         'auto-appends "_6band" or "_20band" so the two '
                         'variants do not overwrite each other under '
                         'checkpoints/<run-name>/.')
+    p.add_argument('--sampler-mode', type=str, default='none',
+                   choices=['none', 'kde'],
+                   help='Training-time sampler. "none" (default): plain '
+                        'shuffle, preserves the raw LUCAS SOC distribution '
+                        '(heavily skewed toward low SOC). "kde": '
+                        'WeightedRandomSampler with KDE-inverse-density '
+                        'weights on log(SOC), oversampling rare-tail '
+                        '(high-SOC) rows. Use kde for production maps so '
+                        'Alpine peat / organic-rich regions are not '
+                        'systematically under-predicted.')
+    p.add_argument('--sampler-alpha', type=float, default=0.5,
+                   help='[kde mode only] Exponent on KDE-density inversion. '
+                        'alpha=0 → uniform (no rebalancing), alpha=1 → full '
+                        'inverse-frequency. Default 0.5 = sqrt-inverse, the '
+                        'Yang et al. ICML 2021 standard for imbalance '
+                        'regression.')
     return p.parse_args()
 
 
@@ -122,9 +138,15 @@ def main():
     torch.manual_seed(args.seed); np.random.seed(args.seed)
 
     # Auto-append the bands-list suffix unless the user already encoded it.
+    # Use 'in' rather than endswith so a rebal-suffixed name (e.g.
+    # sgt_d128_h4_L1_20band_rebal) is not double-suffixed.
     suf = band_suffix(args.bands_list)
-    if not (args.run_name.endswith('_6band') or args.run_name.endswith('_20band')):
+    if '_20band' not in args.run_name and '_6band' not in args.run_name:
         args.run_name = args.run_name + suf
+    # Auto-append _rebal when KDE sampling is on, so rebalanced and
+    # non-rebalanced final models coexist under checkpoints/.
+    if args.sampler_mode == 'kde' and not args.run_name.endswith('_rebal'):
+        args.run_name = args.run_name + '_rebal'
     out_dir = CHECKPOINTS_ROOT / args.run_name
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f'[final] run_name = {args.run_name}  (bands_list={args.bands_list})',
@@ -169,8 +191,37 @@ def main():
         train_ds = _AugmentingWrapper(train_ds, seed=args.seed)
 
     num_workers = int(os.environ.get('SOC_KFOLD_NUM_WORKERS', 0))
-    train_loader = DataLoader(train_ds, batch_size=args.per_gpu_batch_size,
-                               shuffle=True, num_workers=num_workers, pin_memory=True)
+
+    # Training sampler: shuffle by default; KDE-inverse-density weights when
+    # --sampler-mode kde. The latter oversamples high-SOC tail rows so the
+    # production map's predicted SOC range covers Bavaria's organic-rich
+    # regions (Alpine peat, fen / bog soils) instead of regressing toward
+    # the bulk mineral-soil mean.
+    if args.sampler_mode == 'kde':
+        weights = compute_density_weights(train_df['OC'].to_numpy(),
+                                           alpha=args.sampler_alpha)
+        sampler = WeightedRandomSampler(
+            weights=torch.as_tensor(weights, dtype=torch.double),
+            num_samples=len(train_df),
+            replacement=True,
+        )
+        print(f'[final] sampler=kde  alpha={args.sampler_alpha}  '
+              f'n_train={len(train_df)}  '
+              f'w in [{weights.min():.3f}, {weights.max():.3f}]  '
+              f'mean={weights.mean():.3f}', flush=True)
+        train_loader = DataLoader(
+            train_ds, batch_size=args.per_gpu_batch_size,
+            sampler=sampler,           # shuffle MUST be False when sampler is set
+            num_workers=num_workers, pin_memory=True,
+        )
+    else:
+        print(f'[final] sampler=none  (plain shuffle, raw LUCAS distribution)',
+              flush=True)
+        train_loader = DataLoader(
+            train_ds, batch_size=args.per_gpu_batch_size,
+            shuffle=True,
+            num_workers=num_workers, pin_memory=True,
+        )
     mon_loader = DataLoader(mon_ds, batch_size=args.per_gpu_batch_size,
                              shuffle=False, num_workers=num_workers, pin_memory=True)
 

@@ -154,8 +154,20 @@ DEFAULTS = {
 }
 
 
+def _suffix(opts: dict) -> str:
+    """Tag appended to run_name when --rebalance is on so rebalanced and
+    non-rebalanced final models can coexist under checkpoints/maps."""
+    return '_rebal' if opts.get('rebalance') else ''
+
+
+def _sampler_args(opts: dict) -> str:
+    if not opts.get('rebalance'):
+        return ''
+    return f' --sampler-mode kde --sampler-alpha {opts["sampler_alpha"]}'
+
+
 def build_nn_train_sbatch(cfg: dict, opts: dict, bands_list: str) -> str:
-    run_name = cfg["run_name"] + band_suffix(bands_list)
+    run_name = cfg["run_name"] + band_suffix(bands_list) + _suffix(opts)
     log = LOG_DIR / f'final_{run_name}_train_%j.out'
     venv = (f'source {shlex.quote(str(opts["venv_activate"]))}'
             if opts['venv_activate'] else 'true')
@@ -182,12 +194,12 @@ accelerate launch --num_processes 4 \\
     rebuttal/final_models/train_full.py \\
     --run-name {cfg["run_name"]} \\
     --bands-list {bands_list} \\
-    {cfg["cmd"]}
+    {cfg["cmd"]}{_sampler_args(opts)}
 '''
 
 
 def build_nn_infer_sbatch(cfg: dict, opts: dict, bands_list: str) -> str:
-    run_name = cfg["run_name"] + band_suffix(bands_list)
+    run_name = cfg["run_name"] + band_suffix(bands_list) + _suffix(opts)
     log = LOG_DIR / f'final_{run_name}_infer_%j.out'
     venv = (f'source {shlex.quote(str(opts["venv_activate"]))}'
             if opts['venv_activate'] else 'true')
@@ -272,6 +284,19 @@ def parse():
                         'run_name auto-suffixed with _20band / _6band. '
                         'Pass just "full_20" or "original_6" to run a single '
                         'variant.')
+    p.add_argument('--rebalance', action='store_true',
+                   help='Train with --sampler-mode kde (KDE-inverse-density '
+                        'WeightedRandomSampler on log(SOC), oversampling '
+                        'high-SOC rare-tail rows). The run_name gets a '
+                        '"_rebal" suffix so rebalanced and non-rebalanced '
+                        'outputs do not collide. Use this for the production '
+                        'comparison figure: the resulting maps cover '
+                        "Bavaria's organic-rich regions instead of "
+                        'regressing toward the bulk mineral-soil mean.')
+    p.add_argument('--sampler-alpha', type=float, default=0.5,
+                   help='[--rebalance only] KDE inversion exponent. '
+                        'Default 0.5 = sqrt-inverse density (Yang et al. '
+                        'ICML 2021). Higher → more aggressive upweighting.')
     return p.parse_args()
 
 
@@ -298,7 +323,15 @@ def main():
         'time_train': a.time_train,
         'time_infer': a.time_infer,
         'time_baseline': a.time_baseline,
+        'rebalance': a.rebalance,
+        'sampler_alpha': a.sampler_alpha,
     }
+    if a.rebalance:
+        print(f'[submit] --rebalance ON  →  NN training uses '
+              f'WeightedRandomSampler(KDE, alpha={a.sampler_alpha}); '
+              f'NN run_name auto-suffixed with "_rebal" so outputs do not '
+              f'collide with non-rebalanced runs. Trees train as-is '
+              f'(no in-built sampler).')
     SBATCH_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
