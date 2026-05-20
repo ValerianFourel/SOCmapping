@@ -229,7 +229,10 @@ python rebuttal/final_models/infer_bavaria.py \\
 
 
 def build_tree_combined_sbatch(cfg: dict, opts: dict, bands_list: str) -> str:
-    run_name = cfg["run_name"] + band_suffix(bands_list)
+    # Same _suffix + _sampler_args plumbing as the NN path — trees now
+    # support sample_weight in train_full_baselines.py (passes through to
+    # sklearn/XGB .fit) so the rebalanced production maps cover trees too.
+    run_name = cfg["run_name"] + band_suffix(bands_list) + _suffix(opts)
     log = LOG_DIR / f'final_{run_name}_%j.out'
     venv = (f'source {shlex.quote(str(opts["venv_activate"]))}'
             if opts['venv_activate'] else 'true')
@@ -255,7 +258,7 @@ PYTHONUNBUFFERED=1 \\
 python rebuttal/final_models/train_full_baselines.py \\
     --run-name {cfg["run_name"]} \\
     --bands-list {bands_list} \\
-    {cfg["cmd"]}
+    {cfg["cmd"]}{_sampler_args(opts)}
 
 PYTHONUNBUFFERED=1 \\
 python rebuttal/final_models/infer_bavaria.py \\
@@ -285,14 +288,17 @@ def parse():
                         'Pass just "full_20" or "original_6" to run a single '
                         'variant.')
     p.add_argument('--rebalance', action='store_true',
-                   help='Train with --sampler-mode kde (KDE-inverse-density '
-                        'WeightedRandomSampler on log(SOC), oversampling '
-                        'high-SOC rare-tail rows). The run_name gets a '
-                        '"_rebal" suffix so rebalanced and non-rebalanced '
-                        'outputs do not collide. Use this for the production '
-                        'comparison figure: the resulting maps cover '
-                        "Bavaria's organic-rich regions instead of "
-                        'regressing toward the bulk mineral-soil mean.')
+                   help='Train ALL configs (NN + trees) with --sampler-mode '
+                        'kde (KDE-inverse-density on log(SOC), oversampling '
+                        'high-SOC rare-tail rows). NN models use a '
+                        'WeightedRandomSampler; tree baselines (RF, XGB) '
+                        'pass the same weights via sample_weight to their '
+                        'native .fit(). Run_name gets a "_rebal" suffix so '
+                        'rebalanced and non-rebalanced outputs coexist. Use '
+                        'this for the production comparison figure: the '
+                        "resulting maps cover Bavaria's organic-rich regions "
+                        'instead of regressing toward the bulk mineral-soil '
+                        'mean.')
     p.add_argument('--sampler-alpha', type=float, default=0.5,
                    help='[--rebalance only] KDE inversion exponent. '
                         'Default 0.5 = sqrt-inverse density (Yang et al. '
@@ -329,9 +335,9 @@ def main():
     if a.rebalance:
         print(f'[submit] --rebalance ON  →  NN training uses '
               f'WeightedRandomSampler(KDE, alpha={a.sampler_alpha}); '
-              f'NN run_name auto-suffixed with "_rebal" so outputs do not '
-              f'collide with non-rebalanced runs. Trees train as-is '
-              f'(no in-built sampler).')
+              f'trees use sample_weight (KDE, alpha={a.sampler_alpha}) '
+              f'passed to .fit(). All run_names auto-suffixed with '
+              f'"_rebal" so outputs do not collide with non-rebalanced runs.')
     SBATCH_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 

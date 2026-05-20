@@ -41,7 +41,7 @@ from _paths import SOC_REBUTTAL_DIR  # noqa: E402
 # Reuse the feature-extraction helper from run_baselines.py
 KFOLD_DIR = SOC_ROOT / 'rebuttal' / 'gpu_experiments' / 'spatial_kfold'
 sys.path.insert(0, str(KFOLD_DIR))
-from run_kfold import MODEL_READY, _build_model_ready_dataset  # noqa: E402
+from run_kfold import MODEL_READY, _build_model_ready_dataset, compute_density_weights  # noqa: E402
 from run_baselines import extract_features_for_df, transform_y, inverse_y  # noqa: E402
 from band_subsets import get_band_indices, band_suffix  # noqa: E402
 
@@ -69,14 +69,33 @@ def parse():
                    choices=['full_20', 'original_6'],
                    help='Covariate subset (default full_20). Run-name '
                         'auto-appends "_6band" or "_20band".')
+    p.add_argument('--sampler-mode', type=str, default='none',
+                   choices=['none', 'kde'],
+                   help='Training sample weighting. "none" (default): each '
+                        'training row contributes equally (raw LUCAS SOC '
+                        'distribution). "kde": fit with sample_weight equal '
+                        'to KDE-inverse-density on log(SOC) — upweights '
+                        'high-SOC rare-tail rows so the production map '
+                        "covers Bavaria's organic-rich regions. Both RF and "
+                        'XGB support sample_weight natively (no row '
+                        'duplication needed).')
+    p.add_argument('--sampler-alpha', type=float, default=0.5,
+                   help='[kde mode only] KDE inversion exponent. Default 0.5 '
+                        '= sqrt-inverse-density (Yang et al. ICML 2021).')
     return p.parse_args()
 
 
 def main():
     args = parse()
+    # Auto-append band suffix; use 'in' rather than endswith so a
+    # rebal-suffixed name is not double-suffixed.
     suf = band_suffix(args.bands_list)
-    if not (args.run_name.endswith('_6band') or args.run_name.endswith('_20band')):
+    if '_20band' not in args.run_name and '_6band' not in args.run_name:
         args.run_name = args.run_name + suf
+    # Auto-append _rebal when KDE sample-weighting is on, so rebalanced
+    # and non-rebalanced tree models coexist under checkpoints/.
+    if args.sampler_mode == 'kde' and not args.run_name.endswith('_rebal'):
+        args.run_name = args.run_name + '_rebal'
     out_dir = CHECKPOINTS_ROOT / args.run_name
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f'[baseline-final] run_name = {args.run_name}  '
@@ -121,6 +140,22 @@ def main():
         mu, sd = 0.0, 1.0
         y_train = y.astype(np.float64)
 
+    # ---- Sample weights (rebalanced fit) ----
+    # Both XGBRegressor.fit and RandomForestRegressor.fit accept the
+    # sample_weight kwarg directly — no row duplication needed. Same
+    # KDE-inverse-density recipe as the NN path so the two pipelines
+    # rebalance the SOC distribution identically.
+    sample_weight = None
+    if args.sampler_mode == 'kde':
+        sample_weight = compute_density_weights(y, alpha=args.sampler_alpha)
+        print(f'[baseline-final] sampler=kde  alpha={args.sampler_alpha}  '
+              f'n={len(y)}  w in [{sample_weight.min():.3f}, '
+              f'{sample_weight.max():.3f}]  mean={sample_weight.mean():.3f}',
+              flush=True)
+    else:
+        print(f'[baseline-final] sampler=none  (raw LUCAS distribution)',
+              flush=True)
+
     # ---- Fit ----
     t0 = time.time()
     if args.model == 'xgb':
@@ -143,7 +178,7 @@ def main():
         )
         print(f'[baseline-final] XGBoost device={device}  n_est={args.xgb_n_estimators}  '
               f'depth={args.xgb_max_depth}  lr={args.xgb_lr}', flush=True)
-        model.fit(X, y_train)
+        model.fit(X, y_train, sample_weight=sample_weight)
         out_model_path = out_dir / 'final_model.json'
         model.save_model(str(out_model_path))
     else:
@@ -157,7 +192,7 @@ def main():
         )
         print(f'[baseline-final] RandomForest n_est={args.rf_n_estimators}  '
               f'max_depth={max_depth}  (CPU, n_jobs=-1)', flush=True)
-        model.fit(X, y_train)
+        model.fit(X, y_train, sample_weight=sample_weight)
         out_model_path = out_dir / 'final_model.joblib'
         import joblib
         joblib.dump(model, out_model_path)
