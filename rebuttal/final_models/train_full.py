@@ -88,7 +88,8 @@ def parse():
     p.add_argument('--model-size', type=str, default='small',
                    choices=['small', 'big'])
     p.add_argument('--model-family', type=str, default='sgt',
-                   choices=['sgt', '3dcnn', 'cnnlstm', 'simpletransformer'])
+                   choices=['sgt', '3dcnn', 'cnnlstm', 'simpletransformer',
+                            'vanilla_transformer', 'lightweight_transformer'])
     p.add_argument('--per-gpu-batch-size', type=int, default=256)
     p.add_argument('--effective-batch-size', type=int, default=256)
     p.add_argument('--accum-steps', type=int, default=0)
