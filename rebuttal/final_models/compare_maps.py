@@ -32,7 +32,7 @@ MAPS_ROOT = HERE / 'maps'
 
 # Display order + nice labels for the figure.
 # (run_name, display label, family_kind)
-DEFAULT_RUNS = [
+_BASE_RUNS = [
     ('sgt_d128_h4_L1',                  'SimpleSGT — gated (363k)',           'sgt'),
     ('vanilla_transformer_d128_h4_L1',  'Vanilla transformer — no gate (215k)', 'vanilla'),
     ('lightweight_transformer_d128_h4_L1', 'Lightweight Transformer — no CNN (240k)', 'lightweight'),
@@ -43,13 +43,19 @@ DEFAULT_RUNS = [
     ('rf_default',                      'RandomForest (per-band stats)',      'tree'),
 ]
 
-# Auto-expand each run_name across both band-variants so we don't need to
-# repeat the (run_name, label, kind) triples manually for _6band / _20band.
-DEFAULT_RUNS = [
-    (rn + sfx, lbl + f' [{sfx[1:]}]', kind)
-    for rn, lbl, kind in DEFAULT_RUNS
-    for sfx in ('_20band', '_6band')
-]
+
+def _build_default_runs(rebal: bool):
+    """Auto-expand base runs across _20band/_6band, optionally also appending
+    _rebal. Output filename and figure title are also rebal-aware (see main)."""
+    out = []
+    rebal_sfx = '_rebal' if rebal else ''
+    rebal_lbl = ' (rebalanced)' if rebal else ''
+    for rn, lbl, kind in _BASE_RUNS:
+        for band_sfx in ('_20band', '_6band'):
+            out.append((rn + band_sfx + rebal_sfx,
+                        lbl + f' [{band_sfx[1:]}]' + rebal_lbl,
+                        kind))
+    return out
 
 
 def parse():
@@ -59,6 +65,14 @@ def parse():
     p.add_argument('--runs', type=str, default=None,
                    help='Comma-separated run_names to include (default: '
                         'all entries in DEFAULT_RUNS that have outputs).')
+    p.add_argument('--rebal', action='store_true',
+                   help='Load rebalanced runs (run_names auto-appended with '
+                        '"_rebal", produced by submit_finals.py --rebalance) '
+                        'instead of the default non-rebalanced runs. Outputs '
+                        'go to maps_comparison_<year>_rebal.{png,md,json} so '
+                        'rebalanced and non-rebalanced figures coexist on '
+                        'disk; render both separately and place side-by-side '
+                        'in the paper supplementary if needed.')
     return p.parse_args()
 
 
@@ -76,8 +90,16 @@ def main():
     a = parse()
     wanted = set(a.runs.split(',')) if a.runs else None
 
+    # Build the run set lazily so --rebal can toggle suffix at runtime.
+    default_runs = _build_default_runs(rebal=a.rebal)
+    # Output filename suffix so rebal and non-rebal coexist on disk.
+    out_sfx = '_rebal' if a.rebal else ''
+    title_sfx = '  (KDE-rebalanced training)' if a.rebal else ''
+    print(f'[compare] mode = {"REBALANCED" if a.rebal else "non-rebalanced"}  '
+          f'(loading {len(default_runs)} expected runs)')
+
     runs_with_data = []
-    for run_name, label, kind in DEFAULT_RUNS:
+    for run_name, label, kind in default_runs:
         if wanted and run_name not in wanted:
             continue
         df, summary = load_run(run_name, a.year)
@@ -278,12 +300,12 @@ def main():
             cbar = fig.colorbar(sc, cax=cbar_ax,
                                   label=f'Predicted SOC (g/kg, clipped to {int(vmax)})')
         fig.suptitle(f'Bavaria-wide SOC predictions, target year {a.year} '
-                      f'— 20-band vs 6-band per architecture',
+                      f'— 20-band vs 6-band per architecture{title_sfx}',
                       fontsize=13, fontweight='bold', y=1.01)
         # NOTE: skip tight_layout + bbox_inches='tight' — both are slow with
         # 12 axes × 150k points, and tight_layout warns about colorbar axes
         # anyway. subplots_adjust above gave the colorbar its space.
-        out_png = HERE / f'maps_comparison_{a.year}.png'
+        out_png = HERE / f'maps_comparison_{a.year}{out_sfx}.png'
         fig.savefig(out_png, dpi=200)
         plt.close(fig)
         print(f'[compare] saved {out_png}', flush=True)
@@ -365,10 +387,11 @@ def main():
               'genuinely different inductive biases applied to identical training '
               'data and identical inference geometry.')
     md.append('')
-    (HERE / f'maps_comparison_{a.year}.md').write_text('\n'.join(md))
-    print(f'[compare] saved {HERE / f"maps_comparison_{a.year}.md"}', flush=True)
+    (HERE / f'maps_comparison_{a.year}{out_sfx}.md').write_text('\n'.join(md))
+    print(f'[compare] saved {HERE / f"maps_comparison_{a.year}{out_sfx}.md"}',
+          flush=True)
 
-    (HERE / f'maps_comparison_{a.year}.json').write_text(
+    (HERE / f'maps_comparison_{a.year}{out_sfx}.json').write_text(
         json.dumps({
             'year': a.year,
             'runs': [r[0] for r in runs_with_data],
