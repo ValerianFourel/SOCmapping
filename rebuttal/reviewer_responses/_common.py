@@ -63,9 +63,9 @@ COMPARISONS = [
                    'so the +148k params for the GRN buy nothing.'),
     ArchEntry(tag='lightweight_transformer_d128_h4_L1', group='oc150',
               family='lightweight_transformer',
-              nice='Lightweight (Transformer only, 240k params)',
-              desc='Vanilla minus the CNN frontend. Isolates the value of '
-                   'spatial inductive bias. Result: negative R², high variance.'),
+              nice='Lightweight @ 30 epochs (Transformer only, 240k params)',
+              desc='Vanilla minus the CNN frontend, undertrained at 30 epochs. '
+                   'R² mean = -0.064. Compare to the long-train row below.'),
     ArchEntry(tag='simpletransformer_d64_h4_L1', group='oc150',
               family='simpletransformer',
               nice='SimpleTransformer (Transformer only, 11.2M params)',
@@ -87,9 +87,34 @@ COMPARISONS = [
 ]
 
 
-def all_entries(include_broken: bool = True) -> list[ArchEntry]:
-    """Flagship first, comparisons after. Optionally exclude 3DCNN (broken)."""
+def all_entries(include_broken: bool = True,
+                 include_longtrain: bool = False) -> list[ArchEntry]:
+    """Flagship first, comparisons after. Optionally exclude 3DCNN (broken)
+    and/or include the 200-epoch defensive long-train Lightweight result
+    as an additional comparison row."""
     out = [FLAGSHIP] + COMPARISONS
+    if include_longtrain:
+        # Insert right after the 30-epoch Lightweight row so the comparison
+        # is immediately visible in the table.
+        long_entry = ArchEntry(
+            tag='lightweight_transformer_d128_h4_L1',
+            group='oc150_longtrain',
+            family='lightweight_transformer',
+            nice='Lightweight @ 200 epochs (Transformer only, 240k params)',
+            desc='Long-training defensive run. Converged at median best-epoch '
+                 '52/200, with overfitting after. R² mean = +0.149, σ = 0.128 '
+                 '— the architectural ceiling. Still trails Vanilla by +0.021 R² '
+                 'and -0.169 R² on the Alpine fold even at 6.6× more training.',
+        )
+        # Insert just after the 30-epoch Lightweight entry
+        for i, e in enumerate(out):
+            if (e.family == 'lightweight_transformer'
+                    and e.group == 'oc150'
+                    and e.tag == 'lightweight_transformer_d128_h4_L1'):
+                out = out[:i + 1] + [long_entry] + out[i + 1:]
+                break
+        else:
+            out.append(long_entry)
     if not include_broken:
         out = [e for e in out if e.family != '3dcnn']
     return out

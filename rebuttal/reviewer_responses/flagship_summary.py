@@ -212,9 +212,17 @@ def main():
                    help='Skip parameter-count loading (faster, skips reading .pth)')
     p.add_argument('--no-broken', action='store_true',
                    help='Exclude the broken 3DCNN row.')
+    p.add_argument('--include-longtrain', action='store_true',
+                   help='Include the 200-epoch defensive long-train '
+                        'Lightweight result as an additional comparison row '
+                        '(pulled from sweep/oc150_longtrain/). Use this when '
+                        'the long-train sbatch has completed; the row sits '
+                        'next to the 30-epoch Lightweight row for direct '
+                        'budget-effect comparison.')
     a = p.parse_args()
 
-    entries = all_entries(include_broken=not a.no_broken)
+    entries = all_entries(include_broken=not a.no_broken,
+                            include_longtrain=a.include_longtrain)
     print(banner('FLAGSHIP SUMMARY — building rows'))
     rows = []
     for e in entries:
