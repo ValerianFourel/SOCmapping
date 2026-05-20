@@ -115,6 +115,30 @@ VANILLA_GRID: list[tuple[str, int, int, int, float]] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# CNN-frontend ablation: SimpleTransformer at a sweep of d_model values, so
+# we get a parameter-count curve for "transformer alone, NO CNN frontend" to
+# compare against the vanilla "CNN + transformer" curve at matched params.
+#
+# At d=64,h=4,L=1 SimpleTransformer is ~11.2M params (20-band) — totally
+# dominated by the input embedding that linearly maps the flattened
+# (C, T, H, W) cube to d_model. Smaller d_model shrinks that embedding
+# proportionally, so this grid lets us plot R² vs param count for the
+# transformer-alone family and compare it against the (CNN + transformer)
+# vanilla curve at matched param count.
+#
+# Controlled by --simpletransformer-ablation /
+# --simpletransformer-ablation-only flags (parallel to --vanilla).
+# ---------------------------------------------------------------------------
+SIMPLETRANSFORMER_ABLATION_GRID: list[tuple[str, int, int, int, float]] = [
+    # (family, d_model, num_heads, num_layers, dropout)
+    ('simpletransformer',  16, 2, 1, 0.5),   # head_dim=8, smallest
+    ('simpletransformer',  32, 4, 1, 0.5),   # head_dim=8
+    ('simpletransformer',  64, 4, 1, 0.5),   # head_dim=16  (same as FAMILY_GRID default)
+    ('simpletransformer', 128, 4, 1, 0.5),   # head_dim=32
+]
+
+
 def family_tag_for(family: str, d: int, h: int, L: int) -> str:
     return f'{family}_d{d}_h{h}_L{L}'
 
@@ -424,6 +448,17 @@ def main():
     p.add_argument('--vanilla-only', action='store_true',
                    help='Submit only the vanilla-transformer ablation grid, '
                         'skip SGT, families, and baselines.')
+    p.add_argument('--simpletransformer-ablation',
+                   action=argparse.BooleanOptionalAction, default=False,
+                   help='Also submit the SimpleTransformer parameter-count '
+                        'sweep (SIMPLETRANSFORMER_ABLATION_GRID; '
+                        'd_model ∈ {16, 32, 64, 128}). Pairs with the '
+                        'vanilla curve to give a "CNN+transformer vs '
+                        'transformer-alone" comparison at matched param '
+                        'counts. Default off.')
+    p.add_argument('--simpletransformer-ablation-only', action='store_true',
+                   help='Submit only the SimpleTransformer ablation grid, '
+                        'skip everything else.')
     p.add_argument('--loss-type', type=str, default='l1',
                    choices=['l1', 'mse', 'chi2', 'composite_l1', 'composite_l2'],
                    help='Training loss for neural-network configs (SGT + families). '
@@ -449,7 +484,8 @@ def main():
     submitted: list[tuple[str, str]] = []
 
     # ---- SGT configs ------------------------------------------------------
-    if not a.baselines_only and not a.families_only and not a.vanilla_only:
+    if (not a.baselines_only and not a.families_only and not a.vanilla_only
+            and not a.simpletransformer_ablation_only):
         if a.grid:
             wanted = set(a.grid.split(','))
             grid = [(v, d, h, L) for v, d, h, L in DEFAULT_GRID
@@ -492,7 +528,9 @@ def main():
             print(f'[sweep] submitted {tag:>18}  job_id={jid}')
 
     # ---- Cross-architecture family grid ---------------------------------
-    if (a.families and not a.vanilla_only and not a.baselines_only) or a.families_only:
+    if ((a.families and not a.vanilla_only and not a.baselines_only
+            and not a.simpletransformer_ablation_only)
+            or a.families_only):
         print(f'\n[sweep] cross-architecture grid: {len(FAMILY_GRID)} configs')
         for family, d, h, L, dropout in FAMILY_GRID:
             tag = family_tag_for(family, d, h, L)
@@ -516,7 +554,9 @@ def main():
             print(f'[sweep] submitted {tag:>22}  job_id={jid}')
 
     # ---- Vanilla-transformer ablation grid ------------------------------
-    if (a.vanilla and not a.baselines_only and not a.families_only) or a.vanilla_only:
+    if ((a.vanilla and not a.baselines_only and not a.families_only
+            and not a.simpletransformer_ablation_only)
+            or a.vanilla_only):
         print(f'\n[sweep] vanilla-transformer ablation grid: '
               f'{len(VANILLA_GRID)} configs (SimpleSGT minus GRN)')
         for family, d, h, L, dropout in VANILLA_GRID:
@@ -540,8 +580,46 @@ def main():
             submitted.append((tag, jid))
             print(f'[sweep] submitted {tag:>26}  job_id={jid}')
 
+    # ---- SimpleTransformer parameter-count ablation grid ---------------
+    # CNN-frontend ablation: transformer-alone curve at multiple d_model
+    # values for a fair, parameter-matched comparison against the vanilla
+    # (CNN+transformer) curve.
+    if ((a.simpletransformer_ablation and not a.baselines_only
+            and not a.families_only and not a.vanilla_only)
+            or a.simpletransformer_ablation_only):
+        print(f'\n[sweep] SimpleTransformer parameter ablation grid: '
+              f'{len(SIMPLETRANSFORMER_ABLATION_GRID)} configs '
+              f'(transformer-alone at varying d_model)')
+        for family, d, h, L, dropout in SIMPLETRANSFORMER_ABLATION_GRID:
+            if d % h != 0:
+                print(f'[sweep] skip {family}_d{d}_h{h} '
+                      f'(hidden_size must be divisible by num_heads)',
+                      file=sys.stderr)
+                continue
+            tag = family_tag_for(family, d, h, L)
+            script_text = build_family_sbatch(tag, family, d, h, L, dropout, a)
+            script_path = SBATCH_DIR / f'{tag}.sbatch'
+            script_path.write_text(script_text)
+            script_path.chmod(0o755)
+
+            if a.dry_run:
+                print(f'[dry-run] would submit {script_path}')
+                continue
+
+            out = subprocess.run(['sbatch', str(script_path)],
+                                 capture_output=True, text=True)
+            if out.returncode != 0:
+                print(f'[sweep] sbatch FAILED for {tag}: {out.stderr.strip()}',
+                      file=sys.stderr)
+                continue
+            jid = out.stdout.strip().split()[-1]
+            submitted.append((tag, jid))
+            print(f'[sweep] submitted {tag:>30}  job_id={jid}')
+
     # ---- Baseline bundle (one sbatch with all RF/XGB configs) ------------
-    if (a.baselines and not a.families_only and not a.vanilla_only) or a.baselines_only:
+    if ((a.baselines and not a.families_only and not a.vanilla_only
+            and not a.simpletransformer_ablation_only)
+            or a.baselines_only):
         b_tags = [f'baseline_{m}_{s}' for m, s, _ in BASELINE_GRID]
         print(f'\n[sweep] baseline bundle: {len(BASELINE_GRID)} configs '
               f'({", ".join(b_tags)})')
