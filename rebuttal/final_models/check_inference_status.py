@@ -35,18 +35,22 @@ CHECKPOINTS_ROOT = HERE / 'checkpoints'
 
 # Must mirror NN_RUNS + TREE_RUNS in run_all_inferences.sbatch.
 EXPECTED_RUNS: list[tuple[str, str]] = [
-    ('sgt_d128_h4_L1_20band',                 'NN'),
-    ('sgt_d128_h4_L1_6band',                  'NN'),
-    ('simpletransformer_d64_h4_L1_20band',    'NN'),
-    ('simpletransformer_d64_h4_L1_6band',     'NN'),
-    ('cnnlstm_d64_h4_L1_20band',              'NN'),
-    ('cnnlstm_d64_h4_L1_6band',               'NN'),
-    ('vanilla_transformer_d128_h4_L1_20band', 'NN'),
-    ('vanilla_transformer_d128_h4_L1_6band',  'NN'),
-    ('xgb_shallow_20band',                    'tree'),
-    ('xgb_shallow_6band',                     'tree'),
-    ('rf_default_20band',                     'tree'),
-    ('rf_default_6band',                      'tree'),
+    ('sgt_d128_h4_L1_20band',                    'NN'),
+    ('sgt_d128_h4_L1_6band',                     'NN'),
+    ('vanilla_transformer_d128_h4_L1_20band',    'NN'),
+    ('vanilla_transformer_d128_h4_L1_6band',     'NN'),
+    ('lightweight_transformer_d128_h4_L1_20band', 'NN'),
+    ('lightweight_transformer_d128_h4_L1_6band',  'NN'),
+    ('simpletransformer_d64_h4_L1_20band',       'NN'),
+    ('simpletransformer_d64_h4_L1_6band',        'NN'),
+    ('cnnlstm_d64_h4_L1_20band',                 'NN'),
+    ('cnnlstm_d64_h4_L1_6band',                  'NN'),
+    ('3dcnn_d64_h4_L1_20band',                   'NN'),
+    ('3dcnn_d64_h4_L1_6band',                    'NN'),
+    ('xgb_shallow_20band',                       'tree'),
+    ('xgb_shallow_6band',                        'tree'),
+    ('rf_default_20band',                        'tree'),
+    ('rf_default_6band',                         'tree'),
 ]
 
 

@@ -43,12 +43,16 @@ echo "---"
 NN_RUNS=(
     sgt_d128_h4_L1_20band
     sgt_d128_h4_L1_6band
+    vanilla_transformer_d128_h4_L1_20band
+    vanilla_transformer_d128_h4_L1_6band
+    lightweight_transformer_d128_h4_L1_20band
+    lightweight_transformer_d128_h4_L1_6band
     simpletransformer_d64_h4_L1_20band
     simpletransformer_d64_h4_L1_6band
     cnnlstm_d64_h4_L1_20band
     cnnlstm_d64_h4_L1_6band
-    vanilla_transformer_d128_h4_L1_20band
-    vanilla_transformer_d128_h4_L1_6band
+    3dcnn_d64_h4_L1_20band
+    3dcnn_d64_h4_L1_6band
 )
 
 TREE_RUNS=(
