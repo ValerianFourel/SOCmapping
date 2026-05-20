@@ -427,6 +427,27 @@ PRESETS = {
             'baseline_rf_default',               # RandomForest
         ],
     },
+    'transformers': {
+        'description': 'All transformer-family architectures head-to-head, '
+                       'separating the three architectural axes:\n'
+                       '  (gate?)        SGT (CNN+GRN+Transformer)         vs vanilla\n'
+                       '  (CNN frontend?) vanilla (CNN+Transformer)         vs lightweight\n'
+                       '  (param scale?)  lightweight (Transformer, ~200k) vs simpletransformer (~11M)',
+        'tags': [
+            # CNN + GRN + Transformer (SGT) — the gated baseline
+            'small_d64_h4_L1',
+            'small_d128_h4_L1',
+            # CNN + Transformer (Vanilla) — SGT minus GRN
+            'vanilla_transformer_d64_h4_L1',
+            'vanilla_transformer_d128_h4_L1',
+            # Transformer alone, controllable scale (LightweightTransformer)
+            'lightweight_transformer_d64_h4_L1',
+            'lightweight_transformer_d128_h4_L1',
+            'lightweight_transformer_d128_h4_L2',
+            # Transformer alone, uncontrolled scale (~11M)
+            'simpletransformer_d64_h4_L1',
+        ],
+    },
 }
 
 
