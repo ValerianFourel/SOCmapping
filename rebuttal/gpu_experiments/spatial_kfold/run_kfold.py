@@ -346,59 +346,98 @@ def min_distance_to_set_km(t_lat, t_lon, r_lat, r_lon, chunk=2048):
     return out
 
 
+def assign_balanced_clusters(lat, lon, k: int, seed: int = 42) -> np.ndarray:
+    """K spatially-coherent clusters of (near-)equal size.
+
+    K-Means on equirectangular coordinates (longitude scaled by cos(mean lat)
+    so a degree of lon ≈ a degree of lat in distance) gives the cluster
+    centres; a capacity-constrained nearest-centre assignment then forces every
+    cluster to hold floor(N/k) or ceil(N/k) points (equal ±1). Points are
+    assigned in order of how strongly they prefer their nearest centre (largest
+    gap to the 2nd-nearest first), so boundary distortion from the equal-size
+    constraint is minimised. Returns an int label array of length N."""
+    from sklearn.cluster import KMeans
+    lat = np.asarray(lat, float); lon = np.asarray(lon, float)
+    n = len(lat)
+    xy = np.column_stack([lon * np.cos(np.deg2rad(lat.mean())), lat])
+    centres = KMeans(n_clusters=k, random_state=seed, n_init=10).fit(xy).cluster_centers_
+    d = np.linalg.norm(xy[:, None, :] - centres[None, :, :], axis=2)   # (n, k)
+    cap = int(np.ceil(n / k))
+    srt = np.sort(d, axis=1)
+    gap = (srt[:, 1] - srt[:, 0]) if k > 1 else np.zeros(n)
+    order = np.argsort(-gap)
+    labels = np.full(n, -1, dtype=int)
+    counts = np.zeros(k, dtype=int)
+    for i in order:
+        for c in np.argsort(d[i]):
+            if counts[c] < cap:
+                labels[i] = c; counts[c] += 1; break
+    return labels
+
+
 def build_folds_spatial_deciles(df: pd.DataFrame, n_folds: int = 10,
                                  buffer_km: float = 1.2,
-                                 axis: str = 'lat') -> list[dict]:
-    """Spatial-strip folds with EQUAL N per fold, split along `axis`.
+                                 axis: str = 'lat', seed: int = 42) -> list[dict]:
+    """Spatial folds with EQUAL N per fold.
 
-    axis='lat' → strips are GPS_LAT deciles (south↔north bands);
-    axis='lon' → strips are GPS_LONG deciles (west↔east bands).
+    axis='lat'     → quantile strips of GPS_LAT  (south↔north bands);
+    axis='lon'     → quantile strips of GPS_LONG (west↔east bands);
+    axis='cluster' → K spatially-coherent, equal-size K-Means clusters
+                     (see assign_balanced_clusters).
 
-    The strip boundaries are quantiles of the split coordinate (np.quantile
-    at np.linspace(0, 1, n_folds+1)) rather than equal-span splits, so each
-    fold's test half holds ≈ len(df) / n_folds rows regardless of the
-    spatial density of samples.
+    Strip boundaries are quantiles of the split coordinate, so each fold's test
+    half holds ≈ len(df) / n_folds rows regardless of sample density; clusters
+    are balanced to the same ±1 tolerance.
 
-    Each train pool then has a buffer_km haversine buffer applied: any
+    Each train pool then has a buffer_km great-circle buffer applied: any
     train-candidate within buffer_km of any test row is excluded from train
-    (kept in buffer_idx). Buffer rows are not scored on, just dropped from
-    train. The buffer uses true great-circle distance, so it is identical
-    regardless of which axis the strips run along.
+    (kept in buffer_idx, not scored). The buffer is identical regardless of how
+    the test set was carved out.
 
-    Returns list[dict] with fold_id, split_axis, edge_lo, edge_hi, test_idx,
-    train_idx, buffer_idx (np int arrays into df.index)."""
+    Returns list[dict] with fold_id, split_axis, test_idx, train_idx,
+    buffer_idx, plus edge_lo/edge_hi (strips) or centroid_lat/centroid_lon
+    (cluster). For clusters edge_lo/edge_hi are NaN."""
     if not df.index.equals(pd.RangeIndex(len(df))):
         raise ValueError('build_folds requires df.index == RangeIndex')
-    if axis not in ('lat', 'lon'):
-        raise ValueError(f"axis must be 'lat' or 'lon', got {axis!r}")
+    if axis not in ('lat', 'lon', 'cluster'):
+        raise ValueError(f"axis must be 'lat', 'lon' or 'cluster', got {axis!r}")
 
-    coord_col = 'GPS_LAT' if axis == 'lat' else 'GPS_LONG'
-    coord = df[coord_col].to_numpy(dtype=float)
-    qs = np.linspace(0, 1, n_folds + 1)
-    edges = np.quantile(coord, qs)
-    edges[-1] = coord.max() + 1e-9                         # inclusive top edge
-    edges[0] = coord.min() - 1e-9                          # inclusive bottom edge
+    lat_all = df['GPS_LAT'].to_numpy(dtype=float)
+    lon_all = df['GPS_LONG'].to_numpy(dtype=float)
+
+    test_masks, extra = [], []
+    if axis == 'cluster':
+        labels = assign_balanced_clusters(lat_all, lon_all, n_folds, seed)
+        for i in range(n_folds):
+            m = labels == i
+            test_masks.append(m)
+            extra.append({'centroid_lat': float(lat_all[m].mean()),
+                          'centroid_lon': float(lon_all[m].mean())})
+    else:
+        coord = lat_all if axis == 'lat' else lon_all
+        edges = np.quantile(coord, np.linspace(0, 1, n_folds + 1))
+        edges[-1] = coord.max() + 1e-9
+        edges[0] = coord.min() - 1e-9
+        for i in range(n_folds):
+            lo, hi = float(edges[i]), float(edges[i + 1])
+            test_masks.append((coord >= lo) & (coord < hi))
+            extra.append({'edge_lo': lo, 'edge_hi': hi})
 
     folds = []
     for i in range(n_folds):
-        lo, hi = float(edges[i]), float(edges[i + 1])
-        in_strip = (coord >= lo) & (coord < hi)
-        test_idx = df.index[in_strip].to_numpy()
-        train_pool_idx = df.index[~in_strip].to_numpy()
-
-        t_lat = df.loc[test_idx, 'GPS_LAT'].to_numpy(dtype=float)
-        t_lon = df.loc[test_idx, 'GPS_LONG'].to_numpy(dtype=float)
-        p_lat = df.loc[train_pool_idx, 'GPS_LAT'].to_numpy(dtype=float)
-        p_lon = df.loc[train_pool_idx, 'GPS_LONG'].to_numpy(dtype=float)
-        d = min_distance_to_set_km(p_lat, p_lon, t_lat, t_lon)
+        in_test = test_masks[i]
+        test_idx = df.index[in_test].to_numpy()
+        train_pool_idx = df.index[~in_test].to_numpy()
+        d = min_distance_to_set_km(lat_all[~in_test], lon_all[~in_test],
+                                   lat_all[in_test], lon_all[in_test])
         keep = d >= buffer_km
-        train_idx = train_pool_idx[keep]
-        buffer_idx = train_pool_idx[~keep]
-
         folds.append({
-            'fold_id': i, 'split_axis': axis, 'edge_lo': lo, 'edge_hi': hi,
-            'test_idx': test_idx, 'train_idx': train_idx,
-            'buffer_idx': buffer_idx,
+            'fold_id': i, 'split_axis': axis,
+            'edge_lo': float('nan'), 'edge_hi': float('nan'),
+            **extra[i],
+            'test_idx': test_idx,
+            'train_idx': train_pool_idx[keep],
+            'buffer_idx': train_pool_idx[~keep],
         })
     return folds
 
@@ -565,8 +604,10 @@ def train_one_fold(args, fold: dict, df: pd.DataFrame,
     seed = args.seed_base + fold_id
     torch.manual_seed(seed); np.random.seed(seed)
 
-    print(f'\n=== Fold {fold_id} | {fold["split_axis"]} '
-          f'[{fold["edge_lo"]:.4f}, {fold["edge_hi"]:.4f}) | seed={seed} ===',
+    _where = (f'centroid ({fold["centroid_lat"]:.3f}, {fold["centroid_lon"]:.3f})'
+              if fold["split_axis"] == 'cluster'
+              else f'[{fold["edge_lo"]:.4f}, {fold["edge_hi"]:.4f})')
+    print(f'\n=== Fold {fold_id} | {fold["split_axis"]} {_where} | seed={seed} ===',
           flush=True)
 
     train_df_raw = df.loc[fold['train_idx']].reset_index(drop=True)
@@ -747,6 +788,8 @@ def train_one_fold(args, fold: dict, df: pd.DataFrame,
         'fold_id': fold_id,
         'split_axis': fold['split_axis'],
         'edge_lo': fold['edge_lo'], 'edge_hi': fold['edge_hi'],
+        'centroid_lat': fold.get('centroid_lat'),
+        'centroid_lon': fold.get('centroid_lon'),
         'n_test': int(len(test_df)),
         'n_train': int(len(train_df)),
         'n_train_raw': int(len(train_df_raw)),
@@ -885,7 +928,9 @@ def write_results(fold_results: list[dict], args):
         'n_folds': args.num_folds,
         'distance_threshold_km': args.fold_buffer_km,
         'split_axis': args.split_axis,
-        'fold_geometry': f'{"latitude" if args.split_axis == "lat" else "longitude"}_deciles_equal_n',
+        'fold_geometry': ('balanced_kmeans_clusters_equal_n'
+                          if args.split_axis == 'cluster'
+                          else f'{"latitude" if args.split_axis == "lat" else "longitude"}_deciles_equal_n'),
         'recipe': {
             'lr': args.lr, 'loss_type': args.loss_type,
             'target_transform': args.target_transform,
@@ -917,30 +962,44 @@ def write_results(fold_results: list[dict], args):
     aug_desc = ('D4 spatial augmentation (rot90 × flip) applied to train patches.'
                 if augment_train else 'No train augmentation.')
 
-    axis_word = 'latitude' if args.split_axis == 'lat' else 'longitude'
-    coord_col = 'GPS_LAT' if args.split_axis == 'lat' else 'GPS_LONG'
+    if args.split_axis == 'cluster':
+        geom_title = 'balanced K-Means clusters'
+        geom_sent = (f"Each fold's test set is one of {args.num_folds} equal-size "
+                     f"balanced K-Means spatial clusters "
+                     f"(~{int(100/args.num_folds)}% of points each).")
+        col_header = 'Cluster centroid (lat, lon)'
+        def _range_str(r):
+            cl, co = r.get('centroid_lat'), r.get('centroid_lon')
+            return f'({cl:.3f}, {co:.3f})' if cl is not None else '—'
+    else:
+        axis_word = 'latitude' if args.split_axis == 'lat' else 'longitude'
+        coord_col = 'GPS_LAT' if args.split_axis == 'lat' else 'GPS_LONG'
+        geom_title = f'{axis_word} deciles'
+        geom_sent = (f"Each fold's test half is one decile of {coord_col} "
+                     f"(~{int(100/args.num_folds)}% of points).")
+        col_header = f'{axis_word.capitalize()} range'
+        def _range_str(r):
+            return f'[{r["edge_lo"]:.4f}, {r["edge_hi"]:.4f})'
     md = []
-    md.append(f'# Spatial {args.num_folds}-fold CV — {axis_word} deciles (equal n)')
+    md.append(f'# Spatial {args.num_folds}-fold CV — {geom_title} (equal n)')
     md.append('')
-    md.append(f'Each fold\'s test half is one decile of {coord_col} '
-              f'(~{int(100/args.num_folds)}% of points). Train pool is the '
-              f'complement, minus a {args.fold_buffer_km} km buffer zone. '
-              f'Spatial window fed to the model: {args.window_size}×{args.window_size}. '
-              f'**Modeling domain: OC ≤ {max_oc} g/kg** (non-histosol soils, '
-              f'per WRB). {sampler_desc} {aug_desc} EnhancedSGT '
-              f'(heads={args.num_heads}, layers={args.num_layers}) trained for '
-              f'{args.num_epochs} epochs with `{args.lr_scheduler}` LR schedule '
-              f'from {args.lr} → '
+    md.append(f'{geom_sent} Train pool is the complement, minus a '
+              f'{args.fold_buffer_km} km buffer zone. Spatial window fed to the '
+              f'model: {args.window_size}×{args.window_size}. **Modeling domain: '
+              f'OC ≤ {max_oc} g/kg** (non-histosol soils, per WRB). {sampler_desc} '
+              f'{aug_desc} EnhancedSGT (heads={args.num_heads}, '
+              f'layers={args.num_layers}) trained for {args.num_epochs} epochs with '
+              f'`{args.lr_scheduler}` LR schedule from {args.lr} → '
               f'{args.lr_min if args.lr_scheduler in ("cosine","cosine_warm_restarts") else "n/a"}, '
               f'Adam, {args.loss_type.upper()} on {args.target_transform}'
               f'-transformed target.')
     md.append('')
     md.append('## Per-fold metrics')
     md.append('')
-    md.append(f'| Fold | {axis_word.capitalize()} range | n_test | n_train | R² | RMSE (g/kg) | MAE (g/kg) | RPIQ |')
+    md.append(f'| Fold | {col_header} | n_test | n_train | R² | RMSE (g/kg) | MAE (g/kg) | RPIQ |')
     md.append('|------|-----------|--------|---------|-----|-------------|------------|------|')
     for r in fold_results:
-        md.append(f'| {r["fold_id"]} | [{r["edge_lo"]:.4f}, {r["edge_hi"]:.4f}) | '
+        md.append(f'| {r["fold_id"]} | {_range_str(r)} | '
                   f'{r["n_test"]} | {r["n_train"]} | {r["r2"]:.4f} | {r["rmse"]:.3f} | '
                   f'{r["mae"]:.3f} | {r["rpiq"]:.3f} |')
     md.append(f'| **Mean ± std** | — | — | — | '
@@ -1006,7 +1065,8 @@ def make_figure(fold_results, folds_meta, df_master, args):
         ax.scatter(bufr['GPS_LONG'], bufr['GPS_LAT'], s=3,
                    c='lightgrey', alpha=0.6, label='Buffer-excluded')
     split_axis = folds_meta[0].get('split_axis', 'lat') if folds_meta else 'lat'
-    axis_word = 'latitude' if split_axis == 'lat' else 'longitude'
+    axis_word = {'lat': 'latitude-decile', 'lon': 'longitude-decile',
+                 'cluster': 'balanced-cluster'}.get(split_axis, split_axis)
     for f, color in zip(folds_meta, colors):
         idx = f['test_idx']
         ax.scatter(df_master.loc[idx, 'GPS_LONG'],
@@ -1014,11 +1074,12 @@ def make_figure(fold_results, folds_meta, df_master, args):
                    s=5, color=color, label=f'Fold {f["fold_id"]}', alpha=0.7)
         if split_axis == 'lat':
             ax.axhline(f['edge_hi'], color='black', linestyle='--', linewidth=0.5)
-        else:
+        elif split_axis == 'lon':
             ax.axvline(f['edge_hi'], color='black', linestyle='--', linewidth=0.5)
+        # cluster mode: the coloured points already show the partition
     ax.set_xlabel('Longitude (°E)')
     ax.set_ylabel('Latitude (°N)')
-    ax.set_title(f'Bavaria — {n_folds} {axis_word}-decile folds '
+    ax.set_title(f'Bavaria — {n_folds} {axis_word} folds '
                  f'(buffer {args.fold_buffer_km} km)')
     ax.legend(loc='upper right', fontsize=7, framealpha=0.9, ncol=2)
     ax.set_aspect('equal', adjustable='box')
@@ -1120,13 +1181,14 @@ def parse_args():
 
     # ----- K-fold-specific -----
     p.add_argument('--num-folds', type=int, default=10,
-                   help='Number of latitude-decile folds.')
+                   help='Number of spatial folds (e.g. 5 or 10).')
     p.add_argument('--split-axis', type=str, default='lat',
-                   choices=['lat', 'lon'],
-                   help='Axis the spatial deciles run along: "lat" = '
+                   choices=['lat', 'lon', 'cluster'],
+                   help='How the equal-size folds are carved: "lat" = '
                         'south↔north latitude bands (original), "lon" = '
-                        'west↔east longitude bands. Buffer is great-circle '
-                        'either way.')
+                        'west↔east longitude bands, "cluster" = equal-size '
+                        'balanced K-Means spatial clusters. Buffer is '
+                        'great-circle in every case.')
     p.add_argument('--fold-buffer-km', type=float, default=1.2,
                    help='Train/test buffer-zone distance in km.')
     p.add_argument('--fold', type=int, default=None,
@@ -1189,11 +1251,14 @@ def aggregate_from_disk(args) -> int:
         else:
             actual = p['OC_actual'].to_numpy()
             pred = p['OC_predicted'].to_numpy()
+            is_cluster = args.split_axis == 'cluster'
             coord = p['GPS_LAT'] if args.split_axis == 'lat' else p['GPS_LONG']
             meta = {'fold_id': fid,
                     'split_axis': args.split_axis,
-                    'edge_lo': float(coord.min()),
-                    'edge_hi': float(coord.max()),
+                    'edge_lo': float('nan') if is_cluster else float(coord.min()),
+                    'edge_hi': float('nan') if is_cluster else float(coord.max()),
+                    'centroid_lat': float(p['GPS_LAT'].mean()) if is_cluster else None,
+                    'centroid_lon': float(p['GPS_LONG'].mean()) if is_cluster else None,
                     'n_test': len(p), 'n_train': 0, 'n_train_raw': 0,
                     'n_buffer': 0, 'accum_steps': 0, 'effective_batch_size': 0,
                     'test_oc_mean': float(actual.mean()),
@@ -1253,13 +1318,15 @@ def main():
               f'OC max in set = {df["OC"].max():.1f}', flush=True)
     folds_meta = build_folds_spatial_deciles(
         df, n_folds=args.num_folds, buffer_km=args.fold_buffer_km,
-        axis=args.split_axis)
+        axis=args.split_axis, seed=args.seed_base)
     print(f'Loaded {len(df)} rows from {MODEL_READY}', flush=True)
     print(f'num_folds={args.num_folds}  buffer={args.fold_buffer_km} km  '
           f'split_axis={args.split_axis}  window_size={args.window_size}', flush=True)
     for f in folds_meta:
-        print(f'Fold {f["fold_id"]}: {f["split_axis"]} '
-              f'[{f["edge_lo"]:.4f}, {f["edge_hi"]:.4f}) '
+        where = (f'cluster centroid ({f["centroid_lat"]:.3f}, {f["centroid_lon"]:.3f})'
+                 if args.split_axis == 'cluster'
+                 else f'[{f["edge_lo"]:.4f}, {f["edge_hi"]:.4f})')
+        print(f'Fold {f["fold_id"]}: {f["split_axis"]} {where} '
               f'| n_test={len(f["test_idx"])} n_train={len(f["train_idx"])} '
               f'n_buffer={len(f["buffer_idx"])}', flush=True)
 

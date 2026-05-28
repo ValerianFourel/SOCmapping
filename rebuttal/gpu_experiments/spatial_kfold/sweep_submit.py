@@ -389,6 +389,7 @@ def build_baseline_sbatch(args) -> str:
             f'--models {model} --tag-suffix {suffix} '
             f'--max-oc {args.max_oc} --target-transform log --device cuda '
             f'--split-axis {args.split_axis} --window-size {args.window_size} '
+            f'--seed-base {args.seed_base} '
             f'--output-subdir {shlex.quote(output_subdir)} '
             f'--bands-list {args.bands_list} '
             f'{extra_str}'
@@ -438,11 +439,14 @@ def main():
                         'Sweep this separately (try 80, 90, 100, 120) once an '
                         'architecture is locked in.')
     p.add_argument('--seed-base', type=int, default=42)
-    p.add_argument('--split-axis', type=str, default='lat', choices=['lat', 'lon'],
-                   help='Spatial-CV split axis forwarded to run_kfold/run_baselines: '
-                        '"lat" (south↔north, original) or "lon" (west↔east). '
-                        'Use a distinct --sweep-name (e.g. oc150_lon) so results '
-                        'do not collide with the latitude sweep.')
+    p.add_argument('--split-axis', type=str, default='lat',
+                   choices=['lat', 'lon', 'cluster'],
+                   help='Spatial-CV fold geometry forwarded to run_kfold/run_baselines: '
+                        '"lat" (south↔north), "lon" (west↔east), or "cluster" '
+                        '(equal-size balanced K-Means). Use a distinct --sweep-name '
+                        '(e.g. oc150_cluster) so results do not collide. For cluster, '
+                        '--seed-base is forwarded to both NN and baseline jobs so they '
+                        'share identical folds.')
     p.add_argument('--window-size', type=int, default=5,
                    help='Spatial window edge length forwarded to every job '
                         '(model H×W and dataset crop). Default 5 (config). '
@@ -522,7 +526,7 @@ def main():
     p.add_argument('--chi2-weight', type=float, default=0.1,
                    help='Weight on the chi-square term in composite losses (default 0.1).')
     p.add_argument('--bands-list', type=str, default='full_20',
-                   choices=['full_20', 'original_6'],
+                   choices=['full_20', 'original_6', 'full_extended'],
                    help='Covariate subset (full_20 = revision expansion; '
                         'original_6 = original-paper subset). Auto-appends '
                         '"_6band" to the sweep-name namespace so 6-band and '

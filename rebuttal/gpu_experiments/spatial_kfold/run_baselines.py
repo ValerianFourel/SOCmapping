@@ -270,6 +270,8 @@ def run_fold(model_name: str, args, fold: dict,
         'fold_id': fid,
         'split_axis': fold['split_axis'],
         'edge_lo': float(fold['edge_lo']), 'edge_hi': float(fold['edge_hi']),
+        'centroid_lat': fold.get('centroid_lat'),
+        'centroid_lon': fold.get('centroid_lon'),
         'n_test': int(len(test_idx)),
         'n_train': int(len(train_idx)),
         'n_train_raw': int(len(train_idx)),
@@ -300,9 +302,13 @@ def parse():
                    help='Comma-separated list: xgb, rf. Default both.')
     p.add_argument('--num-folds', type=int, default=10)
     p.add_argument('--fold-buffer-km', type=float, default=1.2)
-    p.add_argument('--split-axis', type=str, default='lat', choices=['lat', 'lon'],
-                   help='Axis the spatial deciles run along: "lat" (south↔north, '
-                        'original) or "lon" (west↔east). Must match the NN k-fold runs.')
+    p.add_argument('--split-axis', type=str, default='lat', choices=['lat', 'lon', 'cluster'],
+                   help='How folds are carved: "lat" (south↔north), "lon" '
+                        '(west↔east), or "cluster" (equal-size balanced K-Means). '
+                        'Must match the NN k-fold runs (incl. --seed-base for cluster).')
+    p.add_argument('--seed-base', type=int, default=42,
+                   help='Seed for cluster fold assignment; must match the NN runs '
+                        'so baselines and NNs use identical cluster folds.')
     p.add_argument('--window-size', type=int, default=DEFAULT_WINDOW,
                    help='Spatial window crop (pixels) used to build the per-band '
                         f'stats. Default {DEFAULT_WINDOW} (config). Feature count '
@@ -361,9 +367,10 @@ def main():
 
     folds_meta = build_folds_spatial_deciles(
         df, n_folds=args.num_folds, buffer_km=args.fold_buffer_km,
-        axis=args.split_axis)
-    _axis_word = 'latitude' if args.split_axis == 'lat' else 'longitude'
-    print(f'Built {args.num_folds} {_axis_word}-decile folds '
+        axis=args.split_axis, seed=args.seed_base)
+    _geom = {'lat': 'latitude-decile', 'lon': 'longitude-decile',
+             'cluster': 'balanced-cluster'}.get(args.split_axis, args.split_axis)
+    print(f'Built {args.num_folds} {_geom} folds '
           f'(buffer {args.fold_buffer_km} km, window {args.window_size}).', flush=True)
 
     # Features depend on the window crop (not the split axis), so the cache key
