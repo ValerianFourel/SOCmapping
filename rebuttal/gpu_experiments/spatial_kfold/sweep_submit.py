@@ -240,7 +240,7 @@ def build_sbatch(tag: str, variant: str, d: int, h: int, L: int, args) -> str:
     cmd = (
         'WANDB_MODE=disabled PYTHONUNBUFFERED=1 '
         'python rebuttal/gpu_experiments/spatial_kfold/run_folds_parallel.py '
-        f'--num-folds 10 --num-parallel 10 --folds-per-gpu 3 '
+        f'--num-folds {args.num_folds} --num-parallel {args.num_folds} --folds-per-gpu 3 '
         f'--output-dir {shlex.quote(str(out_dir_abs))} '
         '-- '
         f'--model-size {variant} '
@@ -306,7 +306,7 @@ def build_family_sbatch(tag: str, family: str, d: int, h: int, L: int,
     cmd = (
         'WANDB_MODE=disabled PYTHONUNBUFFERED=1 '
         'python rebuttal/gpu_experiments/spatial_kfold/run_folds_parallel.py '
-        f'--num-folds 10 --num-parallel 10 --folds-per-gpu 3 '
+        f'--num-folds {args.num_folds} --num-parallel {args.num_folds} --folds-per-gpu 3 '
         f'--output-dir {shlex.quote(str(out_dir_abs))} '
         '-- '
         '--model-size small '
@@ -386,7 +386,7 @@ def build_baseline_sbatch(args) -> str:
             f'echo "[baselines] === {model}_{suffix} ==="\n'
             f'WANDB_MODE=disabled PYTHONUNBUFFERED=1 '
             f'python rebuttal/gpu_experiments/spatial_kfold/run_baselines.py '
-            f'--models {model} --tag-suffix {suffix} '
+            f'--models {model} --tag-suffix {suffix} --num-folds {args.num_folds} '
             f'--max-oc {args.max_oc} --target-transform log --device cuda '
             f'--split-axis {args.split_axis} --window-size {args.window_size} '
             f'--seed-base {args.seed_base} '
@@ -439,6 +439,10 @@ def main():
                         'Sweep this separately (try 80, 90, 100, 120) once an '
                         'architecture is locked in.')
     p.add_argument('--seed-base', type=int, default=42)
+    p.add_argument('--num-folds', type=int, default=10,
+                   help='Number of spatial folds per config (e.g. 5 or 10), '
+                        'forwarded to run_kfold/run_baselines and the parallel '
+                        'orchestrator. Default 10.')
     p.add_argument('--split-axis', type=str, default='lat',
                    choices=['lat', 'lon', 'cluster'],
                    help='Spatial-CV fold geometry forwarded to run_kfold/run_baselines: '
