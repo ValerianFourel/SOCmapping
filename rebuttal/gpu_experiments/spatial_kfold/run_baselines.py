@@ -421,6 +421,8 @@ def main():
         recipe_args = argparse.Namespace(
             num_folds=args.num_folds,
             fold_buffer_km=args.fold_buffer_km,
+            split_axis=args.split_axis,
+            window_size=args.window_size,
             lr=float('nan'),
             loss_type=f'{model_name}-mse',
             target_transform=args.target_transform,
