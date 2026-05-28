@@ -485,8 +485,9 @@ class _BandSubsetWrapper(Dataset):
 class _AugmentingWrapper(Dataset):
     """D4 spatial augmentation for the train loader only.
 
-    Picks a random element of the dihedral group on the (H, W) plane of
-    `features` (last two dims): 4 rotations × 2 flips = 8 equivalence
+    Picks a random element of the dihedral group on the spatial (H, W) plane
+    of `features` — dims (-3, -2) of the (C, H, W, T) tensor, NOT the last two
+    (which are W, T): 4 rotations × 2 flips = 8 equivalence
     classes. Soil patches have no orientation prior, so this is
     label-preserving. Different draws of the same row give different views,
     which is the point — combined with WeightedRandomSampler oversampling,
@@ -501,11 +502,15 @@ class _AugmentingWrapper(Dataset):
 
     def __getitem__(self, idx):
         lon, lat, features, oc = self.base[idx]
+        # features layout is (C, H, W, T). The spatial plane is dims (-3, -2).
+        # rot90/flip on (-2, -1) would mix the WIDTH and TIME axes — harmless on
+        # shape only while window_size == time_before, but when they differ it
+        # transposes W↔T and makes per-sample shapes inconsistent (collate fails).
         k = int(self._rng.integers(0, 4))
         if k:
-            features = torch.rot90(features, k=k, dims=[-2, -1])
+            features = torch.rot90(features, k=k, dims=[-3, -2])
         if self._rng.integers(0, 2):
-            features = torch.flip(features, dims=[-1])
+            features = torch.flip(features, dims=[-2])
         return lon, lat, features, oc
 
 
@@ -1093,10 +1098,11 @@ def parse_args():
                         '"vanilla_transformer" is the SimpleSGT-minus-GRN '
                         'fair-comparison ablation.')
     p.add_argument('--bands-list', type=str, default='full_20',
-                   choices=['full_20', 'original_6'],
-                   help='Covariate-stack subset. "full_20" uses every band '
-                        'in bands_list_order (default, the revision band '
-                        'expansion). "original_6" restricts to the 6 bands '
+                   choices=['full_20', 'original_6', 'full_extended'],
+                   help='Covariate-stack subset. "full_20" = the 20 revision '
+                        'bands (default). "full_extended" = 20 + Tier 1/2/3 '
+                        'covariates (Landsat SRC, multi-scale terrain, '
+                        'climate/phenology). "original_6" restricts to the 6 bands '
                         'used in the original submission '
                         '(Elevation, LAI, LST, MODIS_NPP, SoilEvaporation, '
                         'TotalEvapotranspiration) for direct comparison. '
