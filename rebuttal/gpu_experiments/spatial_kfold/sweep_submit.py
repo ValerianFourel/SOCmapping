@@ -235,7 +235,7 @@ def build_sbatch(tag: str, variant: str, d: int, h: int, L: int, args) -> str:
     out_dir_abs = sweep_root(args) / tag
     # Per-fold console logs stay in a flat slurm_logs/ dir; tag-prefixed
     # so namespaced sweeps don't collide on log filenames.
-    name_prefix = f'{args.sweep_name}_' if args.sweep_name else ''
+    name_prefix = f'{args.sweep_name.replace("/", "_")}_' if args.sweep_name else ''
     log_path = LOG_DIR / f'{name_prefix}{tag}_%j.out'
     cmd = (
         'WANDB_MODE=disabled PYTHONUNBUFFERED=1 '
@@ -301,7 +301,7 @@ def build_family_sbatch(tag: str, family: str, d: int, h: int, L: int,
     D4 augmentation) is identical, so results are directly comparable.
     """
     out_dir_abs = sweep_root(args) / tag
-    name_prefix = f'{args.sweep_name}_' if args.sweep_name else ''
+    name_prefix = f'{args.sweep_name.replace("/", "_")}_' if args.sweep_name else ''
     log_path = LOG_DIR / f'{name_prefix}{tag}_%j.out'
     cmd = (
         'WANDB_MODE=disabled PYTHONUNBUFFERED=1 '
@@ -370,7 +370,7 @@ def build_baseline_sbatch(args) -> str:
     1 GPU is enough — XGBoost-GPU and cuML-RF each use a single device.
     """
     eff_name = _effective_sweep_name(args)
-    name_prefix = f'{eff_name}_' if eff_name else ''
+    name_prefix = f'{eff_name.replace("/", "_")}_' if eff_name else ''
     log_path = LOG_DIR / f'{name_prefix}baselines_%j.out'
     venv_activate = (
         f'source {shlex.quote(str(args.venv_activate))}'
