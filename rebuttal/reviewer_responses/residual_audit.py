@@ -40,9 +40,9 @@ def audit_one(entry) -> dict:
         return {'tag': entry.tag, 'family': entry.family, 'note': 'no fold predictions',
                 'rows': []}
     pred_col = next((c for c in df.columns
-                     if c.lower() in ('predicted', 'prediction', 'pred', 'predicted_soc')), None)
+                     if c.lower() in ('predicted', 'prediction', 'pred', 'predicted_soc', 'oc_predicted')), None)
     actual_col = next((c for c in df.columns
-                       if c.lower() in ('actual', 'oc', 'y_true', 'target', 'soc')), None)
+                       if c.lower() in ('actual', 'oc', 'y_true', 'target', 'soc', 'oc_actual')), None)
     if pred_col is None or actual_col is None:
         return {'tag': entry.tag, 'family': entry.family,
                 'note': f'columns unknown: {list(df.columns)}',

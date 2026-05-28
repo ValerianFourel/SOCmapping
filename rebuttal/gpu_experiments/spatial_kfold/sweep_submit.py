@@ -253,6 +253,7 @@ def build_sbatch(tag: str, variant: str, d: int, h: int, L: int, args) -> str:
         '--per-gpu-batch-size 256 --effective-batch-size 256 '
         f'--num-epochs {args.epochs} --seed-base {args.seed_base} '
         f'--max-oc {args.max_oc} '
+        f'--split-axis {args.split_axis} --window-size {args.window_size} '
         '--sampler-mode qcut --rebalance-min-ratio 0 '
         '--augment-train '
         f'--out-subdir {out_subdir_arg(args, tag)} '
@@ -319,6 +320,7 @@ def build_family_sbatch(tag: str, family: str, d: int, h: int, L: int,
         '--per-gpu-batch-size 256 --effective-batch-size 256 '
         f'--num-epochs {args.epochs} --seed-base {args.seed_base} '
         f'--max-oc {args.max_oc} '
+        f'--split-axis {args.split_axis} --window-size {args.window_size} '
         '--sampler-mode qcut --rebalance-min-ratio 0 '
         '--augment-train '
         f'--out-subdir {out_subdir_arg(args, tag)} '
@@ -386,6 +388,7 @@ def build_baseline_sbatch(args) -> str:
             f'python rebuttal/gpu_experiments/spatial_kfold/run_baselines.py '
             f'--models {model} --tag-suffix {suffix} '
             f'--max-oc {args.max_oc} --target-transform log --device cuda '
+            f'--split-axis {args.split_axis} --window-size {args.window_size} '
             f'--output-subdir {shlex.quote(output_subdir)} '
             f'--bands-list {args.bands_list} '
             f'{extra_str}'
@@ -435,6 +438,16 @@ def main():
                         'Sweep this separately (try 80, 90, 100, 120) once an '
                         'architecture is locked in.')
     p.add_argument('--seed-base', type=int, default=42)
+    p.add_argument('--split-axis', type=str, default='lat', choices=['lat', 'lon'],
+                   help='Spatial-CV split axis forwarded to run_kfold/run_baselines: '
+                        '"lat" (south↔north, original) or "lon" (west↔east). '
+                        'Use a distinct --sweep-name (e.g. oc150_lon) so results '
+                        'do not collide with the latitude sweep.')
+    p.add_argument('--window-size', type=int, default=5,
+                   help='Spatial window edge length forwarded to every job '
+                        '(model H×W and dataset crop). Default 5 (config). '
+                        'Use 7 or 9 for the larger-context experiment; no data '
+                        'regeneration is needed (tiles are far larger).')
     p.add_argument('--time', type=str, default='02:00:00',
                    help='Slurm wall-time per job. Bump if epochs > 100.')
     p.add_argument('--partition', type=str, default='booster')

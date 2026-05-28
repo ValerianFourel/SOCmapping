@@ -109,6 +109,9 @@ def _build_model(args):
         list(bands_list_order),
     )
     n_bands = len(band_indices)
+    # Spatial window edge length fed to the model. Defaults to config
+    # window_size; --window-size overrides it (and the dataset crop) per run.
+    ws = getattr(args, 'window_size', window_size)
 
     if family == 'sgt':
         return build_sgt_model(args)
@@ -120,8 +123,8 @@ def _build_model(args):
         from modelCNNMultiYear import Small3DCNN
         return Small3DCNN(
             input_channels=n_bands,
-            input_height=window_size,
-            input_width=window_size,
+            input_height=ws,
+            input_width=ws,
             input_time=time_before,
             dropout_rate=args.dropout_rate,
         )
@@ -150,8 +153,8 @@ def _build_model(args):
         from modelSimpleTransformerNew import SimpleTransformerV2
         return SimpleTransformerV2(
             input_channels=n_bands,
-            input_height=window_size,
-            input_width=window_size,
+            input_height=ws,
+            input_width=ws,
             input_time=time_before,
             num_heads=args.num_heads,
             num_layers=args.num_layers,
@@ -166,8 +169,8 @@ def _build_model(args):
         from VanillaSpatiotemporalTransformer import VanillaSpatiotemporalTransformer
         return VanillaSpatiotemporalTransformer(
             input_channels=n_bands,
-            height=window_size,
-            width=window_size,
+            height=ws,
+            width=ws,
             time_steps=time_before,
             d_model=args.hidden_size,
             num_heads=args.num_heads,
@@ -184,8 +187,8 @@ def _build_model(args):
         from LightweightTransformer import LightweightTransformer
         return LightweightTransformer(
             input_channels=n_bands,
-            height=window_size,
-            width=window_size,
+            height=ws,
+            width=ws,
             time_steps=time_before,
             d_model=args.hidden_size,
             num_heads=args.num_heads,
@@ -343,34 +346,43 @@ def min_distance_to_set_km(t_lat, t_lon, r_lat, r_lon, chunk=2048):
     return out
 
 
-def build_folds_latitude_deciles(df: pd.DataFrame, n_folds: int = 10,
-                                  buffer_km: float = 1.2) -> list[dict]:
-    """Latitude-strip folds with EQUAL N per fold.
+def build_folds_spatial_deciles(df: pd.DataFrame, n_folds: int = 10,
+                                 buffer_km: float = 1.2,
+                                 axis: str = 'lat') -> list[dict]:
+    """Spatial-strip folds with EQUAL N per fold, split along `axis`.
 
-    The strip boundaries are quantiles of GPS_LAT (np.quantile at
-    np.linspace(0, 1, n_folds+1)) rather than equal-latitude-span splits,
-    so each fold's test half holds ≈ len(df) / n_folds rows regardless
-    of the spatial density of samples.
+    axis='lat' → strips are GPS_LAT deciles (south↔north bands);
+    axis='lon' → strips are GPS_LONG deciles (west↔east bands).
 
-    Each train pool then has a 1.2 km buffer applied: any train-candidate
-    within buffer_km of any test row is excluded from train (kept in
-    buffer_idx). Buffer rows are not scored on, just dropped from train.
+    The strip boundaries are quantiles of the split coordinate (np.quantile
+    at np.linspace(0, 1, n_folds+1)) rather than equal-span splits, so each
+    fold's test half holds ≈ len(df) / n_folds rows regardless of the
+    spatial density of samples.
 
-    Returns list[dict] with fold_id, lat_lo, lat_hi, test_idx, train_idx,
-    buffer_idx (np int arrays into df.index)."""
+    Each train pool then has a buffer_km haversine buffer applied: any
+    train-candidate within buffer_km of any test row is excluded from train
+    (kept in buffer_idx). Buffer rows are not scored on, just dropped from
+    train. The buffer uses true great-circle distance, so it is identical
+    regardless of which axis the strips run along.
+
+    Returns list[dict] with fold_id, split_axis, edge_lo, edge_hi, test_idx,
+    train_idx, buffer_idx (np int arrays into df.index)."""
     if not df.index.equals(pd.RangeIndex(len(df))):
         raise ValueError('build_folds requires df.index == RangeIndex')
+    if axis not in ('lat', 'lon'):
+        raise ValueError(f"axis must be 'lat' or 'lon', got {axis!r}")
 
-    lats = df['GPS_LAT'].to_numpy(dtype=float)
+    coord_col = 'GPS_LAT' if axis == 'lat' else 'GPS_LONG'
+    coord = df[coord_col].to_numpy(dtype=float)
     qs = np.linspace(0, 1, n_folds + 1)
-    edges = np.quantile(lats, qs)
-    edges[-1] = lats.max() + 1e-9                          # inclusive top edge
-    edges[0] = lats.min() - 1e-9                           # inclusive bottom edge
+    edges = np.quantile(coord, qs)
+    edges[-1] = coord.max() + 1e-9                         # inclusive top edge
+    edges[0] = coord.min() - 1e-9                          # inclusive bottom edge
 
     folds = []
     for i in range(n_folds):
         lo, hi = float(edges[i]), float(edges[i + 1])
-        in_strip = (lats >= lo) & (lats < hi)
+        in_strip = (coord >= lo) & (coord < hi)
         test_idx = df.index[in_strip].to_numpy()
         train_pool_idx = df.index[~in_strip].to_numpy()
 
@@ -384,7 +396,7 @@ def build_folds_latitude_deciles(df: pd.DataFrame, n_folds: int = 10,
         buffer_idx = train_pool_idx[~keep]
 
         folds.append({
-            'fold_id': i, 'lat_lo': lo, 'lat_hi': hi,
+            'fold_id': i, 'split_axis': axis, 'edge_lo': lo, 'edge_hi': hi,
             'test_idx': test_idx, 'train_idx': train_idx,
             'buffer_idx': buffer_idx,
         })
@@ -405,12 +417,16 @@ def _flatten(lst):
 
 
 def make_dataset(df: pd.DataFrame, feature_means=None, feature_stds=None,
-                 band_indices=None):
+                 band_indices=None, window_size=window_size):
     """Build the per-sample dataset.
 
     band_indices, if provided, restricts the channel dim to that subset
     AFTER normalization (so the caller can pass the full 20-channel
     feature_means/feature_stds and let the wrapper slice the output).
+
+    window_size sets the H×W spatial window cropped per sample (default from
+    config). The stored raster tiles are far larger than any window, so a
+    bigger window is just a larger crop — no data regeneration needed.
     """
     sample_paths, data_paths = separate_and_add_data()
     sample_paths = list(dict.fromkeys(_flatten(sample_paths)))
@@ -420,6 +436,7 @@ def make_dataset(df: pd.DataFrame, feature_means=None, feature_stds=None,
         data_array_subfolders=data_paths,
         dataframe=df.reset_index(drop=True),
         time_before=time_before,
+        window_size=window_size,
     )
     if feature_means is not None and feature_stds is not None:
         ds = _NormalizingWrapper(ds, feature_means, feature_stds)
@@ -543,8 +560,9 @@ def train_one_fold(args, fold: dict, df: pd.DataFrame,
     seed = args.seed_base + fold_id
     torch.manual_seed(seed); np.random.seed(seed)
 
-    print(f'\n=== Fold {fold_id} | lat [{fold["lat_lo"]:.4f}, '
-          f'{fold["lat_hi"]:.4f}) | seed={seed} ===', flush=True)
+    print(f'\n=== Fold {fold_id} | {fold["split_axis"]} '
+          f'[{fold["edge_lo"]:.4f}, {fold["edge_hi"]:.4f}) | seed={seed} ===',
+          flush=True)
 
     train_df_raw = df.loc[fold['train_idx']].reset_index(drop=True)
     test_df = df.loc[fold['test_idx']].reset_index(drop=True)
@@ -577,9 +595,11 @@ def train_one_fold(args, fold: dict, df: pd.DataFrame,
         list(bands_list_order),
     )
     train_ds = make_dataset(train_df, feature_means, feature_stds,
-                             band_indices=_band_indices)
+                             band_indices=_band_indices,
+                             window_size=args.window_size)
     test_ds = make_dataset(test_df, feature_means, feature_stds,
-                            band_indices=_band_indices)
+                            band_indices=_band_indices,
+                            window_size=args.window_size)
     if args.augment_train:
         train_ds = _AugmentingWrapper(train_ds, seed=seed)
         print('Train augmentation: D4 spatial (rot90 × flip)', flush=True)
@@ -648,7 +668,7 @@ def train_one_fold(args, fold: dict, df: pd.DataFrame,
     # ----- Save fold artefacts -------------------------------------------
     model_config = {
         'input_channels': len(bands_list_order),
-        'height': window_size, 'width': window_size,
+        'height': args.window_size, 'width': args.window_size,
         'time_steps': time_before, 'd_model': args.hidden_size,
         'num_heads': args.num_heads, 'num_layers': args.num_layers,
         'dropout': args.dropout_rate, 'model_size': args.model_size,
@@ -720,7 +740,8 @@ def train_one_fold(args, fold: dict, df: pd.DataFrame,
 
     per_fold_metrics = {
         'fold_id': fold_id,
-        'lat_lo': fold['lat_lo'], 'lat_hi': fold['lat_hi'],
+        'split_axis': fold['split_axis'],
+        'edge_lo': fold['edge_lo'], 'edge_hi': fold['edge_hi'],
         'n_test': int(len(test_df)),
         'n_train': int(len(train_df)),
         'n_train_raw': int(len(train_df_raw)),
@@ -858,10 +879,12 @@ def write_results(fold_results: list[dict], args):
         'original_single_split': ORIGINAL_SINGLE_SPLIT,
         'n_folds': args.num_folds,
         'distance_threshold_km': args.fold_buffer_km,
-        'fold_geometry': 'latitude_deciles_equal_n',
+        'split_axis': args.split_axis,
+        'fold_geometry': f'{"latitude" if args.split_axis == "lat" else "longitude"}_deciles_equal_n',
         'recipe': {
             'lr': args.lr, 'loss_type': args.loss_type,
             'target_transform': args.target_transform,
+            'window_size': args.window_size,
             'num_epochs': args.num_epochs,
             'per_gpu_batch_size': args.per_gpu_batch_size,
             'effective_batch_size': args.effective_batch_size,
@@ -889,12 +912,15 @@ def write_results(fold_results: list[dict], args):
     aug_desc = ('D4 spatial augmentation (rot90 × flip) applied to train patches.'
                 if augment_train else 'No train augmentation.')
 
+    axis_word = 'latitude' if args.split_axis == 'lat' else 'longitude'
+    coord_col = 'GPS_LAT' if args.split_axis == 'lat' else 'GPS_LONG'
     md = []
-    md.append(f'# Spatial {args.num_folds}-fold CV — latitude deciles (equal n)')
+    md.append(f'# Spatial {args.num_folds}-fold CV — {axis_word} deciles (equal n)')
     md.append('')
-    md.append(f'Each fold\'s test half is one decile of GPS_LAT '
+    md.append(f'Each fold\'s test half is one decile of {coord_col} '
               f'(~{int(100/args.num_folds)}% of points). Train pool is the '
               f'complement, minus a {args.fold_buffer_km} km buffer zone. '
+              f'Spatial window fed to the model: {args.window_size}×{args.window_size}. '
               f'**Modeling domain: OC ≤ {max_oc} g/kg** (non-histosol soils, '
               f'per WRB). {sampler_desc} {aug_desc} EnhancedSGT '
               f'(heads={args.num_heads}, layers={args.num_layers}) trained for '
@@ -906,10 +932,10 @@ def write_results(fold_results: list[dict], args):
     md.append('')
     md.append('## Per-fold metrics')
     md.append('')
-    md.append('| Fold | Lat range | n_test | n_train | R² | RMSE (g/kg) | MAE (g/kg) | RPIQ |')
+    md.append(f'| Fold | {axis_word.capitalize()} range | n_test | n_train | R² | RMSE (g/kg) | MAE (g/kg) | RPIQ |')
     md.append('|------|-----------|--------|---------|-----|-------------|------------|------|')
     for r in fold_results:
-        md.append(f'| {r["fold_id"]} | [{r["lat_lo"]:.4f}, {r["lat_hi"]:.4f}) | '
+        md.append(f'| {r["fold_id"]} | [{r["edge_lo"]:.4f}, {r["edge_hi"]:.4f}) | '
                   f'{r["n_test"]} | {r["n_train"]} | {r["r2"]:.4f} | {r["rmse"]:.3f} | '
                   f'{r["mae"]:.3f} | {r["rpiq"]:.3f} |')
     md.append(f'| **Mean ± std** | — | — | — | '
@@ -974,15 +1000,20 @@ def make_figure(fold_results, folds_meta, df_master, args):
         bufr = df_master.loc[np.unique(buffer_all)]
         ax.scatter(bufr['GPS_LONG'], bufr['GPS_LAT'], s=3,
                    c='lightgrey', alpha=0.6, label='Buffer-excluded')
+    split_axis = folds_meta[0].get('split_axis', 'lat') if folds_meta else 'lat'
+    axis_word = 'latitude' if split_axis == 'lat' else 'longitude'
     for f, color in zip(folds_meta, colors):
         idx = f['test_idx']
         ax.scatter(df_master.loc[idx, 'GPS_LONG'],
                    df_master.loc[idx, 'GPS_LAT'],
                    s=5, color=color, label=f'Fold {f["fold_id"]}', alpha=0.7)
-        ax.axhline(f['lat_hi'], color='black', linestyle='--', linewidth=0.5)
+        if split_axis == 'lat':
+            ax.axhline(f['edge_hi'], color='black', linestyle='--', linewidth=0.5)
+        else:
+            ax.axvline(f['edge_hi'], color='black', linestyle='--', linewidth=0.5)
     ax.set_xlabel('Longitude (°E)')
     ax.set_ylabel('Latitude (°N)')
-    ax.set_title(f'Bavaria — {n_folds} latitude-decile folds '
+    ax.set_title(f'Bavaria — {n_folds} {axis_word}-decile folds '
                  f'(buffer {args.fold_buffer_km} km)')
     ax.legend(loc='upper right', fontsize=7, framealpha=0.9, ncol=2)
     ax.set_aspect('equal', adjustable='box')
@@ -1042,6 +1073,14 @@ def parse_args():
                    choices=['none', 'log', 'normalize'])
     p.add_argument('--hidden_size', type=int, default=hidden_size)
     p.add_argument('--dropout_rate', type=float, default=0.3)
+    p.add_argument('--window-size', type=int, default=window_size,
+                   help='Edge length (pixels) of the square spatial window fed '
+                        'to the model AND the crop size the dataset extracts. '
+                        f'Default {window_size} (config). The stored raster tiles '
+                        'are far larger than any window, so a bigger value '
+                        '(e.g. 7 or 9) is just a larger crop — no data '
+                        'regeneration needed. One flag keeps model H×W and the '
+                        'data crop consistent.')
     p.add_argument('--model-size', type=str, default='big',
                    choices=['small', 'big'])
     p.add_argument('--model-family', type=str, default='sgt',
@@ -1076,6 +1115,12 @@ def parse_args():
     # ----- K-fold-specific -----
     p.add_argument('--num-folds', type=int, default=10,
                    help='Number of latitude-decile folds.')
+    p.add_argument('--split-axis', type=str, default='lat',
+                   choices=['lat', 'lon'],
+                   help='Axis the spatial deciles run along: "lat" = '
+                        'south↔north latitude bands (original), "lon" = '
+                        'west↔east longitude bands. Buffer is great-circle '
+                        'either way.')
     p.add_argument('--fold-buffer-km', type=float, default=1.2,
                    help='Train/test buffer-zone distance in km.')
     p.add_argument('--fold', type=int, default=None,
@@ -1138,9 +1183,11 @@ def aggregate_from_disk(args) -> int:
         else:
             actual = p['OC_actual'].to_numpy()
             pred = p['OC_predicted'].to_numpy()
+            coord = p['GPS_LAT'] if args.split_axis == 'lat' else p['GPS_LONG']
             meta = {'fold_id': fid,
-                    'lat_lo': float(p['GPS_LAT'].min()),
-                    'lat_hi': float(p['GPS_LAT'].max()),
+                    'split_axis': args.split_axis,
+                    'edge_lo': float(coord.min()),
+                    'edge_hi': float(coord.max()),
                     'n_test': len(p), 'n_train': 0, 'n_train_raw': 0,
                     'n_buffer': 0, 'accum_steps': 0, 'effective_batch_size': 0,
                     'test_oc_mean': float(actual.mean()),
@@ -1198,12 +1245,15 @@ def main():
         print(f'Applied --max-oc {args.max_oc:.1f} g/kg: kept {len(df):,}/{n_before:,} '
               f'({100*len(df)/n_before:.2f}%)  '
               f'OC max in set = {df["OC"].max():.1f}', flush=True)
-    folds_meta = build_folds_latitude_deciles(
-        df, n_folds=args.num_folds, buffer_km=args.fold_buffer_km)
+    folds_meta = build_folds_spatial_deciles(
+        df, n_folds=args.num_folds, buffer_km=args.fold_buffer_km,
+        axis=args.split_axis)
     print(f'Loaded {len(df)} rows from {MODEL_READY}', flush=True)
-    print(f'num_folds={args.num_folds}  buffer={args.fold_buffer_km} km', flush=True)
+    print(f'num_folds={args.num_folds}  buffer={args.fold_buffer_km} km  '
+          f'split_axis={args.split_axis}  window_size={args.window_size}', flush=True)
     for f in folds_meta:
-        print(f'Fold {f["fold_id"]}: lat [{f["lat_lo"]:.4f}, {f["lat_hi"]:.4f}) '
+        print(f'Fold {f["fold_id"]}: {f["split_axis"]} '
+              f'[{f["edge_lo"]:.4f}, {f["edge_hi"]:.4f}) '
               f'| n_test={len(f["test_idx"])} n_train={len(f["train_idx"])} '
               f'n_buffer={len(f["buffer_idx"])}', flush=True)
 

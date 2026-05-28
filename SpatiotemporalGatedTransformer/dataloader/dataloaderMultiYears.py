@@ -152,15 +152,19 @@ dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
 
 
 class MultiRasterDatasetMultiYears(Dataset):
-    def __init__(self, samples_coordinates_array_subfolders ,  data_array_subfolders , dataframe, time_before = time_before):
+    def __init__(self, samples_coordinates_array_subfolders ,  data_array_subfolders , dataframe, time_before = time_before, window_size = window_size):
         """
         Parameters:
         subfolders: list of str, names of subfolders to include
         dataframe: pandas.DataFrame, contains columns GPS_LONG, GPS_LAT, and OC (target variable)
+        window_size: int, edge length of the square spatial window cropped per
+            sample (default from config). Cropped on the fly from the stored
+            tiles, so larger windows need no data regeneration.
         """
         self.data_array_subfolders = data_array_subfolders
         self.seasonalityBased = self.check_seasonality(data_array_subfolders)
         self.time_before = time_before
+        self.window_size = window_size
         self.samples_coordinates_array_subfolders = samples_coordinates_array_subfolders
         self.dataframe = dataframe
         self.datasets = {
@@ -242,7 +246,7 @@ class MultiRasterDatasetMultiYears(Dataset):
             if subfolder.split(os.path.sep)[-1] == 'Elevation':
                 # Get the tensor for 'Elevation'
                 id_num, x, y = self.find_coordinates_index(subfolder, longitude, latitude)
-                elevation_tensor = self.datasets[subfolder].get_tensor_by_location(id_num, x, y)
+                elevation_tensor = self.datasets[subfolder].get_tensor_by_location(id_num, x, y, window_size=self.window_size)
 
                 if elevation_tensor is not None:
                     # Repeat the 'Elevation' tensor self.time_before times
@@ -260,7 +264,7 @@ class MultiRasterDatasetMultiYears(Dataset):
                     decremented_subfolder = os.path.sep.join(subfolder.split(os.path.sep)[:-1] + [str(current_year)])
 
                     id_num, x, y = self.find_coordinates_index(decremented_subfolder, longitude, latitude)
-                    tensor = self.datasets[decremented_subfolder].get_tensor_by_location(id_num, x, y)
+                    tensor = self.datasets[decremented_subfolder].get_tensor_by_location(id_num, x, y, window_size=self.window_size)
 
                     if tensor is not None:
                         # Append the tensor to the corresponding band in the dictionary

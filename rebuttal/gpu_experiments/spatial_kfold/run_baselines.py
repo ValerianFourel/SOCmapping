@@ -26,7 +26,7 @@ relative errors. Predictions are inverse-transformed before metric
 computation, so R²/RMSE/MAE/RPIQ are reported in the original g/kg scale —
 directly comparable to the SGT numbers in sweep_ranking.md.
 
-Folds: reuses build_folds_latitude_deciles + the MAX_OC filter from
+Folds: reuses build_folds_spatial_deciles (--split-axis lat|lon) + the MAX_OC filter from
 run_kfold.py. Outputs land in sweep/baseline_<model>_<tag>/ in the same
 fold_<i>_predictions.parquet + kfold_results_summary.json format as the
 SGT runs, so sweep_summarize.py ranks everything together.
@@ -65,9 +65,10 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from run_kfold import (  # noqa: E402
     MODEL_READY, OUT_DIR, _build_model_ready_dataset,
-    build_folds_latitude_deciles, make_dataset,
+    build_folds_spatial_deciles, make_dataset,
     _metrics_for, write_results, write_predictions_parquet,
 )
+from config import window_size as DEFAULT_WINDOW  # noqa: E402  (SGT dir on sys.path via run_kfold)
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +87,8 @@ def _aggregate_cube(features: torch.Tensor) -> np.ndarray:
     return stats.reshape(-1)
 
 
-def extract_features_for_df(df: pd.DataFrame, cache_path: Path | None = None
+def extract_features_for_df(df: pd.DataFrame, cache_path: Path | None = None,
+                             window_size: int | None = None
                              ) -> tuple[np.ndarray, np.ndarray,
                                         np.ndarray, np.ndarray]:
     """Extract (X, y, lon, lat) for every row in df.
@@ -105,7 +107,8 @@ def extract_features_for_df(df: pd.DataFrame, cache_path: Path | None = None
     print(f'[baseline] extracting features for {len(df):,} samples …',
           flush=True)
     # No feature normalization — tree models are scale-invariant.
-    ds = make_dataset(df, feature_means=None, feature_stds=None)
+    mk_kwargs = {} if window_size is None else {'window_size': window_size}
+    ds = make_dataset(df, feature_means=None, feature_stds=None, **mk_kwargs)
     n = len(ds)
     X = np.empty((n, 80), dtype=np.float32)
     y = np.empty(n, dtype=np.float32)
@@ -265,7 +268,8 @@ def run_fold(model_name: str, args, fold: dict,
 
     per_fold_meta = {
         'fold_id': fid,
-        'lat_lo': float(fold['lat_lo']), 'lat_hi': float(fold['lat_hi']),
+        'split_axis': fold['split_axis'],
+        'edge_lo': float(fold['edge_lo']), 'edge_hi': float(fold['edge_hi']),
         'n_test': int(len(test_idx)),
         'n_train': int(len(train_idx)),
         'n_train_raw': int(len(train_idx)),
@@ -296,6 +300,13 @@ def parse():
                    help='Comma-separated list: xgb, rf. Default both.')
     p.add_argument('--num-folds', type=int, default=10)
     p.add_argument('--fold-buffer-km', type=float, default=1.2)
+    p.add_argument('--split-axis', type=str, default='lat', choices=['lat', 'lon'],
+                   help='Axis the spatial deciles run along: "lat" (south↔north, '
+                        'original) or "lon" (west↔east). Must match the NN k-fold runs.')
+    p.add_argument('--window-size', type=int, default=DEFAULT_WINDOW,
+                   help='Spatial window crop (pixels) used to build the per-band '
+                        f'stats. Default {DEFAULT_WINDOW} (config). Feature count '
+                        'stays 80 (20 bands × 4 stats); only the stats change.')
     p.add_argument('--max-oc', type=float, default=90.0,
                    help='Match the SGT sweep default (90).')
     p.add_argument('--target-transform', type=str, default='log',
@@ -348,15 +359,20 @@ def main():
         print(f'Applied --max-oc {args.max_oc:.1f}: '
               f'kept {len(df):,}/{n_before:,}', flush=True)
 
-    folds_meta = build_folds_latitude_deciles(
-        df, n_folds=args.num_folds, buffer_km=args.fold_buffer_km)
-    print(f'Built {args.num_folds} latitude-decile folds '
-          f'(buffer {args.fold_buffer_km} km).', flush=True)
+    folds_meta = build_folds_spatial_deciles(
+        df, n_folds=args.num_folds, buffer_km=args.fold_buffer_km,
+        axis=args.split_axis)
+    _axis_word = 'latitude' if args.split_axis == 'lat' else 'longitude'
+    print(f'Built {args.num_folds} {_axis_word}-decile folds '
+          f'(buffer {args.fold_buffer_km} km, window {args.window_size}).', flush=True)
 
+    # Features depend on the window crop (not the split axis), so the cache key
+    # includes window_size to avoid stale hits across window settings.
     cache_path = (OUT_DIR / 'baseline_features'
-                  / f'feats_max_oc_{int(args.max_oc)}.npz'
+                  / f'feats_max_oc_{int(args.max_oc)}_w{args.window_size}.npz'
                   ) if args.cache_features else None
-    X, y, lon, lat = extract_features_for_df(df, cache_path=cache_path)
+    X, y, lon, lat = extract_features_for_df(df, cache_path=cache_path,
+                                             window_size=args.window_size)
     print(f'[baseline] X={X.shape} y={y.shape}  '
           f'OC range [{y.min():.2f}, {y.max():.2f}]', flush=True)
 

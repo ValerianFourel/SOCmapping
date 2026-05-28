@@ -547,13 +547,14 @@ def build_sgt_model(args):
     """Construct the SGT variant requested via --model-size.
     Both classes share the same forward signature (B, C, H, W, T) → (B,).
     """
+    ws = getattr(args, 'window_size', window_size)
     if args.model_size == 'small':
         # SimpleSGT signature: input_channels, height, width, time_steps,
         # d_model, num_heads, dropout. No num_encoder_layers / expansion_factor.
         return SimpleSGT(
             input_channels=len(bands_list_order),
-            height=window_size,
-            width=window_size,
+            height=ws,
+            width=ws,
             time_steps=time_before,
             d_model=args.hidden_size,
             num_heads=args.num_heads,
@@ -562,8 +563,8 @@ def build_sgt_model(args):
     # 'big' — EnhancedSGT (Model A architecture)
     return EnhancedSGT(
         input_channels=len(bands_list_order),
-        height=window_size,
-        width=window_size,
+        height=ws,
+        width=ws,
         time_steps=time_before,
         d_model=args.hidden_size,
         num_heads=args.num_heads,

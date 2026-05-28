@@ -88,6 +88,8 @@ def collect():
             'epochs':     recipe.get('num_epochs'),
             'lr':         recipe.get('lr'),
             'max_oc':     recipe.get('max_oc'),
+            'window':     recipe.get('window_size'),
+            'axis':       j.get('split_axis', 'lat'),
             'sampler':    recipe.get('sampler_mode'),
             'augment':    recipe.get('augment_train'),
             'n_folds':    len(fold_r2s),
@@ -171,11 +173,12 @@ def main():
         md.append('Ranked by `score = r2_mean − 0.5 × r2_std` '
                   '(rewards high mean, penalizes cross-fold variance).')
         md.append('')
-        md.append('| Rank | group | tag | family | variant | d_model | heads | layers | R² mean | R² std | RMSE | MAE | RPIQ | score |')
-        md.append('|------|-------|-----|--------|---------|---------|-------|--------|---------|--------|------|-----|------|-------|')
+        md.append('| Rank | group | tag | family | variant | axis | win | d_model | heads | layers | R² mean | R² std | RMSE | MAE | RPIQ | score |')
+        md.append('|------|-------|-----|--------|---------|------|-----|---------|-------|--------|---------|--------|------|-----|------|-------|')
         for i, r in enumerate(ok, 1):
             md.append(f'| {i} | {r.get("sweep_group", "(top)")} | {r["tag"]} | '
                       f'{r["model_name"]} | {r["variant"]} | '
+                      f'{r.get("axis", "lat")} | {fmt(r.get("window"), 0, "—")} | '
                       f'{fmt(r["d_model"], 0, "—")} | '
                       f'{fmt(r["num_heads"], 0, "—")} | '
                       f'{fmt(r["num_layers"], 0, "—")} | '

@@ -16,7 +16,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 SOC_ROOT = HERE.parents[1]
 REBUTTAL = SOC_ROOT / 'rebuttal'
-SWEEP_DIR = REBUTTAL / 'gpu_experiments' / 'spatial_kfold' / 'sweep'
+SWEEP_DIR = Path(os.environ.get(
+    'SWEEP_DIR', REBUTTAL / 'gpu_experiments' / 'spatial_kfold' / 'sweep'))
 RESULTS_DIR = HERE / 'results'
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
