@@ -167,5 +167,28 @@ TotalEvapotranspirationTensorSeasonally = f'{base_path_data}/RasterTensorData/Se
 
 DataSeasonally = [elevationTensorData, LAITensorDataSeasonally, LSTTensorDataSeasonally, MODIS_NPPTensorSeasonally, SoilEvaporationTensorSeasonally, TotalEvapotranspirationTensorSeasonally ]
 
+# ---------------------------------------------------------------------------
+# Tier 1/2/3 revision covariates (Landsat SRC + multi-scale terrain +
+# climate/phenology). Appended to bands_list_order and the *_Yearly training
+# path lists; the 1mil / Seasonally lists are intentionally left as-is (they
+# were never extended past the original 6). Single source: SOCmapping/_bands.py.
+# ---------------------------------------------------------------------------
+from _bands import (  # noqa: E402
+    TIER_EXTENDED_BANDS as _TIER_EXT,
+    build_yearly_paths as _build_yearly_paths,
+    build_1mil_coords as _build_1mil_coords,
+)
+bands_list_order = bands_list_order + _TIER_EXT
+_ext_coords, _ext_data = _build_yearly_paths(_TIER_EXT, base_path_data)
+SamplesCoordinates_Yearly = SamplesCoordinates_Yearly + _ext_coords
+DataYearly = DataYearly + _ext_data
+# 1.3 M-grid map inference: rebuild MatrixCoordinates_1mil_Yearly for the FULL
+# 43-band stack (it had only the original 6) so inference feeds 43 channels,
+# matching bands_list_order + DataYearly index-for-index. Backed by
+# Coordinates1Mil/<tier>/<band> on disk. (Supersedes the "left as-is" note above
+# for the 1mil-Yearly list; the Seasonally lists stay at 6 — dead code for the NN
+# models and no SeasonalValue data exists for the new bands.)
+MatrixCoordinates_1mil_Yearly = _build_1mil_coords(bands_list_order, base_path_data)
+
 #######################################################################
 
