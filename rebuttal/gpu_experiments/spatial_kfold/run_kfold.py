@@ -915,6 +915,16 @@ def write_results(fold_results: list[dict], args):
     augment_train = getattr(args, 'augment_train', False)
     max_oc = getattr(args, 'max_oc', None)
 
+    # Full config manifest fields — make every run self-documenting so the
+    # summarizer can group/filter by any dimension (bands, fold geometry, …).
+    bands_list = getattr(args, 'bands_list', None)
+    n_bands = getattr(args, 'n_bands', None)
+    if n_bands is None and bands_list:
+        try:
+            n_bands = len(get_band_indices(bands_list, list(bands_list_order)))
+        except Exception:
+            n_bands = None
+
     summary_json = {
         'fold_results': rows,
         'across_folds': {
@@ -932,6 +942,12 @@ def write_results(fold_results: list[dict], args):
                           if args.split_axis == 'cluster'
                           else f'{"latitude" if args.split_axis == "lat" else "longitude"}_deciles_equal_n'),
         'recipe': {
+            'bands_list': bands_list, 'n_bands': n_bands,
+            'model_family': getattr(args, 'model_family', None),
+            'model_size': getattr(args, 'model_size', None),
+            'hidden_size': getattr(args, 'hidden_size', None),
+            'dropout_rate': getattr(args, 'dropout_rate', None),
+            'seed_base': getattr(args, 'seed_base', None),
             'lr': args.lr, 'loss_type': args.loss_type,
             'target_transform': args.target_transform,
             'window_size': args.window_size,

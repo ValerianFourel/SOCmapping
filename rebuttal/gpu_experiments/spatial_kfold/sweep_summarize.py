@@ -49,6 +49,27 @@ def parse_tag(tag: str) -> tuple[str, int | None, int | None, int | None, str] |
     return None
 
 
+_BAND_LABEL = {'original_6': '6', 'full_20': '20', 'full_extended': '43'}
+
+
+def bands_category(recipe: dict, group: str) -> str:
+    """6 / 20 / 43 band label. Prefers the recorded n_bands/bands_list (runs
+    with the config manifest); falls back to the sweep-group suffix for older
+    runs that predate it. No suffix on an old run = the 20-band default."""
+    nb = recipe.get('n_bands')
+    if nb in (6, 20, 43):
+        return str(nb)
+    bl = recipe.get('bands_list')
+    if bl in _BAND_LABEL:
+        return _BAND_LABEL[bl]
+    g = group or ''
+    if '_6band' in g:
+        return '6'
+    if '_extband' in g or 'extended' in g:
+        return '43'
+    return '20'
+
+
 def collect():
     rows = []
     # Walk recursively so namespaced sweeps (sweep/oc120/<tag>) are merged
@@ -90,6 +111,10 @@ def collect():
             'max_oc':     recipe.get('max_oc'),
             'window':     recipe.get('window_size'),
             'axis':       j.get('split_axis', 'lat'),
+            'bands':      bands_category(recipe, sweep_group),
+            'n_bands':    recipe.get('n_bands'),
+            'loss':       recipe.get('loss_type'),
+            'model_family': recipe.get('model_family') or parsed[4],
             'sampler':    recipe.get('sampler_mode'),
             'augment':    recipe.get('augment_train'),
             'n_folds':    len(fold_r2s),
@@ -146,14 +171,16 @@ def main():
         ok = ok[:a.top]
 
     # Console table
-    print(f'\n{"rank":>4}  {"group":<10}  {"tag":<22}  {"R2 mean":>9}  '
-          f'{"R2 std":>7}  {"RMSE":>7}  {"MAE":>7}  {"RPIQ":>6}  {"score":>7}  '
-          f'{"per-fold R2"}')
-    print('-' * 130)
+    print(f'\n{"rank":>4}  {"group":<20}  {"tag":<22}  {"bnd":>3}  {"ax":>4}  '
+          f'{"fld":>3}  {"R2 mean":>9}  {"R2 std":>7}  {"RMSE":>7}  {"MAE":>7}  '
+          f'{"RPIQ":>6}  {"score":>7}  {"per-fold R2"}')
+    print('-' * 150)
     for i, r in enumerate(ok, 1):
         s = score(r)
         per_fold = ' '.join(fmt(v, 2) for v in r.get('r2_per_fold', [])[:10])
-        print(f'{i:>4}  {r.get("sweep_group", "(top)"):<10}  {r["tag"]:<22}  '
+        print(f'{i:>4}  {r.get("sweep_group", "(top)"):<20}  {r["tag"]:<22}  '
+              f'{r.get("bands", "?"):>3}  {r.get("axis", "lat"):>4}  '
+              f'{fmt(r.get("n_folds"), 0):>3}  '
               f'{fmt(r["r2_mean"]):>9}  '
               f'{fmt(r["r2_std"]):>7}  '
               f'{fmt(r["rmse_mean"], 3):>7}  '
@@ -173,12 +200,15 @@ def main():
         md.append('Ranked by `score = r2_mean − 0.5 × r2_std` '
                   '(rewards high mean, penalizes cross-fold variance).')
         md.append('')
-        md.append('| Rank | group | tag | family | variant | axis | win | d_model | heads | layers | R² mean | R² std | RMSE | MAE | RPIQ | score |')
-        md.append('|------|-------|-----|--------|---------|------|-----|---------|-------|--------|---------|--------|------|-----|------|-------|')
+        md.append('| Rank | group | tag | family | bands | axis | folds | win | loss | max_oc | variant | d_model | heads | layers | R² mean | R² std | RMSE | MAE | RPIQ | score |')
+        md.append('|------|-------|-----|--------|-------|------|-------|-----|------|--------|---------|---------|-------|--------|---------|--------|------|-----|------|-------|')
         for i, r in enumerate(ok, 1):
             md.append(f'| {i} | {r.get("sweep_group", "(top)")} | {r["tag"]} | '
-                      f'{r["model_name"]} | {r["variant"]} | '
-                      f'{r.get("axis", "lat")} | {fmt(r.get("window"), 0, "—")} | '
+                      f'{r.get("model_family") or r["model_name"]} | '
+                      f'{r.get("bands", "?")} | {r.get("axis", "lat")} | '
+                      f'{fmt(r.get("n_folds"), 0, "—")} | {fmt(r.get("window"), 0, "—")} | '
+                      f'{r.get("loss") or "—"} | {fmt(r.get("max_oc"), 0, "—")} | '
+                      f'{r["variant"]} | '
                       f'{fmt(r["d_model"], 0, "—")} | '
                       f'{fmt(r["num_heads"], 0, "—")} | '
                       f'{fmt(r["num_layers"], 0, "—")} | '
@@ -193,9 +223,12 @@ def main():
         # comparison.
         def _strip_bands(g: str) -> tuple[str, str]:
             """Return (base_group, band_label). 'oc150_6band' → ('oc150', '6band');
-            'oc150' → ('oc150', '20band' [implicit default]); other → (g, '')."""
+            'oc150_extband' → ('oc150', '43band'); 'oc150' → ('oc150', '20band'
+            [implicit default])."""
             if g.endswith('_6band'):
                 return g[:-6], '6band'
+            if g.endswith('_extband'):
+                return g[:-8], '43band'
             if g.endswith('_20band'):
                 return g[:-7], '20band'
             return g, '20band'   # assume default = 20-band
