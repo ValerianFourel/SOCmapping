@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Bavaria 2002-2023 data prep — end-to-end driver.
 #
-# Produces a 20-band on-disk layout that the existing SOCmapping
-# dataloader consumes WITHOUT any architecture or dataloader changes:
+# Default CATEGORY=extended produces the 43-band on-disk layout (curated 20 +
+# Tier 1/2/3 revision covariates). The on-disk folder layout is identical to
+# before — one folder per band — so the data prep needs no dataloader change,
+# but USING the new bands in a model requires adding them to each model's
+# config.py band lists (see SOCmapping/_bands.py + bands_list_order).
 #
 #   Data/RasterTensorData/StaticValue/Elevation/ID*.npy            (existing)
-#   Data/RasterTensorData/YearlyValue/<band>/<year>/ID*.npy        (existing 5 yearly bands + 14 new)
+#   Data/RasterTensorData/YearlyValue/<band>/<year>/ID*.npy        (yearly bands incl. SRC + Tier-3)
 #   Data/OC_LUCAS_LFU_LfL_Coordinates_v2/...                       (per-band coordinates.npy)
 #
 # Each phase is gated by environment variables so you can re-enter
@@ -20,6 +23,8 @@
 #   4. cut       — slice TIFFs into 12-tile npy layout
 #   5. project   — project LUCAS GPS onto each (band, year) tile grid
 #   6. verify    — sanity-test tile counts + dataloader instantiation
+#   7. hf        — build Data_HF mirror + push to HuggingFace
+#                  (opt-in: only runs when HF_REPO_ID is set)
 #
 # Skip any phase via env var, e.g. SKIP_GEE=1.
 # Or run a single phase: bash run_full_pipeline.sh gee
@@ -39,21 +44,41 @@ DRIVE_FOLDER_ID="${DRIVE_FOLDER_ID:-}"   # required for the pull phase
 TIFF_LOCAL_DIR="${TIFF_LOCAL_DIR:-${HOME}/bavaria_tiffs}"
 YEAR_START="${YEAR_START:-2002}"
 YEAR_END="${YEAR_END:-2023}"
+# GEE band set to pull. 'extended' = curated 20 + Tier 1/2/3 revision
+# covariates (Landsat SRC, multi-scale terrain, climate/phenology derivations).
+# Override with CATEGORY=curated to reproduce the original 20-band pull.
+CATEGORY="${CATEGORY:-extended}"
+# HuggingFace publish (hf phase). Opt-in: the hf phase is skipped unless
+# HF_REPO_ID is set (e.g. HF_REPO_ID=user/sgt-bavaria-soc). HF_CREATE_REPO=1
+# creates the repo on first push; HF_PRIVATE=1 makes it private.
+HF_REPO_ID="${HF_REPO_ID:-}"
 
-# Bands to materialize-as-yearly (statics that need symlinks across years).
-# Slope / Aspect / TWI are now also static GEE exports (terrain category) —
-# they come from SRTM + MERIT Hydro server-side. No local DEM compute.
+# Bands to materialize-as-yearly (statics that need symlinks across years):
+# SoilGrids soil properties, the SRTM terrain derivatives (Slope/Aspect/TWI,
+# server-side from SRTM + MERIT Hydro), and the Tier-2 multi-scale terrain.
 STATIC_AS_YEARLY=(
     ClayContent_0_10cm SandContent_0_10cm pH_H2O_0_10cm
     BulkDensity_0_10cm CEC_0_10cm
     Slope Aspect TWI
+    TPI_90 TPI_300 TPI_1000 TRI Roughness
 )
-# Pure-yearly bands (one TIFF per year, regular cut).
-# Includes the 5 originally-on-disk MODIS-family bands (redownloaded for grid
-# alignment) and the 6 new bands added this session.
+# Pure-yearly bands (one TIFF per year, regular cut): the original MODIS/ERA5
+# family, plus Tier-1 Landsat SRC (11) and Tier-3 derivations (7).
 YEARLY_BANDS=(
     LAI LST MODIS_NPP SoilEvaporation TotalEvapotranspiration
     NDVI EVI Precipitation AirTemperature SoilMoisture_layer1 SnowDepth
+    SRC_Blue SRC_Green SRC_Red SRC_NIR SRC_SWIR1 SRC_SWIR2
+    SRC_RCC SRC_BCC SRC_NBR2 SRC_BSI SRC_ExposureCount
+    ClimaticWaterBalance SoilTemperature_layer1 FrostDays GrowingDegreeDays
+    NDVI_Amplitude NDVI_Integral EVI_Amplitude
+)
+# Tier-1 SRC bands are sparse (bare soil exposed only on arable land): their
+# NoData must be filled with 0 at cut time, NOT the tile mean (which would
+# fabricate soil reflectance over grassland/forest). SRC_ExposureCount carries
+# per-pixel validity (0 = no bare-soil observation that year).
+FILL_ZERO_BANDS=(
+    SRC_Blue SRC_Green SRC_Red SRC_NIR SRC_SWIR1 SRC_SWIR2
+    SRC_RCC SRC_BCC SRC_NBR2 SRC_BSI SRC_ExposureCount
 )
 # Legacy local-derivation fallback (kept for the optional `derive` phase
 # when GEE access is unavailable).
@@ -94,9 +119,9 @@ run_phase() {
 # ── Phases ─────────────────────────────────────────────────────────
 
 phase_plan() {
-    log plan "GEE export dry-run for --category curated, years ${YEAR_START}-${YEAR_END}"
+    log plan "GEE export dry-run for --category ${CATEGORY}, years ${YEAR_START}-${YEAR_END}"
     python "${SCRIPT_DIR}/gee_download_all_bands.py" \
-        --category curated --years "${YEAR_START}" "${YEAR_END}" --dry-run
+        --category "${CATEGORY}" --years "${YEAR_START}" "${YEAR_END}" --dry-run
     python "${SCRIPT_DIR}/pipeline_state.py" init > /dev/null
     python -c "
 import sys; sys.path.insert(0, '${SCRIPT_DIR}')
@@ -118,15 +143,16 @@ phase_derive() {
 }
 
 phase_gee() {
-    log gee "Submitting curated GEE export batch (~140 tasks for 2002-2023: 6×22 yearly + 5 soil + 3 terrain)"
+    log gee "Submitting --category ${CATEGORY} GEE export batch for ${YEAR_START}-${YEAR_END} (extended ≈ 652 tasks: incl. 11×22 Landsat SRC; curated ≈ 251)"
     if ! python -c "import ee" 2> /dev/null; then
         warn "earthengine-api not installed — skipping GEE submission."
         warn "To enable: pip install earthengine-api && earthengine authenticate"
         warn "This is OK if you're testing the local phases against the synthetic-data scaffold."
         return 0
     fi
+    warn "Tip: run 'gee_download_all_bands.py --category ${CATEGORY} --validate-assets' first to catch any bad asset/band names before this batch."
     python "${SCRIPT_DIR}/gee_download_all_bands.py" \
-        --category curated --years "${YEAR_START}" "${YEAR_END}" \
+        --category "${CATEGORY}" --years "${YEAR_START}" "${YEAR_END}" \
         --drive-folder "${DRIVE_FOLDER}"
     ok "Submitted. Monitor at https://code.earthengine.google.com/tasks"
     warn "Wait for ALL tasks to finish before running the 'pull' phase."
@@ -156,6 +182,7 @@ phase_cut() {
     python "${SCRIPT_DIR}/tiff_to_tiles.py" \
         --tiff-dir "${TIFF_LOCAL_DIR}" \
         --materialize-yearly "${STATIC_AS_YEARLY[@]}" \
+        --fill-zero "${FILL_ZERO_BANDS[@]}" \
         --anchor-year "${YEAR_START}" --mat-years "${YEAR_START}" "${YEAR_END}"
     ok "TIFF → npy tiles done."
 }
@@ -241,15 +268,48 @@ State().finish_phase('verify')
     ok "All sanity tests passed."
 }
 
+phase_hf() {
+    log hf "Build Data_HF mirror + push to HuggingFace"
+    # Opt-in publish: gated on HF_REPO_ID so a normal pipeline run never
+    # pushes to a shared dataset by accident.
+    if [ -z "${HF_REPO_ID}" ]; then
+        warn "HF_REPO_ID not set — skipping hf phase (publish is opt-in)."
+        warn "Re-run with: HF_REPO_ID=<username>/<repo> bash $0 hf"
+        warn "  HF_CREATE_REPO=1 on first push to create the repo; HF_PRIVATE=1 for private."
+        return 0
+    fi
+    if ! python -c "import huggingface_hub" 2> /dev/null; then
+        warn "huggingface_hub not installed — skipping hf phase."
+        warn "To enable: pip install huggingface_hub && huggingface-cli login"
+        return 0
+    fi
+    DATA_DIR="${SOC_DATA_DIR:-${PROJECT_ROOT}/Data}"
+    if [ ! -d "${DATA_DIR}/RasterTensorData/YearlyValue" ]; then
+        warn "No ${DATA_DIR}/RasterTensorData/YearlyValue — run cut/project first; nothing to publish."
+        return 0
+    fi
+
+    log hf "  prepare_hf_export.py (rebuild Data_HF/ mirror + manifest.json/README)"
+    python "${SCRIPT_DIR}/prepare_hf_export.py"
+
+    local create_flag="" private_flag=""
+    [ -n "${HF_CREATE_REPO:-}" ] && create_flag="--create-repo"
+    [ -n "${HF_PRIVATE:-}" ] && private_flag="--private"
+
+    log hf "  push_to_hf.py --repo-id ${HF_REPO_ID} ${create_flag} ${private_flag}"
+    python "${SCRIPT_DIR}/push_to_hf.py" --repo-id "${HF_REPO_ID}" ${create_flag} ${private_flag}
+    ok "Pushed to https://huggingface.co/datasets/${HF_REPO_ID}"
+}
+
 # ── Driver ─────────────────────────────────────────────────────────
 # `derive` is no longer in the default sequence — Slope/Aspect/TWI come
 # from GEE now. It remains callable as a single-phase fallback.
-PHASES=(plan gee pull cut project verify)
+PHASES=(plan gee pull cut project verify hf)
 
 if [ "$#" -gt 0 ]; then
     ONLY_PHASE="$1"
     case "${ONLY_PHASE}" in
-        plan|derive|gee|pull|cut|project|verify) ;;
+        plan|derive|gee|pull|cut|project|verify|hf) ;;
         *) err "Unknown phase '${ONLY_PHASE}'. Valid: ${PHASES[*]}"; exit 2 ;;
     esac
     run_phase "${ONLY_PHASE}"
@@ -261,9 +321,11 @@ echo "Bavaria 2002-2023 data prep — full pipeline"
 echo "  Drive folder:  ${DRIVE_FOLDER}"
 echo "  Local TIFFs:   ${TIFF_LOCAL_DIR}"
 echo "  Years:         ${YEAR_START}-${YEAR_END}"
+echo "  GEE category:  ${CATEGORY}"
 echo "  Yearly bands:      ${YEARLY_BANDS[*]}"
 echo "  Statics-as-yearly: ${STATIC_AS_YEARLY[*]}"
 echo "    (Slope/Aspect/TWI come from GEE — no local DEM compute)"
+echo "  HF publish:    ${HF_REPO_ID:-<disabled; set HF_REPO_ID to enable hf phase>}"
 echo "============================================================"
 
 # Resume info — show what's already done so the user knows what'll run.

@@ -1,4 +1,4 @@
-"""Create placeholder symlinks for the 14 new bands → existing LAI directories.
+"""Create placeholder symlinks for the new bands → existing LAI directories.
 
 PURPOSE: Lets the pipeline + dataloader be exercised end-to-end before the
 real GEE export has been pulled. Each new band's RasterTensorData and
@@ -27,9 +27,11 @@ DATA = Path(SOC_DATA_DIR_STR)
 TENSOR_ROOT = DATA / 'RasterTensorData' / 'YearlyValue'
 COORDS_ROOT = DATA / 'OC_LUCAS_LFU_LfL_Coordinates_v2' / 'YearlyValue'
 
-# 14 new bands. All point at LAI's structure (which has 2002-2023 +
-# 12 tiles per year + coordinates.npy per year — confirmed on disk).
+# New bands beyond the original 6. All point at LAI's structure (which has
+# 2002-2023 + 12 tiles per year + coordinates.npy per year — confirmed on
+# disk), so the dataloader call graph is exercised even though content is wrong.
 NEW_BANDS = [
+    # --- 20-band revision expansion ---
     # Yearly
     'NDVI', 'EVI', 'Precipitation', 'AirTemperature',
     'SoilMoisture_layer1', 'SnowDepth',
@@ -38,6 +40,14 @@ NEW_BANDS = [
     'BulkDensity_0_10cm', 'CEC_0_10cm',
     # Static-as-yearly (terrain derivatives)
     'Slope', 'Aspect', 'TWI',
+    # --- Tier 1: Landsat bare-soil composite (yearly) ---
+    'SRC_Blue', 'SRC_Green', 'SRC_Red', 'SRC_NIR', 'SRC_SWIR1', 'SRC_SWIR2',
+    'SRC_RCC', 'SRC_BCC', 'SRC_NBR2', 'SRC_BSI', 'SRC_ExposureCount',
+    # --- Tier 2: multi-scale terrain (static-as-yearly) ---
+    'TPI_90', 'TPI_300', 'TPI_1000', 'TRI', 'Roughness',
+    # --- Tier 3: climate / phenology derivations (yearly) ---
+    'ClimaticWaterBalance', 'SoilTemperature_layer1', 'FrostDays',
+    'GrowingDegreeDays', 'NDVI_Amplitude', 'NDVI_Integral', 'EVI_Amplitude',
 ]
 ANCHOR_BAND = 'LAI'
 

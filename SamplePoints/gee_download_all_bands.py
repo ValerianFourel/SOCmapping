@@ -31,6 +31,15 @@ Curated band set (this is what `--category curated` exports):
   grid as the 14 new bands, producing pixel-perfect alignment across all 20
   channels.
 
+The `--category extended` set adds the revision Tier-1/2/3 covariates on top
+of the curated 20:
+  • Tier 1 (landsat): strict per-year SCMaP-style bare-soil reflectance
+    composite — SRC_{Blue,Green,Red,NIR,SWIR1,SWIR2,RCC,BCC,NBR2,BSI,
+    ExposureCount}. Full Landsat C2 archive (1984+) so it spans 2002-2023.
+  • Tier 2 (topo):    multi-scale terrain — TPI_{90,300,1000}, TRI, Roughness.
+  • Tier 3 (era5/modis): ClimaticWaterBalance, SoilTemperature_layer1,
+    FrostDays, GrowingDegreeDays, NDVI_Amplitude, NDVI_Integral, EVI_Amplitude.
+
 Categories explicitly excluded from `--category all` (still callable
 by explicit `--category`):
   • OrganicCarbon_Reference   — target leakage (SOC itself)
@@ -58,10 +67,13 @@ or via `earthengine task list`. Pull the resulting GeoTIFFs locally
 with `pull_from_drive.py`, then `tiff_to_tiles.py` and
 `project_lucas_coords.py`.
 
-NOTE on resampling: ERA5-Land (11 km) and CHIRPS (5566 m) are coarser
-than the 250 m export scale. The script forces bilinear resampling
-on the source images so the exported TIFFs are smoothly upsampled
-instead of GEE's default nearest-neighbor blocky output.
+NOTE on resampling: sources coarser than 250 m (ERA5-Land 11 km, CHIRPS
+5566 m, MODIS 0.5-1 km) are bilinear-resampled on the source image so the
+exported TIFFs are smoothly upsampled instead of GEE's blocky default.
+Sources finer than 250 m (Landsat / SRTM 30 m) are aggregated with an
+explicit area-weighted reduceResolution(mean) so the 30 m -> 250 m averaging
+is reproducible rather than relying on GEE's export-time pyramid. See
+_to_250m().
 """
 import argparse
 import sys
@@ -200,6 +212,22 @@ BANDS = {
             'scale_native_m': 500,
             'notes': 'Burn-date mask — fire history affects SOC',
         },
+        # --- Tier 3 phenology proxies (within-year MOD13Q1 statistics) ---
+        'NDVI_Amplitude': {
+            'image_fn_yearly': lambda y, a: _veg_metric(y, a, 'NDVI', 'amplitude'),
+            'band': 'NDVI_amp', 'reducer': None, 'scale_native_m': 250,
+            'notes': 'Within-year NDVI max-min (MOD13Q1) — phenology amplitude, raw x0.0001.',
+        },
+        'NDVI_Integral': {
+            'image_fn_yearly': lambda y, a: _veg_metric(y, a, 'NDVI', 'integral'),
+            'band': 'NDVI_int', 'reducer': None, 'scale_native_m': 250,
+            'notes': 'Within-year sum of 16-day NDVI (MOD13Q1) — growing-season integral proxy.',
+        },
+        'EVI_Amplitude': {
+            'image_fn_yearly': lambda y, a: _veg_metric(y, a, 'EVI', 'amplitude'),
+            'band': 'EVI_amp', 'reducer': None, 'scale_native_m': 250,
+            'notes': 'Within-year EVI max-min (MOD13Q1) — phenology amplitude proxy.',
+        },
     },
 
     # ============================================================
@@ -271,6 +299,29 @@ BANDS = {
             'scale_native_m': 11132,
             'notes': 'ERA5-Land total precipitation, annual sum (m water equiv.).',
         },
+        # --- Tier 3 climate derivations (ERA5-Land, full 2002-2023 coverage) ---
+        'SoilTemperature_layer1': {
+            'collection': 'ECMWF/ERA5_LAND/MONTHLY_AGGR',
+            'band': 'soil_temperature_level_1',
+            'reducer': 'mean',
+            'scale_native_m': 11132,
+            'notes': 'Soil temperature 0-7 cm (Kelvin), annual mean — decomposition driver.',
+        },
+        'ClimaticWaterBalance': {
+            'image_fn_yearly': lambda y, a: _climatic_water_balance(y, a),
+            'band': 'cwb', 'reducer': None, 'scale_native_m': 11132,
+            'notes': 'P - PET (ERA5-Land, m/yr) — aridity / water balance, strong SOC covariate.',
+        },
+        'FrostDays': {
+            'image_fn_yearly': lambda y, a: _frost_days(y, a),
+            'band': 'frost_days', 'reducer': None, 'scale_native_m': 11132,
+            'notes': 'Count of days with 2 m Tmin < 0 C (ERA5-Land daily).',
+        },
+        'GrowingDegreeDays': {
+            'image_fn_yearly': lambda y, a: _growing_degree_days(y, a),
+            'band': 'gdd', 'reducer': None, 'scale_native_m': 11132,
+            'notes': 'GDD5: annual sum of mean-temp degrees above 5 C (ERA5-Land daily).',
+        },
     },
 
     # ============================================================
@@ -312,6 +363,27 @@ BANDS = {
             'notes': 'TWI = ln(upstream_area / tan(slope)). '
                      'upstream area from MERIT Hydro upa (km²); slope from SRTM 30 m. '
                      'Slope floored at 0.05° to avoid log(0).',
+        },
+        # --- Tier 2 multi-scale terrain (server-side from SRTM 30 m) ---
+        'TPI_90': {
+            'image_fn': lambda: _tpi(90), 'band': 'tpi_90', 'reducer': None,
+            'scale_native_m': 30, 'notes': 'Topographic Position Index, 90 m radius (SRTM).',
+        },
+        'TPI_300': {
+            'image_fn': lambda: _tpi(300), 'band': 'tpi_300', 'reducer': None,
+            'scale_native_m': 30, 'notes': 'Topographic Position Index, 300 m radius (SRTM).',
+        },
+        'TPI_1000': {
+            'image_fn': lambda: _tpi(1000), 'band': 'tpi_1000', 'reducer': None,
+            'scale_native_m': 30, 'notes': 'Topographic Position Index, 1000 m radius (SRTM).',
+        },
+        'TRI': {
+            'image_fn': lambda: _terrain_tri(), 'band': 'tri', 'reducer': None,
+            'scale_native_m': 30, 'notes': 'Terrain Ruggedness Index (local elevation stddev, 90 m).',
+        },
+        'Roughness': {
+            'image_fn': lambda: _terrain_roughness(), 'band': 'roughness', 'reducer': None,
+            'scale_native_m': 30, 'notes': 'Local elevation range (max-min, 90 m window).',
         },
     },
 
@@ -447,6 +519,28 @@ BANDS = {
             'extra_filter': lambda c: c.filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20)),
         },
     },
+
+    # ============================================================
+    # Tier 1 — Landsat bare-soil reflectance composite (SCMaP-style).
+    # Strict per-year; Landsat C2 archive (1984+) spans 2002-2023, unlike
+    # Sentinel-2 (2015+). Each band selects one layer of the per-year
+    # _bare_soil_composite(year); reflectance is native 30 m → 250 m by
+    # area-weighted mean (_to_250m). Wall-to-wall: pixels with no bare-soil
+    # observation are NoData, and SRC_ExposureCount records the obs count.
+    # ============================================================
+    'landsat': {
+        'SRC_Blue':  {'image_fn_yearly': lambda y, a: _bare_soil_composite(y, a).select('Blue'),  'band': 'Blue',  'reducer': None, 'scale_native_m': 30, 'notes': 'Bare-soil composite, Blue surface reflectance.'},
+        'SRC_Green': {'image_fn_yearly': lambda y, a: _bare_soil_composite(y, a).select('Green'), 'band': 'Green', 'reducer': None, 'scale_native_m': 30, 'notes': 'Bare-soil composite, Green surface reflectance.'},
+        'SRC_Red':   {'image_fn_yearly': lambda y, a: _bare_soil_composite(y, a).select('Red'),   'band': 'Red',   'reducer': None, 'scale_native_m': 30, 'notes': 'Bare-soil composite, Red surface reflectance.'},
+        'SRC_NIR':   {'image_fn_yearly': lambda y, a: _bare_soil_composite(y, a).select('NIR'),   'band': 'NIR',   'reducer': None, 'scale_native_m': 30, 'notes': 'Bare-soil composite, NIR surface reflectance.'},
+        'SRC_SWIR1': {'image_fn_yearly': lambda y, a: _bare_soil_composite(y, a).select('SWIR1'), 'band': 'SWIR1', 'reducer': None, 'scale_native_m': 30, 'notes': 'Bare-soil composite, SWIR1 (~1.6 um) reflectance.'},
+        'SRC_SWIR2': {'image_fn_yearly': lambda y, a: _bare_soil_composite(y, a).select('SWIR2'), 'band': 'SWIR2', 'reducer': None, 'scale_native_m': 30, 'notes': 'Bare-soil composite, SWIR2 (~2.2 um) — strongest bare-soil SOC signal.'},
+        'SRC_RCC':   {'image_fn_yearly': lambda y, a: _bare_soil_composite(y, a).select('RCC'),   'band': 'RCC',   'reducer': None, 'scale_native_m': 30, 'notes': 'Red chromatic coordinate R/(R+G+B) of the composite.'},
+        'SRC_BCC':   {'image_fn_yearly': lambda y, a: _bare_soil_composite(y, a).select('BCC'),   'band': 'BCC',   'reducer': None, 'scale_native_m': 30, 'notes': 'Blue chromatic coordinate B/(R+G+B) of the composite.'},
+        'SRC_NBR2':  {'image_fn_yearly': lambda y, a: _bare_soil_composite(y, a).select('NBR2'),  'band': 'NBR2',  'reducer': None, 'scale_native_m': 30, 'notes': 'NBR2 (SWIR1-SWIR2)/(SWIR1+SWIR2) of the composite.'},
+        'SRC_BSI':   {'image_fn_yearly': lambda y, a: _bare_soil_composite(y, a).select('BSI'),   'band': 'BSI',   'reducer': None, 'scale_native_m': 30, 'notes': 'Bare Soil Index of the composite.'},
+        'SRC_ExposureCount': {'image_fn_yearly': lambda y, a: _bare_soil_composite(y, a).select('ExposureCount'), 'band': 'ExposureCount', 'reducer': None, 'scale_native_m': 30, 'notes': 'Number of valid bare-soil observations in the year — validity mask for SRC_* bands.'},
+    },
 }
 
 
@@ -479,47 +573,87 @@ _CURATED_BANDS = {
                'BulkDensity_0_10cm', 'CEC_0_10cm'],
     'topo':   ['Elevation', 'Slope', 'Aspect', 'TWI'],
 }
-# Categories included in `--category all` (the safe, full set):
+# Categories included in `--category all` (the safe, full set). Landsat SRC is
+# intentionally NOT here — it is heavy (11 bands x 22 years) and pulled via
+# `--category extended` or `--category landsat` to avoid a surprise batch.
 _ALL_CATEGORIES = ['modis', 'chirps', 'era5', 'topo', 'soil']
 
+# `--category extended` = curated 20 + Tier 1/2/3 revision covariates.
+# (Terrain/Tier-3 bands live in the existing topo/era5/modis categories, so
+# `--category all`, `topo`, `era5`, `modis` already include them; only the
+# Landsat SRC bands need the dedicated `landsat` category.)
+_EXTENDED_BANDS = {
+    'modis':   _CURATED_BANDS['modis'] + ['NDVI_Amplitude', 'NDVI_Integral', 'EVI_Amplitude'],
+    'era5':    _CURATED_BANDS['era5'] + ['SoilTemperature_layer1', 'ClimaticWaterBalance',
+                                         'FrostDays', 'GrowingDegreeDays'],
+    'soil':    list(_CURATED_BANDS['soil']),
+    'topo':    _CURATED_BANDS['topo'] + ['TPI_90', 'TPI_300', 'TPI_1000', 'TRI', 'Roughness'],
+    'landsat': list(BANDS['landsat']),
+}
 
-def _maybe_resample(img, band_cfg):
-    """Apply bilinear resampling for sources coarser than the export scale.
+# `--category new` = ONLY the 23 Tier 1/2/3 bands added this revision (no
+# re-render of the existing 20). Use this to append to a dataset that already
+# holds the curated 20 — same grid, so the new bands align pixel-for-pixel.
+_NEW_BANDS = {
+    'landsat': list(BANDS['landsat']),
+    'era5':    ['SoilTemperature_layer1', 'ClimaticWaterBalance', 'FrostDays', 'GrowingDegreeDays'],
+    'modis':   ['NDVI_Amplitude', 'NDVI_Integral', 'EVI_Amplitude'],
+    'topo':    ['TPI_90', 'TPI_300', 'TPI_1000', 'TRI', 'Roughness'],
+}
 
-    Without this, GEE falls back to nearest-neighbor at export time and
-    coarse sources (ERA5 ~11 km, CHIRPS ~5.5 km) produce blocky output
-    at 250 m. Bilinear must be called on the *source* image before
-    `.clip()`/export so the pyramid policy is set correctly.
+
+def _to_250m(img, native_m, categorical=False):
+    """Normalize a source image onto the 250 m export grid.
+
+    - Coarser than 250 m (ERA5 11 km, CHIRPS 5.5 km, MODIS 0.5-1 km):
+      bilinear-resample the *source* so GEE doesn't fall back to blocky
+      nearest-neighbor at export time. Must be set on the source before clip.
+    - Finer than 250 m (Landsat / SRTM 30 m): area-weighted aggregate via
+      reduceResolution(mean) so the 30 m -> 250 m averaging is explicit and
+      reproducible instead of relying on GEE's export-time pyramid. Categorical
+      inputs use mode() (mean is meaningless on class indices).
+    - ~250 m (MODIS NDVI/EVI, SoilGrids): leave as-is.
     """
-    if band_cfg.get('scale_native_m', EXPORT_SCALE_M) > EXPORT_SCALE_M:
+    if native_m is None:
+        native_m = EXPORT_SCALE_M
+    if native_m > EXPORT_SCALE_M:
         return img.resample('bilinear')
+    if native_m < EXPORT_SCALE_M - 1:
+        reducer = ee.Reducer.mode() if categorical else ee.Reducer.mean()
+        return (img.reduceResolution(reducer=reducer, maxPixels=1024)
+                   .reproject(crs='EPSG:4326', scale=EXPORT_SCALE_M))
     return img
 
 
 def _annual_image(band_cfg, year, aoi):
     """Build the annual composite ee.Image for a single year/band."""
-    coll = ee.ImageCollection(band_cfg['collection'])
-    coll = coll.filterDate(f'{year}-01-01', f'{year+1}-01-01').filterBounds(aoi)
-    if 'extra_filter' in band_cfg:
-        coll = band_cfg['extra_filter'](coll)
-    coll = coll.select(band_cfg['band'])
-
-    reducer = band_cfg['reducer']
-    if reducer == 'mean':
-        img = coll.mean()
-    elif reducer == 'sum':
-        img = coll.sum()
-    elif reducer == 'median':
-        img = coll.median()
-    elif reducer == 'max':
-        img = coll.max()
-    elif reducer is None:
-        img = ee.Image(coll.first())   # static — just take any image
+    if 'image_fn_yearly' in band_cfg:
+        # Custom per-year derivation (Landsat SRC, ERA5/MODIS derivations).
+        img = band_cfg['image_fn_yearly'](year, aoi)
     else:
-        raise ValueError(f"Unknown reducer {reducer}")
+        coll = ee.ImageCollection(band_cfg['collection'])
+        coll = coll.filterDate(f'{year}-01-01', f'{year+1}-01-01').filterBounds(aoi)
+        if 'extra_filter' in band_cfg:
+            coll = band_cfg['extra_filter'](coll)
+        coll = coll.select(band_cfg['band'])
 
-    img = _maybe_resample(img, band_cfg)
-    return img.toFloat().clip(aoi).set({'year': year, 'band': band_cfg['band']})
+        reducer = band_cfg['reducer']
+        if reducer == 'mean':
+            img = coll.mean()
+        elif reducer == 'sum':
+            img = coll.sum()
+        elif reducer == 'median':
+            img = coll.median()
+        elif reducer == 'max':
+            img = coll.max()
+        elif reducer is None:
+            img = ee.Image(coll.first())   # static — just take any image
+        else:
+            raise ValueError(f"Unknown reducer {reducer}")
+
+    img = _to_250m(img, band_cfg.get('scale_native_m', EXPORT_SCALE_M),
+                   band_cfg.get('categorical', False))
+    return img.toFloat().clip(aoi).set({'year': year, 'band': band_cfg.get('band', '')})
 
 
 def _static_image(band_cfg, aoi):
@@ -533,7 +667,8 @@ def _static_image(band_cfg, aoi):
             img = ee.Image(band_cfg['collection']).select(band_cfg['band'])
         except Exception:
             img = ee.Image(ee.ImageCollection(band_cfg['collection']).first()).select(band_cfg['band'])
-    img = _maybe_resample(img, band_cfg)
+    img = _to_250m(img, band_cfg.get('scale_native_m', EXPORT_SCALE_M),
+                   band_cfg.get('categorical', False))
     return img.toFloat().clip(aoi).set({'band': band_cfg['band']})
 
 
@@ -576,6 +711,179 @@ def _terrain_twi():
     return twi
 
 
+# ---------------------------------------------------------------------------
+# Tier 2 — multi-scale terrain derivatives (server-side from SRTM 30 m).
+# TPI = elevation minus the local mean over a circular window: captures
+# landscape position (ridge vs valley) at the chosen scale. TRI / Roughness
+# summarize local relief.
+# ---------------------------------------------------------------------------
+def _tpi(radius_m):
+    srtm = ee.Image(_SRTM_ASSET)
+    local_mean = srtm.focal_mean(radius=radius_m, kernelType='circle', units='meters')
+    return srtm.subtract(local_mean).rename(f'tpi_{radius_m}')
+
+
+def _terrain_tri():
+    """Terrain Ruggedness Index ~ local stddev of elevation over a 90 m window."""
+    srtm = ee.Image(_SRTM_ASSET)
+    return srtm.reduceNeighborhood(
+        reducer=ee.Reducer.stdDev(),
+        kernel=ee.Kernel.circle(radius=90, units='meters'),
+    ).rename('tri')
+
+
+def _terrain_roughness():
+    """Local elevation range (max - min) over a 90 m window."""
+    srtm = ee.Image(_SRTM_ASSET)
+    mm = srtm.reduceNeighborhood(
+        reducer=ee.Reducer.minMax(),
+        kernel=ee.Kernel.circle(radius=90, units='meters'),
+    )
+    return mm.select('elevation_max').subtract(mm.select('elevation_min')).rename('roughness')
+
+
+# ---------------------------------------------------------------------------
+# Tier 1 — Landsat bare-soil reflectance composite (SCMaP-style).
+# Surface reflectance from Landsat Collection-2 Level-2 (full 1984+ archive,
+# so it spans 2002-2023, unlike Sentinel-2 from 2015). Per-sensor SR band
+# numbers differ, so each is renamed to a common 6-band set.
+# ---------------------------------------------------------------------------
+_LANDSAT_C2 = {
+    'LANDSAT/LT05/C02/T1_L2': {'SR_B1': 'Blue', 'SR_B2': 'Green', 'SR_B3': 'Red',
+                               'SR_B4': 'NIR', 'SR_B5': 'SWIR1', 'SR_B7': 'SWIR2'},
+    'LANDSAT/LE07/C02/T1_L2': {'SR_B1': 'Blue', 'SR_B2': 'Green', 'SR_B3': 'Red',
+                               'SR_B4': 'NIR', 'SR_B5': 'SWIR1', 'SR_B7': 'SWIR2'},
+    'LANDSAT/LC08/C02/T1_L2': {'SR_B2': 'Blue', 'SR_B3': 'Green', 'SR_B4': 'Red',
+                               'SR_B5': 'NIR', 'SR_B6': 'SWIR1', 'SR_B7': 'SWIR2'},
+    'LANDSAT/LC09/C02/T1_L2': {'SR_B2': 'Blue', 'SR_B3': 'Green', 'SR_B4': 'Red',
+                               'SR_B5': 'NIR', 'SR_B6': 'SWIR1', 'SR_B7': 'SWIR2'},
+}
+_SRC_REFLECTANCE = ['Blue', 'Green', 'Red', 'NIR', 'SWIR1', 'SWIR2']
+# SCMaP-style bare-soil selection (tunable): NDVI lower bound drops
+# water/shadow/snow, upper bound drops vegetation; NBR2 upper bound drops
+# crop-residue / non-photosynthetic vegetation.
+_SRC_NDVI_MIN, _SRC_NDVI_MAX, _SRC_NBR2_MAX = 0.15, 0.25, 0.075
+# Cap each sensor to its N least-cloudy scenes/year. Bounds the median-stack
+# depth -> bounds EE export memory AND speeds the composite up ~10x. Trade-off:
+# median over the best ~N observations instead of ALL bare-soil observations
+# (negligible at 250 m; a deviation from strict "all-observations" SCMaP).
+_SRC_MAX_PER_SENSOR = 20
+
+
+def _prep_landsat(img, band_map):
+    """Scale C2-L2 SR to reflectance, rename to common bands, mask cloud/shadow/snow."""
+    qa = img.select('QA_PIXEL')
+    # QA_PIXEL bits (Collection 2): 1 dilated cloud, 3 cloud, 4 cloud shadow, 5 snow.
+    bad = (qa.bitwiseAnd(1 << 1).neq(0)
+           .Or(qa.bitwiseAnd(1 << 3).neq(0))
+           .Or(qa.bitwiseAnd(1 << 4).neq(0))
+           .Or(qa.bitwiseAnd(1 << 5).neq(0)))
+    sr = (img.select(list(band_map.keys()))
+             .rename(list(band_map.values()))
+             .multiply(0.0000275).add(-0.2))           # C2-L2 SR scale/offset
+    plausible = sr.gt(0.0).And(sr.lt(1.0)).reduce(ee.Reducer.min())
+    return sr.updateMask(bad.Not()).updateMask(plausible)
+
+
+def _landsat_harmonized(year, aoi):
+    """Merge all Landsat sensors for one calendar year into a common-band collection."""
+    merged = None
+    for asset, band_map in _LANDSAT_C2.items():
+        coll = (ee.ImageCollection(asset)
+                .filterDate(f'{year}-01-01', f'{year + 1}-01-01')
+                .filterBounds(aoi)
+                .sort('CLOUD_COVER').limit(_SRC_MAX_PER_SENSOR)
+                .map(lambda im, bm=band_map: _prep_landsat(im, bm)))
+        merged = coll if merged is None else merged.merge(coll)
+    return merged
+
+
+def _bare_soil_composite(year, aoi):
+    """Strict per-year SCMaP-style bare-soil composite plus derived indices.
+
+    Returns an 11-band image: the 6 reflectance bands (median of bare-soil
+    observations), RCC, BCC, NBR2, BSI, and ExposureCount (count of valid
+    bare-soil observations — the validity mask for everything else).
+    """
+    coll = _landsat_harmonized(year, aoi)
+    # median() over a merged multi-sensor collection drops the projection, which
+    # breaks the downstream reduceResolution (30 m -> 250 m). Capture a Landsat
+    # native 30 m projection and pin it on the output so reduceResolution has a
+    # valid input grid.
+    ref_proj = ee.Image(coll.first()).select('Red').projection()
+
+    def mask_bare(img):
+        ndvi = img.normalizedDifference(['NIR', 'Red'])
+        nbr2 = img.normalizedDifference(['SWIR1', 'SWIR2'])
+        bare = (ndvi.gt(_SRC_NDVI_MIN).And(ndvi.lt(_SRC_NDVI_MAX))
+                    .And(nbr2.lt(_SRC_NBR2_MAX)))
+        return img.updateMask(bare)
+
+    bare = coll.map(mask_bare).select(_SRC_REFLECTANCE)
+    # parallelScale lowers peak memory — the median over a deep multi-sensor stack
+    # is what hit EE's "out of memory" on full-Bavaria exports. rename() restores
+    # the plain band names that reduce() would otherwise suffix with "_median".
+    comp = bare.reduce(ee.Reducer.median(), parallelScale=8).rename(_SRC_REFLECTANCE)
+    count = bare.select('Red').reduce(ee.Reducer.count(), parallelScale=8).rename('ExposureCount')
+
+    b, g, r = comp.select('Blue'), comp.select('Green'), comp.select('Red')
+    nir, sw1, sw2 = comp.select('NIR'), comp.select('SWIR1'), comp.select('SWIR2')
+    rgb = r.add(g).add(b)
+    rcc = r.divide(rgb).rename('RCC')
+    bcc = b.divide(rgb).rename('BCC')
+    nbr2 = sw1.subtract(sw2).divide(sw1.add(sw2)).rename('NBR2')
+    bsi = (sw1.add(r).subtract(nir.add(b))).divide(
+        sw1.add(r).add(nir.add(b))).rename('BSI')
+    out = comp.addBands([rcc, bcc, nbr2, bsi, count])
+    return out.setDefaultProjection(ref_proj)
+
+
+# ---------------------------------------------------------------------------
+# Tier 3 — cheap climate / phenology derivations (full 2002-2023 coverage).
+# ---------------------------------------------------------------------------
+_ERA5_MONTHLY = 'ECMWF/ERA5_LAND/MONTHLY_AGGR'
+_ERA5_DAILY = 'ECMWF/ERA5_LAND/DAILY_AGGR'
+_MOD13Q1 = 'MODIS/061/MOD13Q1'
+
+
+def _climatic_water_balance(year, aoi):
+    """Annual precipitation minus potential evaporation (ERA5-Land, m/yr).
+
+    ERA5-Land potential_evaporation_sum is a downward-negative flux, so its
+    annual magnitude is abs(sum); CWB = P - PET.
+    """
+    m = ee.ImageCollection(_ERA5_MONTHLY).filterDate(f'{year}-01-01', f'{year + 1}-01-01')
+    precip = m.select('total_precipitation_sum').sum()
+    pet = m.select('potential_evaporation_sum').sum().abs()
+    return precip.subtract(pet).rename('cwb')
+
+
+def _frost_days(year, aoi):
+    """Count of days with 2 m minimum temperature below freezing (ERA5-Land daily)."""
+    d = ee.ImageCollection(_ERA5_DAILY).filterDate(f'{year}-01-01', f'{year + 1}-01-01')
+    return d.select('temperature_2m_min').map(lambda im: im.lt(273.15)).sum().rename('frost_days')
+
+
+def _growing_degree_days(year, aoi):
+    """GDD5: annual sum of mean-temp degrees above a 5 degC base (ERA5-Land daily)."""
+    d = ee.ImageCollection(_ERA5_DAILY).filterDate(f'{year}-01-01', f'{year + 1}-01-01')
+    return d.select('temperature_2m').map(
+        lambda im: im.subtract(278.15).max(0)).sum().rename('gdd')
+
+
+def _veg_metric(year, aoi, band, stat):
+    """Within-year vegetation-index statistic from MOD13Q1 (phenology proxy).
+
+    stat='amplitude' -> max-min across the 16-day composites;
+    stat='integral'  -> sum of the 16-day composites (growing-season area).
+    """
+    coll = ee.ImageCollection(_MOD13Q1).filterDate(
+        f'{year}-01-01', f'{year + 1}-01-01').select(band)
+    if stat == 'amplitude':
+        return coll.max().subtract(coll.min()).rename(f'{band}_amp')
+    return coll.sum().rename(f'{band}_int')
+
+
 def submit_export(image, description, drive_folder, scale, region):
     task = ee.batch.Export.image.toDrive(
         image=image,
@@ -597,19 +905,26 @@ def _resolve_categories_and_bands(category_arg):
     """Return list of (category, [band_names]) tuples to process."""
     if category_arg == 'curated':
         return [(c, list(_CURATED_BANDS[c])) for c in _CURATED_BANDS]
+    if category_arg == 'extended':
+        return [(c, list(_EXTENDED_BANDS[c])) for c in _EXTENDED_BANDS]
+    if category_arg == 'new':
+        return [(c, list(_NEW_BANDS[c])) for c in _NEW_BANDS]
     if category_arg == 'all':
         return [(c, list(BANDS[c])) for c in _ALL_CATEGORIES]
     if category_arg in BANDS:
         return [(category_arg, list(BANDS[category_arg]))]
     raise SystemExit(f'unknown --category {category_arg!r}; '
-                     f'choices: curated, all, {", ".join(BANDS)}')
+                     f'choices: curated, extended, all, {", ".join(BANDS)}')
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--category', default='curated',
-                    help='curated (default — 11-band SOC set) | all '
-                         '(safe full set, no s1/s2/soil_extra) | one of '
+                    help='curated (default — 20-band SOC set) | extended '
+                         '(curated + Tier 1/2/3: landsat SRC, multi-scale terrain, '
+                         'climate/phenology derivations) | new (ONLY the 23 Tier 1/2/3 '
+                         'bands, for appending to an existing 20-band dataset) | all '
+                         '(safe full set, no s1/s2/landsat/soil_extra) | one of '
                          + ', '.join(BANDS))
     ap.add_argument('--years', nargs=2, type=int, default=[2002, 2023], metavar=('START', 'END'))
     ap.add_argument('--scale', type=int, default=EXPORT_SCALE_M,
@@ -658,6 +973,9 @@ def main():
         bad: list[tuple[str, str, str]] = []
 
         def _probe_one(cfg, expects_yearly):
+            if 'image_fn_yearly' in cfg:
+                img = cfg['image_fn_yearly'](2015, aoi)
+                return img.bandNames().getInfo()
             if 'image_fn' in cfg:
                 img = cfg['image_fn']()
                 return img.bandNames().getInfo()

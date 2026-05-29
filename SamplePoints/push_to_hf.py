@@ -24,7 +24,13 @@ except ImportError:
     print("       pip install huggingface_hub")
     sys.exit(1)
 
-DEFAULT_FOLDER = Path(__file__).resolve().parents[2] / 'Data_HF'
+# Resolve the real data dir the same way every other script does (env
+# SOC_DATA_DIR / walk-up / legacy default) so this works on JUPITER too —
+# not just the original local /home/valerian/SGTPublication layout.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # SOCmapping/
+from _paths import SOC_DATA_DIR  # noqa: E402
+
+DEFAULT_FOLDER = Path(SOC_DATA_DIR).parent / 'Data_HF'
 
 
 def main():
@@ -64,7 +70,7 @@ def main():
     # Data_HF/'s dir symlinks would only catch the file-level .xlsx symlinks).
     # Use the real Data/ tree with allow/ignore patterns instead, and prefer
     # upload_large_folder which parallelizes + retries automatically.
-    real_source = Path('/home/valerian/SGTPublication/Data')
+    real_source = Path(SOC_DATA_DIR)
     if args.folder == DEFAULT_FOLDER and real_source.exists():
         print(f'  source: {real_source}  (real Data/ — bypassing Data_HF/ to traverse all dirs)')
     else:

@@ -68,6 +68,32 @@ BAND_RANGES = {
     'Slope':                   (0, 60),            # degrees
     'Aspect':                  (-360, 360),        # degrees
     'TWI':                     (-20, 30),          # dimensionless log
+    # Tier 1 — Landsat bare-soil composite (reflectance after C2-L2 scaling)
+    'SRC_Blue':                (0.0, 1.0),         # surface reflectance
+    'SRC_Green':               (0.0, 1.0),
+    'SRC_Red':                 (0.0, 1.0),
+    'SRC_NIR':                 (0.0, 1.0),
+    'SRC_SWIR1':               (0.0, 1.0),
+    'SRC_SWIR2':               (0.0, 1.0),
+    'SRC_RCC':                 (0.0, 1.0),         # chromatic coordinate
+    'SRC_BCC':                 (0.0, 1.0),
+    'SRC_NBR2':                (-1.0, 1.0),        # normalized ratio
+    'SRC_BSI':                 (-1.0, 1.0),
+    'SRC_ExposureCount':       (0, 60),            # # valid bare-soil obs / year
+    # Tier 2 — multi-scale terrain (SRTM, meters)
+    'TPI_90':                  (-300, 300),        # elevation − local mean
+    'TPI_300':                 (-500, 500),
+    'TPI_1000':                (-800, 800),
+    'TRI':                     (0, 300),           # local elevation stddev
+    'Roughness':               (0, 800),           # local elevation range
+    # Tier 3 — climate / phenology derivations
+    'ClimaticWaterBalance':    (-1.0, 3.0),        # P − PET (m water/yr)
+    'SoilTemperature_layer1':  (255, 300),         # Kelvin (annual mean)
+    'FrostDays':               (0, 366),           # days / year
+    'GrowingDegreeDays':       (0, 6000),          # GDD5 (Kelvin-days)
+    'NDVI_Amplitude':          (0, 12000),         # NDVI×10000 (max−min)
+    'NDVI_Integral':           (-20000, 300000),   # Σ 16-day NDVI×10000
+    'EVI_Amplitude':           (0, 12000),
 }
 
 _DESC_RE = re.compile(
@@ -188,10 +214,13 @@ def audit_one(tif_path: Path, verbose: bool = False) -> dict:
                 'std':  round(v_std, 4),
             }
 
-            # NaN check (warn vs fail)
-            if nan_frac > 0.5:
+            # NaN check (warn vs fail). Sparse bare-soil (SRC) bands are
+            # EXPECTED to be mostly NoData over non-arable Bavaria, so high
+            # NaN there is not a defect — SRC_ExposureCount documents coverage.
+            sparse_ok = meta['band'].startswith('SRC_')
+            if nan_frac > 0.5 and not sparse_ok:
                 rec['issues'].append(f'NaN/nodata > 50% ({nan_frac*100:.1f}%)')
-            elif nan_frac > 0.05:
+            elif nan_frac > 0.05 and not sparse_ok:
                 rec['issues'].append(f'NaN/nodata > 5% ({nan_frac*100:.1f}%)  [warn]')
 
             # Zero-variance check

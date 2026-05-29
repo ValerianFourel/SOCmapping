@@ -81,22 +81,31 @@ def encode_filename(tile_id: int) -> str:
     return f'ID{tile_id}N{fmt(n)}S{fmt(s)}W{fmt(w)}E{fmt(e)}.npy'
 
 
-def _fill_nan(arr: np.ndarray) -> np.ndarray:
-    """Replace NaN/inf pixels with the tile's finite mean.
+def _fill_nan(arr: np.ndarray, fill: str = 'mean') -> np.ndarray:
+    """Replace NaN/inf pixels.
 
     `NormalizedMultiRasterDatasetMultiYears.compute_statistics` does not
     tolerate NaN — a single bad pixel pollutes per-channel mean/std and
-    poisons every downstream sample. SoilGrids/OpenLandMap tiles can
-    have edge or no-data NaNs; ERA5 occasionally has masked pixels.
-    Falls back to 0.0 if the entire tile is NaN (shouldn't happen on
-    Bavaria-land but keeps the pipeline robust).
+    poisons every downstream sample.
+
+    fill='mean' (default): the tile's finite mean — for dense covariates where
+        a few edge/no-data NaNs (SoilGrids/OpenLandMap edges, masked ERA5) must
+        not perturb statistics.
+    fill='zero': 0.0 — for sparse bare-soil (SRC) bands where MOST pixels have
+        no observation; mean-fill would fabricate soil reflectance across
+        grassland/forest. Validity is carried separately by SRC_ExposureCount.
+
+    Falls back to 0.0 if the entire tile is NaN (keeps the pipeline robust).
     """
     arr = np.asarray(arr, dtype=np.float32)
     mask = ~np.isfinite(arr)
     if mask.any():
-        finite = arr[~mask]
-        fill = float(finite.mean()) if finite.size > 0 else 0.0
-        arr = np.where(mask, fill, arr)
+        if fill == 'zero':
+            fill_val = 0.0
+        else:
+            finite = arr[~mask]
+            fill_val = float(finite.mean()) if finite.size > 0 else 0.0
+        arr = np.where(mask, fill_val, arr)
     return arr
 
 
@@ -119,11 +128,14 @@ def _wipe_stale_tiles(out_dir: Path) -> int:
     return removed
 
 
-def cut_tiff(tiff_path: Path, out_dir: Path, wipe_stale: bool = True) -> int:
+def cut_tiff(tiff_path: Path, out_dir: Path, wipe_stale: bool = True,
+             fill: str = 'mean') -> int:
     """Slice one Bavaria-envelope GeoTIFF into 12 canonical-name .npy tiles.
 
     When wipe_stale=True (default), any pre-existing ID*.npy whose filename
-    doesn't match the canonical 12-tile set is deleted first.
+    doesn't match the canonical 12-tile set is deleted first. `fill` selects
+    the NaN-fill policy passed to _fill_nan ('mean' for dense bands, 'zero'
+    for sparse SRC bands).
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     if wipe_stale:
@@ -143,7 +155,7 @@ def cut_tiff(tiff_path: Path, out_dir: Path, wipe_stale: bool = True) -> int:
             except Exception as ex:
                 print(f"  tile {tid}: read failed ({ex})")
                 continue
-            arr = _fill_nan(arr)
+            arr = _fill_nan(arr, fill=fill)
             out_path = out_dir / encode_filename(tid)
             np.save(out_path, arr)
             n_written += 1
@@ -233,14 +245,17 @@ def cut_all(tiff_dir: Path, out_root: Path,
             anchor_year: int = 2002,
             mat_years: range = range(2002, 2024),
             skip_done: bool = True,
-            state=None) -> None:
+            state=None,
+            fill_zero: set[str] | None = None) -> None:
     """Process every TIFF in tiff_dir matching the expected naming pattern.
 
     Resumable: a TIFF whose 12-tile output already exists is skipped.
     Also records progress in `state` (pipeline_state.State) if provided,
-    keyed by TIFF basename under the 'cut' phase.
+    keyed by TIFF basename under the 'cut' phase. Bands named in `fill_zero`
+    use zero NaN-fill (sparse SRC bands) instead of the default tile-mean.
     """
     materialize_yearly = set(materialize_yearly or [])
+    fill_zero = set(fill_zero or [])
     tiffs = sorted(tiff_dir.glob('*.tif'))
     print(f"Found {len(tiffs)} GeoTIFFs in {tiff_dir}")
     bands_processed = set()
@@ -268,7 +283,7 @@ def cut_all(tiff_dir: Path, out_root: Path,
             n_skipped += 1
             print(f"  · skip (done): {tp.name:50}  → {out_dir.relative_to(out_root)}/")
         else:
-            n = cut_tiff(tp, out_dir)
+            n = cut_tiff(tp, out_dir, fill='zero' if band in fill_zero else 'mean')
             n_cut += 1
             print(f"  ✓ {tp.name:50}  → {out_dir.relative_to(out_root)}/  ({n} tiles)")
             if state is not None:
@@ -313,6 +328,10 @@ def main():
     ap.add_argument('--mat-years', nargs=2, type=int, default=[2002, 2023],
                     metavar=('START', 'END'),
                     help='Year range to symlink for --materialize-yearly (default 2002 2023)')
+    ap.add_argument('--fill-zero', nargs='+', default=[], metavar='BAND',
+                    help='Band names whose NoData pixels fill with 0 instead of the '
+                         'tile mean (sparse Landsat SRC bands). Validity is carried '
+                         'separately by SRC_ExposureCount.')
     ap.add_argument('--no-skip-done', action='store_true',
                     help='Re-cut TIFFs even when their output tiles already exist on disk.')
     ap.add_argument('--no-state', action='store_true',
@@ -331,13 +350,15 @@ def main():
 
     mat_years = range(args.mat_years[0], args.mat_years[1] + 1)
     mat_set = set(args.materialize_yearly)
+    fill_zero_set = set(args.fill_zero)
 
     if args.tiff is not None:
         if not args.band_name:
             ap.error('--tiff requires --band-name')
+        _fill = 'zero' if args.band_name in fill_zero_set else 'mean'
         if mat_set and args.band_name in mat_set:
             out_dir = args.out_root / 'YearlyValue' / args.band_name / str(args.anchor_year)
-            n = cut_tiff(args.tiff, out_dir)
+            n = cut_tiff(args.tiff, out_dir, fill=_fill)
             print(f"✓ cut {n} tiles → {out_dir}")
             make_bounds_array(args.out_root / 'YearlyValue', args.band_name)
             materialize_static_as_yearly(out_dir, args.band_name, args.out_root,
@@ -350,7 +371,7 @@ def main():
             out_dir = args.out_root / args.tier / args.band_name
             if args.year is not None:
                 out_dir = out_dir / str(args.year)
-            n = cut_tiff(args.tiff, out_dir)
+            n = cut_tiff(args.tiff, out_dir, fill=_fill)
             print(f"✓ cut {n} tiles → {out_dir}")
             make_bounds_array(args.out_root / args.tier, args.band_name)
     elif args.tiff_dir is not None:
@@ -359,7 +380,8 @@ def main():
                 anchor_year=args.anchor_year,
                 mat_years=mat_years,
                 skip_done=not args.no_skip_done,
-                state=state)
+                state=state,
+                fill_zero=fill_zero_set)
         if state is not None:
             state.finish_phase('cut')
     else:

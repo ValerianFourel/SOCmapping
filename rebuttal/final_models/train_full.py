@@ -109,7 +109,7 @@ def parse():
                         'this is monitoring only, the saved model is meant '
                         'for production mapping.')
     p.add_argument('--bands-list', type=str, default='full_20',
-                   choices=['full_20', 'original_6'],
+                   choices=['full_20', 'original_6', 'full_extended'],
                    help='Covariate subset (default full_20). Run-name '
                         'auto-appends "_6band" or "_20band" so the two '
                         'variants do not overwrite each other under '

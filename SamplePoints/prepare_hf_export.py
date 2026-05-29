@@ -140,8 +140,10 @@ export SOC_DATA_DIR=$(realpath ./Data)
 Built by SOCmapping/SamplePoints/prepare_hf_export.py on
 {manifest.get("created_at")} from {manifest.get("source_dir")}.
 
-GEE export: `gee_download_all_bands.py --category curated --years 2002 2023`
-→ 250 m / EPSG:4326 / region [W 7.1864, S 46.7109, E 14.3750, N 52.1028].
+GEE export: `gee_download_all_bands.py --category extended --years 2002 2023`
+(curated 20 + Tier 1/2/3 revision covariates: Landsat SRC, multi-scale
+terrain, climate/phenology) → 250 m / EPSG:4326 / region
+[W 7.1864, S 46.7109, E 14.3750, N 52.1028].
 """
     (out / 'README.md').write_text(readme)
 
