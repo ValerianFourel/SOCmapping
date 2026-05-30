@@ -68,7 +68,7 @@ from run_kfold import (  # noqa: E402
     build_folds_spatial_deciles, make_dataset,
     _metrics_for, write_results, write_predictions_parquet,
 )
-from config import window_size as DEFAULT_WINDOW  # noqa: E402  (SGT dir on sys.path via run_kfold)
+from config import window_size as DEFAULT_WINDOW, bands_list_order  # noqa: E402  (SGT dir on sys.path via run_kfold)
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +110,11 @@ def extract_features_for_df(df: pd.DataFrame, cache_path: Path | None = None,
     mk_kwargs = {} if window_size is None else {'window_size': window_size}
     ds = make_dataset(df, feature_means=None, feature_stds=None, **mk_kwargs)
     n = len(ds)
-    X = np.empty((n, 80), dtype=np.float32)
+    # _aggregate_cube produces C × 4 features (mean/std/min/max per band).
+    # The dataset returns ALL bands (slicing happens later via col_indices in
+    # main), so width = 4 × len(bands_list_order). Was hardcoded to 80 (the
+    # 20-band default) and broke for the 43-band 'full_extended' stack.
+    X = np.empty((n, 4 * len(bands_list_order)), dtype=np.float32)
     y = np.empty(n, dtype=np.float32)
     lons = np.empty(n, dtype=np.float64)
     lats = np.empty(n, dtype=np.float64)
@@ -326,7 +330,7 @@ def parse():
                         'baseline_<model>_<tag-suffix>/. Default "sweep". '
                         'For max-oc sensitivity: pass "sweep/oc120" etc.')
     p.add_argument('--bands-list', type=str, default='full_20',
-                   choices=['full_20', 'original_6'],
+                   choices=['full_20', 'original_6', 'full_extended'],
                    help='Covariate subset. Tree features are 80-d per sample '
                         '(20 bands × {mean, std, min, max}); under '
                         'original_6 we extract the full 80-d vector once '
@@ -373,10 +377,13 @@ def main():
     print(f'Built {args.num_folds} {_geom} folds '
           f'(buffer {args.fold_buffer_km} km, window {args.window_size}).', flush=True)
 
-    # Features depend on the window crop (not the split axis), so the cache key
-    # includes window_size to avoid stale hits across window settings.
+    # Features depend on the window crop AND the full-channel count (the dataset
+    # returns every band in bands_list_order; per-band-list slicing happens
+    # after caching), so the cache key includes both window_size and the band
+    # count to avoid stale hits when window or the band stack changes.
     cache_path = (OUT_DIR / 'baseline_features'
-                  / f'feats_max_oc_{int(args.max_oc)}_w{args.window_size}.npz'
+                  / f'feats_max_oc_{int(args.max_oc)}_w{args.window_size}'
+                    f'_c{len(bands_list_order)}.npz'
                   ) if args.cache_features else None
     X, y, lon, lat = extract_features_for_df(df, cache_path=cache_path,
                                              window_size=args.window_size)
@@ -390,7 +397,7 @@ def main():
     # TotalEvapotranspiration), which sit at indices 0..5 of bands_list_order
     # by construction (see SpatiotemporalGatedTransformer/config.py).
     from band_subsets import get_band_indices    # noqa: E402  (already on sys.path via HERE)
-    from config import bands_list_order          # noqa: E402  (via SGT sys.path side-effect from run_kfold)
+    # bands_list_order already imported at module top.
 
     band_indices = get_band_indices(args.bands_list, list(bands_list_order))
     if len(band_indices) < len(bands_list_order):
