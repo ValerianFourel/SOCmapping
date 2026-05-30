@@ -22,7 +22,7 @@ be submitted from where you have queue access):
 Useful flags:
     --dry-run                Print sbatch commands without submitting.
     --epochs 80              Override the screening epoch count.
-    --time 02:00:00          Slurm wall-time per job.
+    --time 00:45:00          Slurm wall-time per job (Juwels Booster is busy).
     --account scifi --partition booster
     --grid d48_h2_L1,d64_h2_L2,...   Comma-separated tags to submit only some.
 
@@ -258,6 +258,7 @@ def build_sbatch(tag: str, variant: str, d: int, h: int, L: int, args) -> str:
         '--augment-train '
         f'--out-subdir {out_subdir_arg(args, tag)} '
         f'--bands-list {args.bands_list} '
+        f'--band-arch {args.band_arch} --ext-reduced {args.ext_reduced} '
         '--skip-figure'
     )
     venv_activate = (
@@ -325,6 +326,7 @@ def build_family_sbatch(tag: str, family: str, d: int, h: int, L: int,
         '--augment-train '
         f'--out-subdir {out_subdir_arg(args, tag)} '
         f'--bands-list {args.bands_list} '
+        f'--band-arch {args.band_arch} --ext-reduced {args.ext_reduced} '
         '--skip-figure'
     )
     venv_activate = (
@@ -404,7 +406,7 @@ def build_baseline_sbatch(args) -> str:
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=12
 #SBATCH --gres=gpu:1
-#SBATCH --time=02:00:00
+#SBATCH --time={args.time}
 #SBATCH --output={log_path}
 #SBATCH --error={log_path}
 
@@ -456,8 +458,20 @@ def main():
                         '(model H×W and dataset crop). Default 5 (config). '
                         'Use 7 or 9 for the larger-context experiment; no data '
                         'regeneration is needed (tiles are far larger).')
-    p.add_argument('--time', type=str, default='02:00:00',
-                   help='Slurm wall-time per job. Bump if epochs > 100.')
+    p.add_argument('--time', type=str, default='00:45:00',
+                   help='Slurm wall-time per job. Default 45 min (Juwels '
+                        'Booster is busy — keep jobs short). Bump only if '
+                        'epochs > 100 or you switch to a heavier architecture.')
+    p.add_argument('--band-arch', type=str, default='none',
+                   choices=['none', 'two_path'],
+                   help='Forwarded to run_kfold. "two_path" wraps the inner '
+                        'model with a small Conv2d that reduces the extended '
+                        'bands (idx 20..) — only active when --bands-list '
+                        'full_extended is also set.')
+    p.add_argument('--ext-reduced', type=int, default=8,
+                   help='Forwarded to run_kfold; channels after the extended-'
+                        'band reduction when --band-arch two_path is active. '
+                        'Default 8 → 20 core + 8 reduced = 28 effective channels.')
     p.add_argument('--partition', type=str, default='booster')
     p.add_argument('--account', type=str, default='scifi')
     p.add_argument('--venv-activate', type=str,

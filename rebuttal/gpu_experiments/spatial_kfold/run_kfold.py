@@ -44,6 +44,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
 # ----- Path setup ---------------------------------------------------------
@@ -100,6 +101,65 @@ print(_describe_paths(), flush=True)
 # Sibling architectures are imported lazily inside the factory so a plain
 # --model-family sgt run doesn't pay their import cost.
 # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# 43-band two-path band encoder
+# --------------------------------------------------------------------------
+# When we go from the 20-band stack to the 43-band stack (full_extended:
+# 20 revision bands + Tier 1/2/3 covariates), dumping all 43 channels into
+# the inner model's first conv has two issues:
+#   1. SimpleTransformerV2's d_model = C·H·W·T grows from 2500 (20-band) to
+#      5375 (43-band), which is no longer divisible by num_heads=4 and
+#      causes a wall-time blow-up.
+#   2. The 23 new bands are heterogeneous (Landsat SRC, multi-scale terrain,
+#      climate/phenology) and adding them raw dilutes the gradient signal
+#      for the core 20 bands.
+#
+# This wrapper preserves the original 20 channels untouched and learns a
+# small per-time-step Conv2d that reduces the 23 extended channels to
+# n_ext_reduced (default 8). Output is (B, 28, H, W, T), then the inner
+# model is built with input_channels=28. Cheap, drop-in, and brings
+# SimpleTransformer's d_model back to 3500 (= 4×heads-divisible).
+N_CORE_BANDS = 20  # first 20 entries of bands_list_order are the "full_20" set
+
+
+class _BandTwoPathEncoder(nn.Module):
+    def __init__(self, n_core: int, n_ext: int, n_ext_reduced: int):
+        super().__init__()
+        self.n_core = n_core
+        self.n_ext = n_ext
+        self.n_ext_reduced = n_ext_reduced
+        self.reduce = nn.Conv2d(n_ext, n_ext_reduced, kernel_size=3, padding=1)
+        self.bn = nn.BatchNorm2d(n_ext_reduced)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, C, H, W, T) with C == n_core + n_ext
+        B, C, H, W, T = x.shape
+        if C != self.n_core + self.n_ext:
+            raise RuntimeError(
+                f'_BandTwoPathEncoder expects {self.n_core + self.n_ext} '
+                f'input channels, got {C}.')
+        core = x[:, :self.n_core]                         # (B, n_core, H, W, T)
+        ext = x[:, self.n_core:]                          # (B, n_ext, H, W, T)
+        # Conv2d wants (N, C, H, W); fold T into the batch dim.
+        ext_p = ext.permute(0, 4, 1, 2, 3).contiguous()   # (B, T, n_ext, H, W)
+        ext_p = ext_p.view(B * T, self.n_ext, H, W)
+        ext_p = F.relu(self.bn(self.reduce(ext_p)))       # (B*T, n_ext_reduced, H, W)
+        ext_back = (ext_p.view(B, T, self.n_ext_reduced, H, W)
+                          .permute(0, 2, 3, 4, 1)
+                          .contiguous())                  # (B, n_ext_reduced, H, W, T)
+        return torch.cat([core, ext_back], dim=1)         # (B, n_core+n_ext_reduced, H, W, T)
+
+
+class _TwoPathBandWrapper(nn.Module):
+    def __init__(self, inner: nn.Module, n_core: int, n_ext: int, n_ext_reduced: int):
+        super().__init__()
+        self.encoder = _BandTwoPathEncoder(n_core, n_ext, n_ext_reduced)
+        self.inner = inner
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.inner(self.encoder(x))
+
+
 def _build_model(args):
     family = getattr(args, 'model_family', 'sgt')
     # Honor --bands-list when building the model: input_channels must
@@ -113,7 +173,49 @@ def _build_model(args):
     # window_size; --window-size overrides it (and the dataset crop) per run.
     ws = getattr(args, 'window_size', window_size)
 
+    # Two-path 43-band encoder — only active when explicitly requested AND
+    # the band stack actually has more than the 20 core bands.
+    band_arch = getattr(args, 'band_arch', 'none')
+    use_two_path = (band_arch == 'two_path' and n_bands > N_CORE_BANDS)
+    if use_two_path:
+        n_ext_reduced = int(getattr(args, 'ext_reduced', 8))
+        eff_in_channels = N_CORE_BANDS + n_ext_reduced
+    else:
+        n_ext_reduced = 0
+        eff_in_channels = n_bands
+
+    def _wrap(inner: nn.Module) -> nn.Module:
+        if use_two_path:
+            return _TwoPathBandWrapper(
+                inner, N_CORE_BANDS, n_bands - N_CORE_BANDS, n_ext_reduced)
+        return inner
+
     if family == 'sgt':
+        if use_two_path:
+            # Bypass build_sgt_model — it hardcodes
+            # input_channels=len(bands_list_order) (=43 now), which is wrong
+            # after the encoder reduces to eff_in_channels (=28 by default).
+            from SimpleSGT import SimpleSGT
+            if args.model_size == 'small':
+                inner = SimpleSGT(
+                    input_channels=eff_in_channels,
+                    height=ws, width=ws, time_steps=time_before,
+                    d_model=args.hidden_size,
+                    num_heads=args.num_heads,
+                    dropout=args.dropout_rate,
+                )
+            else:
+                from EnhancedSGT import EnhancedSGT
+                inner = EnhancedSGT(
+                    input_channels=eff_in_channels,
+                    height=ws, width=ws, time_steps=time_before,
+                    d_model=args.hidden_size,
+                    num_heads=args.num_heads,
+                    dropout=args.dropout_rate,
+                    num_encoder_layers=args.num_layers,
+                    expansion_factor=4,
+                )
+            return _wrap(inner)
         return build_sgt_model(args)
 
     if family == '3dcnn':
@@ -121,13 +223,13 @@ def _build_model(args):
         if str(sib) not in sys.path:
             sys.path.insert(0, str(sib))
         from modelCNNMultiYear import Small3DCNN
-        return Small3DCNN(
-            input_channels=n_bands,
+        return _wrap(Small3DCNN(
+            input_channels=eff_in_channels,
             input_height=ws,
             input_width=ws,
             input_time=time_before,
             dropout_rate=args.dropout_rate,
-        )
+        ))
 
     if family == 'cnnlstm':
         sib = SOC_CODE_DIR / 'CNNLSTM'
@@ -138,28 +240,28 @@ def _build_model(args):
         # 128 going into the LSTM (see models.py line ~100: x_cnn.view
         # (..., 128)). lstm_input_size must therefore be 128. Hidden size
         # is the LSTM hidden state — we mirror args.hidden_size for that.
-        return RefittedCovLSTM(
-            num_channels=n_bands,
+        return _wrap(RefittedCovLSTM(
+            num_channels=eff_in_channels,
             lstm_input_size=128,
             lstm_hidden_size=args.hidden_size,
             num_layers=args.num_layers,
             dropout=args.dropout_rate,
-        )
+        ))
 
     if family == 'simpletransformer':
         sib = SOC_CODE_DIR / 'SimpleTransformer'
         if str(sib) not in sys.path:
             sys.path.insert(0, str(sib))
         from modelSimpleTransformerNew import SimpleTransformerV2
-        return SimpleTransformerV2(
-            input_channels=n_bands,
+        return _wrap(SimpleTransformerV2(
+            input_channels=eff_in_channels,
             input_height=ws,
             input_width=ws,
             input_time=time_before,
             num_heads=args.num_heads,
             num_layers=args.num_layers,
             dropout_rate=args.dropout_rate,
-        )
+        ))
 
     if family == 'vanilla_transformer':
         # Same input convention and architecture as SimpleSGT (d_model is
@@ -167,15 +269,15 @@ def _build_model(args):
         # network is replaced by a plain Linear → fair-comparison ablation
         # for the "is SGT's gating worth it?" question.
         from VanillaSpatiotemporalTransformer import VanillaSpatiotemporalTransformer
-        return VanillaSpatiotemporalTransformer(
-            input_channels=n_bands,
+        return _wrap(VanillaSpatiotemporalTransformer(
+            input_channels=eff_in_channels,
             height=ws,
             width=ws,
             time_steps=time_before,
             d_model=args.hidden_size,
             num_heads=args.num_heads,
             dropout=args.dropout_rate,
-        )
+        ))
 
     if family == 'lightweight_transformer':
         # Pure-transformer baseline — same head + same d_model/heads/layers
@@ -185,8 +287,8 @@ def _build_model(args):
         # scale (vanilla and lightweight both honour --hidden_size and land
         # in the 85k-370k param band, unlike SimpleTransformerV2 at 11M).
         from LightweightTransformer import LightweightTransformer
-        return LightweightTransformer(
-            input_channels=n_bands,
+        return _wrap(LightweightTransformer(
+            input_channels=eff_in_channels,
             height=ws,
             width=ws,
             time_steps=time_before,
@@ -194,7 +296,7 @@ def _build_model(args):
             num_heads=args.num_heads,
             num_layers=args.num_layers,
             dropout=args.dropout_rate,
-        )
+        ))
 
     raise ValueError(f'Unknown --model-family: {family!r}. '
                      f'Choose from: sgt, 3dcnn, cnnlstm, simpletransformer, '
@@ -943,6 +1045,8 @@ def write_results(fold_results: list[dict], args):
                           else f'{"latitude" if args.split_axis == "lat" else "longitude"}_deciles_equal_n'),
         'recipe': {
             'bands_list': bands_list, 'n_bands': n_bands,
+            'band_arch': getattr(args, 'band_arch', 'none'),
+            'ext_reduced': getattr(args, 'ext_reduced', None),
             'model_family': getattr(args, 'model_family', None),
             'model_size': getattr(args, 'model_size', None),
             'hidden_size': getattr(args, 'hidden_size', None),
@@ -1174,6 +1278,21 @@ def parse_args():
                         'at the same (5×5×5) spatiotemporal window. '
                         '"vanilla_transformer" is the SimpleSGT-minus-GRN '
                         'fair-comparison ablation.')
+    p.add_argument('--band-arch', type=str, default='none',
+                   choices=['none', 'two_path'],
+                   help='Optional band-input wrapper. "none" = feed all '
+                        'channels straight into the inner model (default, '
+                        'matches every prior run). "two_path" = only active '
+                        'when len(bands) > 20: keep the 20 core bands raw '
+                        'and learn a Conv2d that reduces the remaining '
+                        '(--ext-reduced default 8) extended bands per time '
+                        'step; concat → 28-channel input. Designed to keep '
+                        '43-band runs from blowing up SimpleTransformer\'s '
+                        'd_model and to give the new Tier 1/2/3 bands a '
+                        'dedicated representation pathway.')
+    p.add_argument('--ext-reduced', type=int, default=8,
+                   help='[--band-arch two_path only] Channel-count after '
+                        'compressing the extended (non-core) bands. Default 8.')
     p.add_argument('--bands-list', type=str, default='full_20',
                    choices=['full_20', 'original_6', 'full_extended'],
                    help='Covariate-stack subset. "full_20" = the 20 revision '
