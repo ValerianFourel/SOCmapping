@@ -185,12 +185,19 @@ def main():
         failed = sorted(f for f, rc in rc_by_fold.items() if rc != 0)
         print(f"[orchestrator] failed folds: {failed}")
         print(f"[orchestrator] inspect logs: {out_dir}/fold_<i>_console.log")
+    # Best-effort: aggregate whatever folds DID succeed. Losing the whole
+    # config because one fold got SIGKILL'd by the OS / Slurm cgroup is too
+    # punishing — a 9/10 cross-fold R² is still publishable. Only abort if
+    # nothing survived.
+    if n_ok == 0:
+        print(f"[orchestrator] no folds succeeded — skipping aggregation.")
         sys.exit(1)
 
     # Aggregate: read all per-fold predictions and write the cross-fold tables.
     # Passthrough is reused so the recipe metadata (max_oc, sampler_mode, etc.)
     # ends up in kfold_results.md / summary.json.
-    print(f"[orchestrator] aggregating cross-fold results …")
+    print(f"[orchestrator] aggregating cross-fold results "
+          f"({n_ok}/{len(rc_by_fold)} folds) …")
     agg_cmd = [sys.executable, str(RUN_KFOLD),
                '--aggregate-only',
                '--num-folds', str(args.num_folds)] + passthrough
