@@ -62,9 +62,15 @@ def parse():
                         "min(num_folds, num_gpus_visible * folds_per_gpu).")
     p.add_argument('--folds-per-gpu', type=int, default=1,
                    help="How many fold processes to pack on each GPU. Default 1. "
-                        "Set to 3 to run all 10 folds across 4 GPUs simultaneously "
-                        "(slot_idx %% num_gpus picks the GPU). GH200s have ~96 GB "
-                        "and each fold uses well under 5 GB, so 3 is safe.")
+                        "20-band runs are fine with 3; 43-band runs OOM at 3 "
+                        "(simultaneous .to(device) spike), use 2.")
+    p.add_argument('--launch-stagger', type=float, default=15.0,
+                   help="Seconds to sleep between successive fold launches in "
+                        "the initial fill phase. Stops the simultaneous "
+                        "model.to(device) / dataloader-init spike from racing "
+                        "CUDA OOM. Default 15s — enough for one process's "
+                        "CUDA context + dataset init to settle before the "
+                        "next lands on the same GPU. Set 0 to disable.")
     p.add_argument('--output-dir', type=str,
                    default=str(HERE),
                    help="Directory for per-fold log files (default: this dir).")
@@ -132,13 +138,17 @@ def main():
               f"(GPU {gpu_id}, PID {proc.pid}, log: {log_path.name})")
         return proc
 
-    # Initial fill
+    # Initial fill — stagger launches so concurrent fold processes don't
+    # race CUDA memory allocation at startup (model.to(device), dataset
+    # tensor staging). 43-band runs are particularly sensitive.
     for slot_idx in range(n_parallel):
         if not pending:
             break
         fold = pending.pop(0)
         running[slot_idx] = launch(fold, slot_idx)
         fold_for_slot[slot_idx] = fold
+        if args.launch_stagger > 0 and slot_idx + 1 < n_parallel and pending:
+            time.sleep(args.launch_stagger)
 
     # Poll loop
     rc_by_fold: dict[int, int] = {}
