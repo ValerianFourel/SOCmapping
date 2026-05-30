@@ -71,6 +71,15 @@ def parse():
                         "CUDA OOM. Default 15s — enough for one process's "
                         "CUDA context + dataset init to settle before the "
                         "next lands on the same GPU. Set 0 to disable.")
+    p.add_argument('--max-fold-retries', type=int, default=2,
+                   help="If a fold exits non-zero (CUDA OOM, SIGKILL by the "
+                        "OS / Slurm cgroup, etc.), requeue it to the END of "
+                        "the pending list and try again. This is meant for "
+                        "transient launch-time failures — the retry runs in "
+                        "the quieter post-initial-fill phase when other folds "
+                        "are mid-training, so GPU/host memory pressure is "
+                        "lower. Default 2 (i.e. 1 original attempt + 2 "
+                        "retries = 3 total). Set 0 to disable retries.")
     p.add_argument('--output-dir', type=str,
                    default=str(HERE),
                    help="Directory for per-fold log files (default: this dir).")
@@ -150,8 +159,14 @@ def main():
         if args.launch_stagger > 0 and slot_idx + 1 < n_parallel and pending:
             time.sleep(args.launch_stagger)
 
-    # Poll loop
+    # Poll loop. We track per-fold attempt counts so transient launch-time
+    # failures (CUDA OOM races, host-OOM SIGKILLs, flaky GPUs) get requeued
+    # to the END of the pending list and retried in the quieter post-initial-
+    # fill phase. rc_by_fold holds the LATEST attempt's rc per fold.
     rc_by_fold: dict[int, int] = {}
+    attempts: dict[int, int] = {f: 1 for f in range(args.num_folds) if f not in pending}
+    # ^ initial-fill folds counted; pending folds get attempt 1 when launched.
+    requeued: list[tuple[int, int]] = []  # (fold, attempt) — book-keeping only.
     while running:
         time.sleep(2)
         finished = []
@@ -161,23 +176,48 @@ def main():
                 fold = fold_for_slot[slot_idx]
                 gpu_id = slot_to_gpu[slot_idx]
                 dt = time.time() - started_at[fold]
+                attempt = attempts.get(fold, 1)
                 status = "OK" if rc == 0 else f"FAILED (rc={rc})"
-                print(f"[orchestrator] fold {fold} on slot {slot_idx} "
-                      f"(GPU {gpu_id}) {status}  ({dt/60:.1f} min)")
+                attempt_tag = f" attempt={attempt}" if attempt > 1 else ""
+                print(f"[orchestrator] fold {fold}{attempt_tag} on slot "
+                      f"{slot_idx} (GPU {gpu_id}) {status}  ({dt/60:.1f} min)")
                 proc._log_fh.close()
-                rc_by_fold[fold] = rc
+                # Requeue if failure and retries left. The retry runs at the
+                # end of the queue → after the initial fill has trained for
+                # a while, so the GPU + host memory pressure has eased.
+                if (rc != 0 and attempt <= args.max_fold_retries):
+                    pending.append(fold)
+                    attempts[fold] = attempt + 1
+                    requeued.append((fold, attempt))
+                    print(f"[orchestrator]   ↳ requeued fold {fold} for "
+                          f"attempt {attempt + 1}/{args.max_fold_retries + 1}")
+                    # Preserve the previous attempt's console log so we don't
+                    # overwrite it when launch() reopens fold_{i}_console.log.
+                    old_log = out_dir / f'fold_{fold}_console.log'
+                    if old_log.exists():
+                        old_log.rename(out_dir / f'fold_{fold}_attempt{attempt}.log')
+                else:
+                    rc_by_fold[fold] = rc
                 finished.append(slot_idx)
         for slot_idx in finished:
             running.pop(slot_idx)
             fold_for_slot.pop(slot_idx)
             if pending:
                 next_fold = pending.pop(0)
+                # Initial-fill folds were counted at attempts={f:1} above;
+                # any fold first launched HERE (none in current sweep config —
+                # initial-fill covers all 10 — but safe for n_parallel < n_folds)
+                # also gets attempt=1.
+                attempts.setdefault(next_fold, 1)
                 running[slot_idx] = launch(next_fold, slot_idx)
                 fold_for_slot[slot_idx] = next_fold
 
     # Summary
     n_ok = sum(1 for rc in rc_by_fold.values() if rc == 0)
     n_fail = len(rc_by_fold) - n_ok
+    if requeued:
+        print(f"[orchestrator] retried folds: "
+              f"{sorted({f for f, _ in requeued})} ({len(requeued)} retries total)")
     print()
     print(f"[orchestrator] DONE — {n_ok}/{len(rc_by_fold)} folds succeeded, "
           f"{n_fail} failed.")
