@@ -26,9 +26,9 @@ BRANCH="bestrun-bands"
 HF_DATASET="ValerianFourel/SOCmappingRastersAndSoilSamples"
 WORK_ROOT="${WORK:-$HOME/work}"           # HoreKa exposes $WORK; fall back to $HOME/work
 PROJECT_DIR="$WORK_ROOT/SGT"               # mirrors the Jupiter layout: SGT/{SOCmapping,Data,venv}
-PYTHON_MODULE="python/3.11"                # adjust to whichever HoreKa offers (module avail python)
-CUDA_MODULE="devel/cuda/12.4"              # match A100 driver — module avail devel/cuda
-COMPILER_MODULE="compiler/gnu/13"
+PYTHON_MODULE="${PYTHON_MODULE:-}"         # leave empty to use system python3; override via env
+CUDA_MODULE="${CUDA_MODULE:-devel/cuda/12.4}"
+COMPILER_MODULE="${COMPILER_MODULE:-compiler/gnu/13}"
 TORCH_INDEX="https://download.pytorch.org/whl/cu124"
 TORCH_PINS="torch==2.5.1 torchvision==0.20.1"
 
@@ -37,8 +37,27 @@ echo "[setup] Loading modules…"
 module purge
 module load "$COMPILER_MODULE"
 module load "$CUDA_MODULE"
-module load "$PYTHON_MODULE"
-module list
+if [ -n "$PYTHON_MODULE" ]; then
+    module load "$PYTHON_MODULE"
+else
+    echo "[setup] PYTHON_MODULE not set — using system python3 ($(command -v python3))"
+fi
+module list 2>&1 || true
+
+# Locate a Python ≥ 3.10
+PYBIN="$(command -v python3.11 || command -v python3.10 || command -v python3)"
+if [ -z "$PYBIN" ]; then
+    echo "[setup] ERROR: no python3 on PATH. Either:"
+    echo "   - module load <python-module>   (try 'module spider python')"
+    echo "   - or set PYTHON_MODULE=... and re-run"
+    exit 1
+fi
+PYVER=$("$PYBIN" -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')
+echo "[setup] using python: $PYBIN  ($PYVER)"
+case "$PYVER" in
+    3.1[0-9]) ;;          # 3.10+ ok
+    *) echo "[setup] WARNING: python $PYVER is below 3.10 — torch 2.5+ wants 3.10+";;
+esac
 
 # -------- 1. Layout ----------------------------------------------------
 mkdir -p "$PROJECT_DIR"
@@ -55,8 +74,8 @@ fi
 
 # -------- 3. Python venv -----------------------------------------------
 if [ ! -d venv ]; then
-    echo "[setup] Creating venv at $PROJECT_DIR/venv"
-    python -m venv venv
+    echo "[setup] Creating venv at $PROJECT_DIR/venv with $PYBIN"
+    "$PYBIN" -m venv venv
 fi
 # shellcheck disable=SC1091
 source venv/bin/activate
