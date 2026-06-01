@@ -1,0 +1,55 @@
+# SOCmapping runtime dependencies.
+#
+# Install with:
+#   pip install --upgrade pip
+#   # Install torch+CUDA wheel separately (must match the cluster's CUDA).
+#   # For HoreKa (CUDA 12.4 on A100):
+#   pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu124
+#   # Then everything else:
+#   pip install -r requirements.txt
+#
+# Notes:
+#  - earthengine-api / geemap are only needed for the SamplePoints/ data export
+#    pipeline (re-running the GEE → HF pull). Comment them out if you're only
+#    consuming the pre-built HF dataset.
+#  - wandb is imported in disabled mode (WANDB_MODE=disabled) so no account
+#    setup is needed — but the package must be present to satisfy the import.
+
+# ---- Core numerics / data ----
+numpy>=1.24
+pandas>=2.0
+pyarrow>=14.0          # parquet I/O for fold predictions
+scipy>=1.11
+
+# ---- Distributed / mixed-precision training ----
+accelerate>=0.30
+
+# ---- Classical ML baselines ----
+scikit-learn>=1.3
+xgboost>=2.0
+
+# ---- Geospatial ----
+geopandas>=1.0
+shapely>=2.0
+fiona>=1.9
+pyproj>=3.6
+rasterio>=1.3          # GeoTIFF raster I/O used by the data pipeline
+
+# ---- Plotting ----
+matplotlib>=3.8
+seaborn>=0.13
+
+# ---- HuggingFace data pull ----
+huggingface_hub>=0.24
+datasets>=2.18
+
+# ---- Logging (disabled at runtime via WANDB_MODE=disabled but must import) ----
+wandb>=0.16
+
+# ---- Utility ----
+tqdm>=4.66
+openpyxl>=3.1          # reading LUCAS_LFU_Lfl Excel source
+
+# ---- Data-pipeline only (uncomment if re-running GEE export) ----
+# earthengine-api>=0.1.400
+# geemap>=0.32
