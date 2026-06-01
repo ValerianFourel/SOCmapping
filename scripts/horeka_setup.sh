@@ -44,20 +44,35 @@ else
 fi
 module list 2>&1 || true
 
-# Locate a Python ≥ 3.10
-PYBIN="$(command -v python3.11 || command -v python3.10 || command -v python3)"
+# Locate a Python ≥ 3.10. If nothing on PATH qualifies (HoreKa ships 3.9
+# and no python module), bootstrap Miniforge into the project dir.
+find_pybin() {
+    for cand in python3.12 python3.11 python3.10; do
+        if command -v "$cand" >/dev/null 2>&1; then echo "$(command -v "$cand")"; return 0; fi
+    done
+    return 1
+}
+PYBIN="$(find_pybin || true)"
 if [ -z "$PYBIN" ]; then
-    echo "[setup] ERROR: no python3 on PATH. Either:"
-    echo "   - module load <python-module>   (try 'module spider python')"
-    echo "   - or set PYTHON_MODULE=... and re-run"
-    exit 1
+    echo "[setup] No python ≥ 3.10 on PATH. Installing Miniforge into $PROJECT_DIR/miniforge3"
+    MF_INSTALLER="$PROJECT_DIR/Miniforge3-Linux-x86_64.sh"
+    if [ ! -f "$MF_INSTALLER" ]; then
+        curl -fsSL -o "$MF_INSTALLER" \
+            "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh"
+    fi
+    bash "$MF_INSTALLER" -b -u -p "$PROJECT_DIR/miniforge3"
+    rm -f "$MF_INSTALLER"
+    # shellcheck disable=SC1091
+    source "$PROJECT_DIR/miniforge3/etc/profile.d/conda.sh"
+    if ! conda env list | grep -qE "^sgt[[:space:]]"; then
+        conda create -n sgt python=3.11 -y
+    fi
+    conda activate sgt
+    PYBIN="$(command -v python)"
+    USING_CONDA=1
 fi
 PYVER=$("$PYBIN" -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')
 echo "[setup] using python: $PYBIN  ($PYVER)"
-case "$PYVER" in
-    3.1[0-9]) ;;          # 3.10+ ok
-    *) echo "[setup] WARNING: python $PYVER is below 3.10 — torch 2.5+ wants 3.10+";;
-esac
 
 # -------- 1. Layout ----------------------------------------------------
 mkdir -p "$PROJECT_DIR"
@@ -73,12 +88,18 @@ else
 fi
 
 # -------- 3. Python venv -----------------------------------------------
-if [ ! -d venv ]; then
-    echo "[setup] Creating venv at $PROJECT_DIR/venv with $PYBIN"
-    "$PYBIN" -m venv venv
+# With miniforge, the conda env IS the env — no extra venv needed.
+# With system python, build a plain venv on top of PYBIN.
+if [ "${USING_CONDA:-0}" = "1" ]; then
+    echo "[setup] Using conda env 'sgt' (no venv layer)"
+else
+    if [ ! -d venv ]; then
+        echo "[setup] Creating venv at $PROJECT_DIR/venv with $PYBIN"
+        "$PYBIN" -m venv venv
+    fi
+    # shellcheck disable=SC1091
+    source venv/bin/activate
 fi
-# shellcheck disable=SC1091
-source venv/bin/activate
 python -m pip install --upgrade pip wheel setuptools
 
 # -------- 4. Torch (CUDA-matched), then the rest -----------------------
@@ -106,13 +127,20 @@ print(f"Done → {target}")
 EOF
 
 # -------- 6. Environment variables you'll want in jobs -----------------
+# Differ depending on whether we used conda or venv.
+if [ "${USING_CONDA:-0}" = "1" ]; then
+    ACTIVATE_BLOCK="source $PROJECT_DIR/miniforge3/etc/profile.d/conda.sh
+conda activate sgt"
+else
+    ACTIVATE_BLOCK="export PATH=\"$PROJECT_DIR/venv/bin:\$PATH\""
+fi
 cat >"$PROJECT_DIR/SOCmapping/env.sh" <<EOF
 # Source this in every Slurm job. It points the path-resolver at $PROJECT_DIR.
 export SOC_PROJECT_ROOT="$PROJECT_DIR"
 export SOC_CODE_DIR="$PROJECT_DIR/SOCmapping"
 export SOC_DATA_DIR="$PROJECT_DIR/SOCmapping/Data"
 export SOC_REBUTTAL_DIR="$PROJECT_DIR/SOCmapping/rebuttal"
-export PATH="$PROJECT_DIR/venv/bin:\$PATH"
+$ACTIVATE_BLOCK
 EOF
 
 echo
