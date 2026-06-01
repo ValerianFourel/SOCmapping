@@ -30,7 +30,19 @@ from huggingface_hub import HfApi, create_repo, upload_large_folder
 
 
 REPO_ID = 'ValerianFourel/sgt-bavaria-soc-2002-2023'
-DEFAULT_SRC = Path(__file__).resolve().parent.parent.parent / 'Data_HF'
+# Use the real Data/ tree, not Data_HF/. Data_HF has directory symlinks
+# (RasterTensorData → /…/Data/RasterTensorData) and upload_large_folder does
+# not traverse symlinked directories, so allow_patterns against the symlinked
+# subtree matches zero files.
+DEFAULT_SRC = Path(__file__).resolve().parent.parent.parent / 'Data'
+# Drop local-only noise that doesn't belong on the HF mirror.
+DEFAULT_IGNORE = [
+    'Preprocessing/**',
+    'RasterBandsData/**',
+    'pipeline_state.json',
+    '.cache/**',
+    '*.tmp',
+]
 
 
 def parse_args():
@@ -45,7 +57,8 @@ def parse_args():
                         "Repeatable. e.g. --pattern 'RasterTensorData/YearlyValue/**' "
                         "--pattern 'OC_LUCAS_LFU_LfL_Coordinates_v2/**'")
     p.add_argument('--ignore', action='append', default=None,
-                   help='Glob to skip (relative to --src). Repeatable.')
+                   help='Glob to skip (relative to --src). Repeatable. '
+                        f'Always appended to the default ignore list: {DEFAULT_IGNORE}')
     p.add_argument('--dry-run', action='store_true',
                    help='List what would be uploaded; do not push.')
     return p.parse_args()
@@ -57,10 +70,13 @@ def main():
     if not src.is_dir():
         sys.exit(f'src does not exist: {src}')
 
+    # Always apply the defaults + any user-added entries
+    ignore = list(DEFAULT_IGNORE) + (a.ignore or [])
+
     print(f'[hf_publish] src   = {src}')
     print(f'[hf_publish] repo  = {a.repo}')
     if a.pattern: print(f'[hf_publish] allow = {a.pattern}')
-    if a.ignore:  print(f'[hf_publish] ignore= {a.ignore}')
+    print(f'[hf_publish] ignore= {ignore}')
 
     if a.dry_run:
         # walk + apply patterns locally for preview
@@ -71,7 +87,7 @@ def main():
                 rel = os.path.relpath(os.path.join(root, f), src)
                 if a.pattern and not any(fnmatch(rel, p) for p in a.pattern):
                     continue
-                if a.ignore and any(fnmatch(rel, p) for p in a.ignore):
+                if any(fnmatch(rel, p) for p in ignore):
                     continue
                 matched += 1
                 if matched <= 20:
@@ -88,8 +104,7 @@ def main():
         folder_path=str(src),
         repo_type='dataset',
         allow_patterns=a.pattern,
-        ignore_patterns=a.ignore,
-        # commit message includes the pattern so the HF audit log is informative
+        ignore_patterns=ignore,
         print_report=True,
     )
     print(f'[hf_publish] done. https://huggingface.co/datasets/{a.repo}')
