@@ -85,6 +85,13 @@ def parse():
                    help="Directory for per-fold log files (default: this dir).")
     p.add_argument('--num-gpus', type=int, default=None,
                    help="Override detected GPU count. Default: torch.cuda.device_count().")
+    p.add_argument('--resume', action=argparse.BooleanOptionalAction, default=True,
+                   help="Skip folds whose fold_<i>_predictions.parquet already "
+                        "exists in --output-dir and run only the missing ones. "
+                        "Lets a timed-out / OOM-killed job be re-run or "
+                        "resubmitted until every fold is present, without "
+                        "redoing finished folds. Default on; --no-resume forces "
+                        "a full re-run from scratch.")
     return p.parse_known_args()
 
 
@@ -94,6 +101,17 @@ def detect_gpus():
         return torch.cuda.device_count()
     except Exception:
         return 0
+
+
+def fold_done(out_dir: Path, fold: int) -> bool:
+    """A fold counts as complete iff its per-fold predictions parquet exists
+    and is non-empty — that's exactly the artifact the --aggregate-only step
+    consumes, so this is the same notion of 'done' as the final tables use."""
+    p = out_dir / f'fold_{fold}_predictions.parquet'
+    try:
+        return p.exists() and p.stat().st_size > 0
+    except OSError:
+        return False
 
 
 def main():
@@ -118,8 +136,22 @@ def main():
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Build the fold queue
-    pending = list(range(args.num_folds))
+    # Build the fold queue. With --resume (default) drop folds whose
+    # predictions parquet is already on disk, so a re-run / resubmit only
+    # fills the gaps a previous timed-out or OOM-killed job left behind.
+    all_folds = list(range(args.num_folds))
+    if args.resume:
+        already = [f for f in all_folds if fold_done(out_dir, f)]
+        pending = [f for f in all_folds if f not in already]
+        if already:
+            print(f"[orchestrator] resume: {len(already)}/{args.num_folds} folds "
+                  f"already complete {already} — skipping. "
+                  f"{len(pending)} to run: {pending}")
+        if not pending:
+            print("[orchestrator] all folds already present — nothing to train, "
+                  "going straight to aggregation.")
+    else:
+        pending = list(all_folds)
     running: dict[int, subprocess.Popen] = {}    # slot_idx -> Popen
     fold_for_slot: dict[int, int] = {}            # slot_idx -> fold_idx
     started_at: dict[int, float] = {}             # fold_idx -> ts
@@ -164,8 +196,9 @@ def main():
     # to the END of the pending list and retried in the quieter post-initial-
     # fill phase. rc_by_fold holds the LATEST attempt's rc per fold.
     rc_by_fold: dict[int, int] = {}
-    attempts: dict[int, int] = {f: 1 for f in range(args.num_folds) if f not in pending}
-    # ^ initial-fill folds counted; pending folds get attempt 1 when launched.
+    attempts: dict[int, int] = {f: 1 for f in fold_for_slot.values()}
+    # ^ only folds actually launched in the initial fill are counted; folds
+    #   still pending (or skipped by --resume) get attempt set when launched.
     requeued: list[tuple[int, int]] = []  # (fold, attempt) — book-keeping only.
     while running:
         time.sleep(2)
@@ -212,32 +245,38 @@ def main():
                 running[slot_idx] = launch(next_fold, slot_idx)
                 fold_for_slot[slot_idx] = next_fold
 
-    # Summary
-    n_ok = sum(1 for rc in rc_by_fold.values() if rc == 0)
-    n_fail = len(rc_by_fold) - n_ok
+    # Summary — report completeness from what is actually on disk now
+    # (folds resumed from a prior run + folds trained this run), not just this
+    # invocation's successes, so resume / resubmit converges transparently.
+    n_ran_ok = sum(1 for rc in rc_by_fold.values() if rc == 0)
+    n_ran_fail = len(rc_by_fold) - n_ran_ok
     if requeued:
         print(f"[orchestrator] retried folds: "
               f"{sorted({f for f, _ in requeued})} ({len(requeued)} retries total)")
+    present = [f for f in range(args.num_folds) if fold_done(out_dir, f)]
+    missing = [f for f in range(args.num_folds) if f not in present]
     print()
-    print(f"[orchestrator] DONE — {n_ok}/{len(rc_by_fold)} folds succeeded, "
-          f"{n_fail} failed.")
-    if n_fail:
-        failed = sorted(f for f, rc in rc_by_fold.items() if rc != 0)
-        print(f"[orchestrator] failed folds: {failed}")
-        print(f"[orchestrator] inspect logs: {out_dir}/fold_<i>_console.log")
-    # Best-effort: aggregate whatever folds DID succeed. Losing the whole
-    # config because one fold got SIGKILL'd by the OS / Slurm cgroup is too
-    # punishing — a 9/10 cross-fold R² is still publishable. Only abort if
-    # nothing survived.
-    if n_ok == 0:
-        print(f"[orchestrator] no folds succeeded — skipping aggregation.")
+    print(f"[orchestrator] this run: {n_ran_ok} ok, {n_ran_fail} failed.")
+    print(f"[orchestrator] folds present on disk: {len(present)}/{args.num_folds} "
+          f"{present}")
+    if missing:
+        print(f"[orchestrator] STILL MISSING: {missing} — re-run / resubmit this "
+              f"job to fill them (resume skips the {len(present)} already done).")
+        print(f"[orchestrator] inspect: {out_dir}/fold_<i>_console.log "
+              f"(earlier tries: fold_<i>_attempt<N>.log)")
+
+    # Best-effort: aggregate whatever folds are present. Losing the whole
+    # config because one fold got SIGKILL'd is too punishing — a 9/10 cross-fold
+    # R² is still publishable. Only abort if nothing survived at all.
+    if not present:
+        print("[orchestrator] no folds present — skipping aggregation.")
         sys.exit(1)
 
     # Aggregate: read all per-fold predictions and write the cross-fold tables.
     # Passthrough is reused so the recipe metadata (max_oc, sampler_mode, etc.)
     # ends up in kfold_results.md / summary.json.
     print(f"[orchestrator] aggregating cross-fold results "
-          f"({n_ok}/{len(rc_by_fold)} folds) …")
+          f"({len(present)}/{args.num_folds} folds present) …")
     agg_cmd = [sys.executable, str(RUN_KFOLD),
                '--aggregate-only',
                '--num-folds', str(args.num_folds)] + passthrough
@@ -249,8 +288,10 @@ def main():
               f"Per-fold parquets are still on disk; rerun manually with "
               f"`python {RUN_KFOLD.name} --aggregate-only`.")
         sys.exit(rc)
-    print(f"[orchestrator] kfold_results.md + summary.json written to "
-          f"{out_dir}")
+    print(f"[orchestrator] kfold_results.md + summary.json written to {out_dir}")
+    # Distinct non-zero exit (3) when folds remain, so a resubmit wrapper can
+    # tell "aggregated but still incomplete" from "fully done" (0).
+    sys.exit(0 if not missing else 3)
 
 
 if __name__ == "__main__":

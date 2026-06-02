@@ -240,7 +240,8 @@ def build_sbatch(tag: str, variant: str, d: int, h: int, L: int, args) -> str:
     cmd = (
         'WANDB_MODE=disabled PYTHONUNBUFFERED=1 '
         'python rebuttal/gpu_experiments/spatial_kfold/run_folds_parallel.py '
-        f'--num-folds {args.num_folds} --num-parallel {args.num_folds} --folds-per-gpu 3 '
+        f'--num-folds {args.num_folds} --num-parallel {args.num_folds} '
+        f'--folds-per-gpu {args.folds_per_gpu} '
         f'--output-dir {shlex.quote(str(out_dir_abs))} '
         '-- '
         f'--model-size {variant} '
@@ -273,6 +274,7 @@ def build_sbatch(tag: str, variant: str, d: int, h: int, L: int, args) -> str:
 #SBATCH --ntasks-per-node=4
 #SBATCH --cpus-per-task=12
 #SBATCH --gres=gpu:4
+#SBATCH --mem={args.mem}
 #SBATCH --time={args.time}
 #SBATCH --output={log_path}
 #SBATCH --error={log_path}
@@ -307,7 +309,8 @@ def build_family_sbatch(tag: str, family: str, d: int, h: int, L: int,
     cmd = (
         'WANDB_MODE=disabled PYTHONUNBUFFERED=1 '
         'python rebuttal/gpu_experiments/spatial_kfold/run_folds_parallel.py '
-        f'--num-folds {args.num_folds} --num-parallel {args.num_folds} --folds-per-gpu 3 '
+        f'--num-folds {args.num_folds} --num-parallel {args.num_folds} '
+        f'--folds-per-gpu {args.folds_per_gpu} '
         f'--output-dir {shlex.quote(str(out_dir_abs))} '
         '-- '
         '--model-size small '
@@ -341,6 +344,7 @@ def build_family_sbatch(tag: str, family: str, d: int, h: int, L: int,
 #SBATCH --ntasks-per-node=4
 #SBATCH --cpus-per-task=12
 #SBATCH --gres=gpu:4
+#SBATCH --mem={args.mem}
 #SBATCH --time={args.time}
 #SBATCH --output={log_path}
 #SBATCH --error={log_path}
@@ -462,6 +466,21 @@ def main():
                    help='Slurm wall-time per job. Default 45 min (Juwels '
                         'Booster is busy — keep jobs short). Bump only if '
                         'epochs > 100 or you switch to a heavier architecture.')
+    p.add_argument('--folds-per-gpu', type=int, default=2,
+                   help='Fold subprocesses packed onto each GPU, forwarded to '
+                        'run_folds_parallel.py. Default 2. NOTE: 43-band runs '
+                        'OOM at 3 (the runner warns about this), and 3-way GPU '
+                        'time-slicing also makes each fold ~3x slower, so a '
+                        'short job times out with half its folds unfinished — '
+                        'which is exactly the failure this default avoids. Drop '
+                        'to 1 for the heaviest models (d128) if 2 still OOMs.')
+    p.add_argument('--mem', type=str, default='0',
+                   help='Slurm --mem per job. Default "0" = all memory on the '
+                        'node. The 43-band sweep was OOM-killed '
+                        '(State=OUT_OF_MEMORY) because every concurrent fold '
+                        'process stages the full raster stack into host RAM '
+                        'while the template requested no --mem; "0" grabs the '
+                        'whole node so the concurrent loaders fit.')
     p.add_argument('--band-arch', type=str, default='none',
                    choices=['none', 'two_path'],
                    help='Forwarded to run_kfold. "two_path" wraps the inner '
