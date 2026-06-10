@@ -31,8 +31,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 REPO_DEFAULT = "ValerianFourel/sgt-bavaria-soc-2002-2023"
-IGNORE_HF = {".gitattributes", ".gitignore"}            # repo meta, never in the local tree
-LOCAL_ONLY = {"Preprocessing", "RasterBandsData",       # top-level trees the publisher drops
+IGNORE_HF = {".gitattributes", ".gitignore"}            # repo meta on the HF side
+# Names ignored on BOTH sides: HF repo-meta that materialises locally when the
+# dataset is git-cloned (.gitattributes), plus local-only trees the publisher drops.
+LOCAL_ONLY = {".gitattributes", ".gitignore",
+              "Preprocessing", "RasterBandsData",       # top-level trees the publisher drops
               "pipeline_state.json", ".cache"}
 
 
