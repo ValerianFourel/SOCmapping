@@ -272,7 +272,7 @@ def build_sbatch(tag: str, variant: str, d: int, h: int, L: int, args) -> str:
 #SBATCH --account={args.account}
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=4
-#SBATCH --cpus-per-task=12
+#SBATCH --cpus-per-task={args.cpus_per_task}
 #SBATCH --gres=gpu:4
 #SBATCH --mem={args.mem}
 #SBATCH --time={args.time}
@@ -342,7 +342,7 @@ def build_family_sbatch(tag: str, family: str, d: int, h: int, L: int,
 #SBATCH --account={args.account}
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=4
-#SBATCH --cpus-per-task=12
+#SBATCH --cpus-per-task={args.cpus_per_task}
 #SBATCH --gres=gpu:4
 #SBATCH --mem={args.mem}
 #SBATCH --time={args.time}
@@ -408,7 +408,7 @@ def build_baseline_sbatch(args) -> str:
 #SBATCH --account={args.account}
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=12
+#SBATCH --cpus-per-task={args.cpus_per_task}
 #SBATCH --gres=gpu:1
 #SBATCH --time={args.time}
 #SBATCH --output={log_path}
@@ -481,6 +481,11 @@ def main():
                         'process stages the full raster stack into host RAM '
                         'while the template requested no --mem; "0" grabs the '
                         'whole node so the concurrent loaders fit.')
+    p.add_argument('--cpus-per-task', type=int, default=12,
+                   help='Slurm --cpus-per-task per fold-task. Default 12 (works '
+                        'on HoreKa). On JUPITER booster the scifi QOS rejects '
+                        'ntasks(4)xcpus(12)=48 with "More processors requested '
+                        'than permitted" — pass a lower value there (e.g. 4 → 16).')
     p.add_argument('--band-arch', type=str, default='none',
                    choices=['none', 'two_path'],
                    help='Forwarded to run_kfold. "two_path" wraps the inner '
