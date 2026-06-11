@@ -110,8 +110,17 @@ FAMILY_GRID: list[tuple[str, int, int, int, float]] = [
 # ---------------------------------------------------------------------------
 VANILLA_GRID: list[tuple[str, int, int, int, float]] = [
     # (family, d_model, num_heads, num_layers, dropout)
-    ('vanilla_transformer', 64,  4, 1, 0.5),   # ~95k, paired with sgt small_d64_h4 (~165k)
-    ('vanilla_transformer', 128, 4, 1, 0.5),   # ~215k, paired with sgt small_d128_h4 (~363k)
+    # BIGGER vanilla (CNN + transformer): the model now scales the FFN to
+    # 4*d_model and honours num_layers, so these span ~0.2M -> ~3M params to
+    # test whether a larger CNN+transformer beats the small gated SGT.
+    # NB: all entries must satisfy d_model % num_heads == 0.
+    ('vanilla_transformer',  64, 4, 1, 0.5),   # small  (width 64, 1 layer)
+    ('vanilla_transformer', 128, 4, 1, 0.5),   # width 128
+    ('vanilla_transformer', 128, 4, 2, 0.5),   # + depth
+    ('vanilla_transformer', 192, 8, 1, 0.5),   # wider
+    ('vanilla_transformer', 192, 8, 2, 0.5),   # wider + deeper
+    ('vanilla_transformer', 256, 8, 2, 0.5),   # big
+    ('vanilla_transformer', 256, 8, 3, 0.5),   # biggest (width 256, 3 layers)
 ]
 
 
@@ -132,14 +141,17 @@ VANILLA_GRID: list[tuple[str, int, int, int, float]] = [
 # ---------------------------------------------------------------------------
 SIMPLETRANSFORMER_ABLATION_GRID: list[tuple[str, int, int, int, float]] = [
     # (family, d_model, num_heads, num_layers, dropout)
-    # NOTE: SimpleTransformerV2 ignores d_model and forces it to C*H*W,
-    # so all of these end up at ~11M params (20-band) / ~1.7M (6-band).
-    # Kept for completeness but USE LIGHTWEIGHT_TRANSFORMER_GRID for a
-    # parameter-controllable transformer-alone comparison.
-    ('simpletransformer',  16, 2, 1, 0.5),
-    ('simpletransformer',  32, 4, 1, 0.5),
-    ('simpletransformer',  64, 4, 1, 0.5),
-    ('simpletransformer', 128, 4, 1, 0.5),
+    # NOTE: SimpleTransformerV2 LOCKS d_model to C*H*W (so the d=64 below is
+    # only a tag label — --hidden_size is ignored). It is ALREADY a large
+    # transformer (multi-million params); it grows ONLY via num_layers and
+    # num_heads. These probe a LARGER plain transformer (the "simple
+    # transformers that are larger" arm). All keep d%h==0 for the divisibility
+    # guard in the submit loop.
+    ('simpletransformer', 64, 4, 1, 0.5),   # baseline (1 layer, 4 heads)
+    ('simpletransformer', 64, 4, 2, 0.5),   # + depth
+    ('simpletransformer', 64, 4, 3, 0.5),   # + more depth
+    ('simpletransformer', 64, 8, 2, 0.5),   # + heads
+    ('simpletransformer', 64, 8, 4, 0.5),   # largest (4 layers, 8 heads)
 ]
 
 
@@ -512,6 +524,11 @@ def main():
                         'Pass --no-baselines to skip; --baselines-only to submit just those.')
     p.add_argument('--baselines-only', action='store_true',
                    help='Submit only the baseline bundle, skip SGT configs.')
+    p.add_argument('--small', action=argparse.BooleanOptionalAction,
+                   default=True,
+                   help='Submit the default gated-SGT small grid (DEFAULT_GRID). '
+                        'Default on; pass --no-small to skip the SGT configs, '
+                        'e.g. to run ONLY --vanilla / --simpletransformer-ablation.')
     p.add_argument('--sweep-name', type=str, default='',
                    help='Namespace outputs under sweep/<sweep-name>/ instead of '
                         'sweep/ directly. Use for max-oc sensitivity: e.g. '
@@ -582,7 +599,7 @@ def main():
     submitted: list[tuple[str, str]] = []
 
     # ---- SGT configs ------------------------------------------------------
-    if (not a.baselines_only and not a.families_only and not a.vanilla_only
+    if (a.small and not a.baselines_only and not a.families_only and not a.vanilla_only
             and not a.simpletransformer_ablation_only
             and not a.lightweight_transformer_only):
         if a.grid:

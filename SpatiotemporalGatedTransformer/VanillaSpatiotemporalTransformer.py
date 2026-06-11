@@ -23,6 +23,13 @@ hyperparameters (the gate + grn + residual_proj costs ~150k params at
 d=128). So if vanilla matches SGT on R², it's both smaller AND simpler;
 the gating doesn't earn its keep. If SGT beats vanilla, the gating earns
 its 150k overhead.
+
+Scalability note (this revision): the feed-forward width now scales as
+4*d_model and the transformer depth is exposed via num_layers (default 1),
+so vanilla can be grown to multi-layer / multi-million-param configs to test
+whether a LARGER CNN+transformer beats the small gated SGT. The
+"byte-identical to SimpleSGT except the GRN" claim above holds only at the
+original d_model=128, num_layers=1, dim_feedforward=128 setting.
 """
 import torch
 import torch.nn as nn
@@ -32,7 +39,7 @@ class VanillaSpatiotemporalTransformer(nn.Module):
     """SimpleSGT minus the Gated Residual Network."""
 
     def __init__(self, input_channels=20, height=5, width=5, time_steps=5,
-                 d_model=128, num_heads=2, dropout=0.3):
+                 d_model=128, num_heads=2, num_layers=1, dropout=0.3):
         super().__init__()
         self.time_steps = time_steps
 
@@ -52,14 +59,17 @@ class VanillaSpatiotemporalTransformer(nn.Module):
         self.feature_proj = nn.Linear(self.feature_dim, d_model)
         self.layernorm = nn.LayerNorm(d_model)
 
-        # SAME as SimpleSGT
+        # Scalable encoder: depth (num_layers) and a width-proportional
+        # feed-forward (4*d_model, the standard transformer ratio) so the
+        # model genuinely grows with d_model / num_layers — vs SimpleSGT's
+        # fixed single layer + dim_feedforward=128.
         self.pos_embedding = nn.Parameter(torch.randn(time_steps, d_model))
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model, nhead=num_heads, dropout=dropout,
-            dim_feedforward=128,
+            dim_feedforward=4 * d_model,
         )
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer,
-                                                          num_layers=1)
+                                                          num_layers=num_layers)
         self.head = nn.Sequential(
             nn.Linear(time_steps * d_model, 64),
             nn.ReLU(),

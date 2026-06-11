@@ -276,6 +276,7 @@ def _build_model(args):
             time_steps=time_before,
             d_model=args.hidden_size,
             num_heads=args.num_heads,
+            num_layers=args.num_layers,
             dropout=args.dropout_rate,
         ))
 
