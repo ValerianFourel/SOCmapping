@@ -99,6 +99,37 @@ TOP_MODELS = [
                 '--per-gpu-batch-size 256 --effective-batch-size 256 '
                 '--num-epochs 100 --seed 42 --augment-train'),
     },
+    # CNN+LSTM — sibling deep family, matched to the best-transformer recipe
+    # (d=64, h=4, L=1, L1, log, oc150, 100ep, 43-band) for a fair comparison.
+    # d=hidden_size is the LSTM hidden width; num_heads/num_layers feed the
+    # LSTM depth. Mapped via the NN inference path like the transformers.
+    {
+        'run_name': 'cnnlstm_d64_h4_L1',
+        'kind': 'nn',
+        'bands': 'full_extended',
+        'cmd': ('--model-family cnnlstm --model-size small '
+                '--hidden_size 64 --num_heads 4 --num_layers 1 '
+                '--dropout_rate 0.5 '
+                '--lr 1e-4 --lr-scheduler cosine --lr-min 1e-6 '
+                '--loss_type l1 --target_transform log --max-oc 150 '
+                '--per-gpu-batch-size 256 --effective-batch-size 256 '
+                '--num-epochs 100 --seed 42 --augment-train'),
+    },
+    # 3D-CNN — same matched recipe. Spatial-CV showed this family fails
+    # (R2<0), so its map will be poor, but the negative result belongs in
+    # the comparison figure. d/h/L are largely ignored by Small3DCNN.
+    {
+        'run_name': '3dcnn_d64_h4_L1',
+        'kind': 'nn',
+        'bands': 'full_extended',
+        'cmd': ('--model-family 3dcnn --model-size small '
+                '--hidden_size 64 --num_heads 4 --num_layers 1 '
+                '--dropout_rate 0.5 '
+                '--lr 1e-4 --lr-scheduler cosine --lr-min 1e-6 '
+                '--loss_type l1 --target_transform log --max-oc 150 '
+                '--per-gpu-batch-size 256 --effective-batch-size 256 '
+                '--num-epochs 100 --seed 42 --augment-train'),
+    },
     # Random Forest (deep) — best tree baseline; 20-band (tree extractor cap).
     {
         'run_name': 'rf_deep',
