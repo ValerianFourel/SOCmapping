@@ -41,7 +41,26 @@ from band_subsets import band_suffix  # noqa: E402
 # tracking; not used to bound performance).
 # ---------------------------------------------------------------------------
 NN_CONFIGS = [
-    # SGT (winner): SimpleSGT d=128, h=4, L=1 with composite_l2 at max-oc 150
+    # SGT spatial-CV winner (43-band extended stack): SimpleSGT d=32, h=2,
+    # L=1, plain L1 loss at max-oc 150. Top of the leave-one-block-out
+    # ranking (R2=0.387 +/- 0.101, longitude-blocked, full_extended; the
+    # compact d=32 beat every larger/deeper variant). Train this with
+    # `--bands-lists full_extended` so the run_name auto-suffixes to
+    # sgt_d32_h2_L1_extband for both train and infer.
+    {
+        'run_name': 'sgt_d32_h2_L1',
+        'cmd': (
+            '--model-family sgt --model-size small '
+            '--hidden_size 32 --num_heads 2 --num_layers 1 '
+            '--dropout_rate 0.5 '
+            '--lr 1e-4 --lr-scheduler cosine --lr-min 1e-6 '
+            '--loss_type l1 --target_transform log --max-oc 150 '
+            '--per-gpu-batch-size 256 --effective-batch-size 256 '
+            '--num-epochs 100 --seed 42 --augment-train'
+        ),
+    },
+    # SGT 20-band production variant: SimpleSGT d=128, h=4, L=1 with
+    # composite_l2 at max-oc 150 (prior winner on the 20-band stack)
     {
         'run_name': 'sgt_d128_h4_L1',
         'cmd': (

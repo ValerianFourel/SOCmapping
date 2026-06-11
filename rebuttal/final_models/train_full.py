@@ -108,6 +108,12 @@ def parse():
                         'best-epoch monitoring. NOT a spatial split — '
                         'this is monitoring only, the saved model is meant '
                         'for production mapping.')
+    p.add_argument('--monitor-n', type=int, default=0,
+                   help='Absolute number of rows to hold out at RANDOM for '
+                        'convergence monitoring. When > 0 it OVERRIDES '
+                        '--monitor-frac, so e.g. --monitor-n 300 fits on '
+                        'all-but-300 samples. Monitoring only (not spatial); '
+                        'the saved model is for production mapping.')
     p.add_argument('--bands-list', type=str, default='full_20',
                    choices=['full_20', 'original_6', 'full_extended'],
                    help='Covariate subset (default full_20). Run-name '
@@ -166,13 +172,19 @@ def main():
     rng = np.random.default_rng(args.seed)
     n = len(df)
     perm = rng.permutation(n)
-    n_mon = int(round(args.monitor_frac * n))
+    # --monitor-n (absolute count) overrides --monitor-frac when set, so the
+    # production fit can hold out exactly a few hundred rows and train on the
+    # rest. Clamp to [1, n-1] so we never empty the train or monitor split.
+    if getattr(args, 'monitor_n', 0) and args.monitor_n > 0:
+        n_mon = int(np.clip(args.monitor_n, 1, n - 1))
+    else:
+        n_mon = int(np.clip(round(args.monitor_frac * n), 1, n - 1))
     train_idx = perm[n_mon:]
     mon_idx = perm[:n_mon]
     train_df = df.iloc[train_idx].reset_index(drop=True)
     mon_df = df.iloc[mon_idx].reset_index(drop=True)
     print(f'[final] train n={len(train_df)}  monitor n={len(mon_df)} '
-          f'(fraction {args.monitor_frac:.2%}, RANDOM — not spatial)', flush=True)
+          f'(fraction {n_mon / n:.2%}, RANDOM — not spatial)', flush=True)
 
     # Feature statistics — computed once over the FULL df (matches the k-fold
     # convention and the paper's pipeline).
