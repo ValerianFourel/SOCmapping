@@ -41,7 +41,10 @@ import sys
 sys.path.insert(0, "/home/valerian/SGTPublication/SOCmapping/SamplePoints")
 import ee  # noqa: E402
 
-ee.Initialize(project="sgtmodel")
+import os as _os
+# EE export concurrency is per-project; set SGT_EE_PROJECT=<proj> to shard the
+# S2 export across projects/computers (default the canonical sgtmodel project).
+ee.Initialize(project=_os.environ.get("SGT_EE_PROJECT", "sgtmodel"))
 import gee_download_all_bands as g  # noqa: E402
 
 DRIVE_FOLDER = "bavaria_bands_2002_2023"

@@ -931,6 +931,13 @@ def main():
     ap.add_argument('--scale', type=int, default=EXPORT_SCALE_M,
                     help='Output pixel size in meters (default 250)')
     ap.add_argument('--drive-folder', default='bavaria_bands_2002_2023')
+    ap.add_argument('--project', default=None,
+                    help='EE/Cloud project to run under. Export concurrency is '
+                         'PER-PROJECT, so shard --years across several projects '
+                         '(and computers) for N× throughput. All shards write '
+                         'the same Drive folder (same Google account) with '
+                         'unique per-(band,year) filenames. Default: the EE '
+                         'credentials default project.')
     ap.add_argument('--dry-run', action='store_true',
                     help='Print what would be exported without submitting tasks')
     ap.add_argument('--no-skip-done', action='store_true',
@@ -968,7 +975,10 @@ def main():
         aoi = None
     else:
         _require_ee()
-        ee.Initialize()
+        if getattr(args, 'project', None):
+            ee.Initialize(project=args.project)
+        else:
+            ee.Initialize()
         aoi = ee.Geometry.Rectangle(BAVARIA_BBOX)
 
     # --validate-assets short-circuits the rest: probe each asset and report.
