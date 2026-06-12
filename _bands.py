@@ -54,6 +54,61 @@ FULL_EXTENDED_S2_BANDS = FULL_EXTENDED_BANDS + TIER4_S2SWIR_BANDS
 STATIC_BANDS = {'Elevation', 'S2SRC_SWIR1', 'S2SRC_SWIR2'}
 
 
+# ---------------------------------------------------------------------------
+# Sentinel-mode resolution classes. Each band's native pixel size; bands at/below
+# SENTINEL_FINE_MAX_M get a REAL 9x9 / 11x11 spatial window at the 20 m grid,
+# while coarser bands (MODIS 250 m-1 km, ERA5 ~11 km, SoilGrids 250 m) carry no
+# meaningful sub-window detail — the dataloader reads the SINGLE nearest-pixel
+# value at the point and broadcasts it across the whole window. So only the fine
+# bands need 20 m tiles; coarse bands stay a scalar-per-point (no 156x blow-up).
+# ---------------------------------------------------------------------------
+BAND_NATIVE_M = {
+    # fine (<= 30 m -> real spatial window at 20 m)
+    'Elevation': 30, 'Slope': 30, 'Aspect': 30, 'TWI': 30,
+    'TPI_90': 30, 'TPI_300': 30, 'TPI_1000': 30, 'TRI': 30, 'Roughness': 30,
+    'SRC_Blue': 30, 'SRC_Green': 30, 'SRC_Red': 30, 'SRC_NIR': 30,
+    'SRC_SWIR1': 30, 'SRC_SWIR2': 30, 'SRC_RCC': 30, 'SRC_BCC': 30,
+    'SRC_NBR2': 30, 'SRC_BSI': 30, 'SRC_ExposureCount': 30,
+    'S2SRC_SWIR1': 20, 'S2SRC_SWIR2': 20,
+    # coarse (>= 250 m -> single nearest value, broadcast across the window)
+    'LAI': 500, 'LST': 1000, 'MODIS_NPP': 500,
+    'SoilEvaporation': 500, 'TotalEvapotranspiration': 500,
+    'NDVI': 250, 'EVI': 250, 'NDVI_Amplitude': 250, 'NDVI_Integral': 250,
+    'EVI_Amplitude': 250,
+    'Precipitation': 11132, 'AirTemperature': 11132, 'SoilMoisture_layer1': 11132,
+    'SnowDepth': 11132, 'ClimaticWaterBalance': 11132,
+    'SoilTemperature_layer1': 11132, 'FrostDays': 11132, 'GrowingDegreeDays': 11132,
+    'ClayContent_0_10cm': 250, 'SandContent_0_10cm': 250, 'pH_H2O_0_10cm': 250,
+    'BulkDensity_0_10cm': 250, 'CEC_0_10cm': 250,
+}
+SENTINEL_FINE_MAX_M = 30  # bands at/below this get a real spatial window
+
+
+def is_sentinel_fine(band: str) -> bool:
+    """True -> read a real window from a 20 m tile; False -> nearest value
+    broadcast across the window (coarse covariate, no sub-window detail)."""
+    return BAND_NATIVE_M.get(band, 250) <= SENTINEL_FINE_MAX_M
+
+
+SENTINEL_FINE_BANDS    = [b for b in FULL_EXTENDED_S2_BANDS if is_sentinel_fine(b)]
+BROADCAST_COARSE_BANDS = [b for b in FULL_EXTENDED_S2_BANDS if not is_sentinel_fine(b)]
+
+
+def sentinel_mode() -> bool:
+    """Whether the 20 m sentinel sampling mode is active (SGT_SENTINEL_MODE=1).
+
+    Dataloader contract when True: build the window_size x window_size window
+    per band as
+        is_sentinel_fine(band)  -> read the real spatial patch from the 20 m tile
+        else                    -> read the SINGLE nearest-pixel value at the
+                                   point and broadcast it across the window
+    so coarse covariates cost one value per point (no 20 m tiles needed) while
+    S2/Landsat/SRTM keep true sub-window detail.
+    """
+    import os
+    return os.environ.get('SGT_SENTINEL_MODE', '0') == '1'
+
+
 def _tier(band: str) -> str:
     return 'StaticValue' if band in STATIC_BANDS else 'YearlyValue'
 

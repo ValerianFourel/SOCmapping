@@ -6,22 +6,26 @@ pair. This is a full dataset regeneration. Branch: `bestrun-bands-s2swir`.
 The current dataset is a **250 m** grid (979×979 tiles, `TILE_DEG=1.7986°`,
 12 tiles). Sentinel mode rebuilds the same tile *layout* at **20 m** pixels.
 
-## ⚠️ Scale reality (read first)
+## Design: fine bands get a real window, coarse bands are broadcast
 
-20 m is **12.5× finer per axis ⇒ ~156× more pixels per band per tile** than
-250 m. Two things this hits:
+The chosen sampling (avoids the storage blow-up):
 
-- **Stored tiles** (`tiff_to_tiles.py` writes full 979×979 tiles today): at
-  `TILE_PX=12238` each tile is ~156× larger. If the dataset stores full tiles,
-  the ~94 GB `-large` becomes **multi-TB**.
-- **Per-point windows** (what the model actually consumes): a `window_size=5`
-  window is `5×5` pixels = **100 m** at 20 m (vs **1.25 km** at 250 m). Same
-  storage per window, but a much smaller physical footprint. To keep the 1.25 km
-  context you'd raise `window_size` to ~63 (`63×20 m ≈ 1.26 km`) — which grows
-  the windowed data ~156× too.
+- **Window**: `9×9` or `11×11` (default 11; `SGT_WINDOW_SIZE=9`) at the 20 m grid.
+- **Fine bands** (`_bands.is_sentinel_fine`, native ≤ 30 m — the **22** bands:
+  S2 SWIR ×2, Landsat SRC ×11, SRTM/terrain ×9): read the **real** 9×9/11×11
+  spatial patch from a 20 m tile.
+- **Coarse bands** (≥ 250 m — the **23** bands: MODIS, ERA5, SoilGrids): there is
+  no sub-window detail at 20 m, so read the **single nearest-pixel value at the
+  point** and **broadcast** it across the whole window (one value → 9×9/11×11).
 
-**So the single biggest decision is `window_size` / physical extent** (next
-section). Confirm it before committing storage.
+**Storage consequence (the win):** only the 22 fine bands need 20 m tiles; the 23
+coarse bands stay **one value per point** (no 20 m tiles at all). So instead of
+~156× the whole dataset, the cost is ~(22 fine bands × 11×11 windows) +
+(23 coarse scalars) — close to the current windowed footprint, not multi-TB.
+
+The per-band classification lives in `_bands.py`:
+`BAND_NATIVE_M`, `is_sentinel_fine(band)`, `SENTINEL_FINE_BANDS` (22),
+`BROADCAST_COARSE_BANDS` (23), and `sentinel_mode()` (reads `SGT_SENTINEL_MODE`).
 
 ## What's wired on this branch (the enablers)
 
@@ -38,17 +42,20 @@ section). Confirm it before committing storage.
 - **Bands**: `full_extended_s2` (45) + `SGT_BANDS_S2=1` opt-in (Tier 4 S2 SWIR),
   see `S2_SWIR_BANDS_README.md`.
 
-## window_size decision (do this first)
+## Window: 9×9 / 11×11 (set by the env flag)
 
-| Goal | window_size @ 20 m | physical window | windowed storage vs now |
-|---|---|---|---|
-| Same pixel count, finer detail | 5 | 100 m | ~1× (cheapest) |
-| Same physical context as 250 m | 63 | 1.26 km | ~156× |
-| Compromise | 25 | 500 m | ~25× |
+The broadcast design fixes the window at the sentinel size — default **11×11**
+(220 m of fine-band detail), or `SGT_WINDOW_SIZE=9` for 9×9. No huge window is
+needed: fine bands carry the local 20 m detail, coarse bands are a single
+broadcast value, so a 9/11 window is the full design.
 
-Set it in the model `config.py` (`window_size`) and the spatial-CV
-`--window-size`. The tiles must be cut at `SGT_TILE_PX=12238` regardless; only
-the *window* extent differs.
+```bash
+export SGT_SENTINEL_MODE=1          # fine=real patch, coarse=broadcast
+export SGT_WINDOW_SIZE=11           # or 9
+export SGT_TILE_PX=12238            # tiling density for the FINE bands' 20 m tiles
+```
+`config.py` reads these: `window_size` becomes 11 (or 9) when sentinel mode is on
+and stays **5** otherwise, so non-sentinel runs are unchanged.
 
 ## Full pipeline (cluster / EE-authenticated)
 

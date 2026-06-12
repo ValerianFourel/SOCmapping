@@ -18,7 +18,14 @@ file_path_LUCAS_LFU_Lfl_00to23_Bavaria_OC = f"{base_path_data}/LUCAS_LFU_Lfl_00t
 
 
 time_before  = 5 # 5 works best
-window_size = 5 # 5 works best
+# Sentinel mode (SGT_SENTINEL_MODE=1): every band is mapped onto the 20 m grid —
+# fine bands (S2/Landsat/SRTM; _bands.is_sentinel_fine) get a real spatial window,
+# coarse bands carry the nearest value broadcast across it. The window is the
+# 9/11 sentinel window (default 11; override SGT_WINDOW_SIZE=9). Mode OFF keeps
+# the legacy 5 (250 m) window so existing runs are unchanged.
+window_size = int(_os.environ.get(
+    'SGT_WINDOW_SIZE',
+    '11' if _os.environ.get('SGT_SENTINEL_MODE') == '1' else '5'))
 TIME_BEGINNING = '2007'
 LOADING_TIME_BEGINNING = str(int(TIME_BEGINNING)-time_before)
 TIME_END = '2023'
