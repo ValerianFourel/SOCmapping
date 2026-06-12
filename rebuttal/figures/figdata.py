@@ -57,15 +57,105 @@ def family_of(row: dict) -> str:
     return _FAM_MAP.get(mf, mf or 'unknown')
 
 
+def _collect_via_sweep_summarize(sd: Path):
+    """Primary path (inside the repo): reuse sweep_summarize.collect() so the
+    figures are byte-consistent with the published ranking. Raises on import
+    failure (e.g. in a standalone HF-download bundle) -> caller falls back."""
+    import sweep_summarize as ss
+    ss.SWEEP_DIR = sd                          # collect() reads this module global
+    return ss.collect()
+
+
+# --- Vendored, dependency-free parser (mirrors sweep_summarize) so a bare HF
+#     download of sweep/ regenerates figures without the rest of the repo. ----
+import re as _re
+_ARCH_RE = _re.compile(r'^(small_)?d(\d+)_h(\d+)_L(\d+)$')
+_FAMILY_RE = _re.compile(r'^(vanilla_transformer|simpletransformer|'
+                         r'lightweight_transformer|cnnlstm|3dcnn)_'
+                         r'd(\d+)_h(\d+)_L(\d+)$')
+_BASELINE_RE = _re.compile(r'^baseline_(rf|xgb)_(\w+)$')
+
+
+def _parse_tag_standalone(tag: str):
+    m = _ARCH_RE.match(tag)
+    if m:
+        return (('small' if m.group(1) else 'big'),
+                int(m.group(2)), int(m.group(3)), int(m.group(4)), 'sgt')
+    m = _FAMILY_RE.match(tag)
+    if m:
+        return (m.group(1), int(m.group(2)), int(m.group(3)), int(m.group(4)),
+                m.group(1))
+    m = _BASELINE_RE.match(tag)
+    if m:
+        return ('baseline', None, None, None, m.group(1))
+    return None
+
+
+def _bands_standalone(group: str) -> str:
+    g = group or ''
+    if '_6band' in g:
+        return '6'
+    if '_extband' in g or 'extended' in g:
+        return '43'
+    return '20'
+
+
+def _collect_standalone(sd: Path):
+    """Walk kfold_results_summary.json directly (no sweep_summarize needed)."""
+    import json
+    rows = []
+    skip = {'__pycache__', 'sbatch', 'slurm_logs', 'baseline_features'}
+    for summ in sorted(Path(sd).rglob('kfold_results_summary.json')):
+        cfg_dir = summ.parent
+        rel = cfg_dir.relative_to(sd).parts
+        if any(p in skip for p in rel):
+            continue
+        tag = rel[-1]
+        group = '/'.join(rel[:-1]) or '(top)'
+        parsed = _parse_tag_standalone(tag)
+        if parsed is None:
+            continue
+        try:
+            j = json.loads(summ.read_text())
+        except Exception:
+            continue
+        ac = j.get('across_folds', {})
+        recipe = j.get('recipe', {})
+        fr = j.get('fold_results', [])
+        axis = j.get('split_axis')
+        if not axis:
+            axis = 'lon' if (fr and 'lon_lo' in fr[0]) else 'lat'
+        rows.append({
+            'tag': tag, 'sweep_group': group,
+            'variant': parsed[0], 'd_model': parsed[1],
+            'num_heads': parsed[2], 'num_layers': parsed[3],
+            'model_name': parsed[4], 'model_family': recipe.get('model_family') or parsed[4],
+            'axis': axis, 'bands': _bands_standalone(group),
+            'n_bands': recipe.get('n_bands'), 'max_oc': recipe.get('max_oc'),
+            'loss': recipe.get('loss_type'),
+            'n_folds': len(fr),
+            'r2_mean': ac.get('r2_mean'), 'r2_std': ac.get('r2_std'),
+            'rmse_mean': ac.get('rmse_mean'), 'mae_mean': ac.get('mae_mean'),
+            'rpiq_mean': ac.get('rpiq_mean'),
+            'r2_per_fold': [f.get('r2', float('nan')) for f in fr],
+            'status': 'ok',
+        })
+    return rows
+
+
 def load_ranking(sweep_dir=None) -> list[dict]:
     """All sweep config rows (status ok), each with score, family, config_dir.
 
-    Sorted by score (mean_R2 - 0.5*SD) descending, like sweep_summarize.
+    Sorted by score (mean_R2 - 0.5*SD) descending, like sweep_summarize. Uses
+    sweep_summarize.collect() inside the repo; falls back to a vendored parser
+    so a standalone HF download of sweep/ still works.
     """
-    import sweep_summarize as ss
     sd = Path(sweep_dir) if sweep_dir else SWEEP_DIR_DEFAULT
-    ss.SWEEP_DIR = sd                          # collect() reads this module global
-    rows = [r for r in ss.collect() if r.get('r2_mean') is not None]
+    try:
+        raw = _collect_via_sweep_summarize(sd)
+    except Exception:
+        raw = _collect_standalone(sd)
+    rows = [r for r in raw if r.get('r2_mean') is not None]
     for r in rows:
         r['score'] = float(r['r2_mean']) - 0.5 * float(r.get('r2_std') or 0.0)
         r['family'] = family_of(r)

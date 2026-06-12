@@ -94,7 +94,28 @@ def make_bundles(root: Path) -> dict:
             'ignore': ['**/__pycache__/**'],
             'size': 'small',
         },
+        'code': {
+            'src':  root / 'figures',
+            'dest': 'code',
+            'desc': 'Figure-generation code so the bundle regenerates itself: '
+                    'figstyle.py, figdata.py (standalone loaders), every '
+                    'figXX/figFx script, run_all_figures.py.',
+            'allow': ['*.py'],
+            'ignore': ['**/__pycache__/**', 'out/**'],
+            'size': 'small',
+        },
     }
+
+
+def make_extra_files(root: Path) -> list[tuple[Path, str]]:
+    """Individual (src, dest-in-repo) files uploaded via upload_file:
+    the dataset card (README.md) and param_counts.py (needed by figFA/figFB/
+    fig08 param annotations)."""
+    return [
+        (root / 'HF_DATASET_README.md', 'README.md'),
+        (root / 'gpu_experiments' / 'spatial_kfold' / 'param_counts.py',
+         'code/param_counts.py'),
+    ]
 
 
 def _match_any(rel: str, patterns) -> bool:
@@ -150,7 +171,7 @@ def parse_args(argv=None):
                     help='HF token; falls back to env HF_TOKEN / HUGGING_FACE_HUB_TOKEN')
     ap.add_argument('--include', nargs='+', default=None,
                     metavar='BUNDLE',
-                    help='subset of {checkpoints, sweep, maps, figures}; default all')
+                    help='subset of {checkpoints, sweep, maps, figures, code}; default all')
     ap.add_argument('--dry-run', action='store_true',
                     help='list planned files; no network, no token needed')
     ap.add_argument('--large', action='store_true',
@@ -189,6 +210,18 @@ def main(argv=None) -> int:
         grand_files += len(files)
         grand_bytes += sum(s for _, s in files)
 
+    # Individual extra files (README dataset card + param_counts.py). Tied to
+    # the 'code' bundle being selected so a results-only --include skips them.
+    extras = []
+    if 'code' in names:
+        for src, dest in make_extra_files(Path(args.root)):
+            if src.exists():
+                extras.append((src, dest, src.stat().st_size))
+                grand_files += 1
+                grand_bytes += src.stat().st_size
+            else:
+                print(f'[upload] SKIP extra {dest}: missing {src}', file=sys.stderr)
+
     print(f'== HF upload plan ==  repo=datasets/{args.repo_id}')
     for name in names:
         b = bundles[name]
@@ -201,6 +234,8 @@ def main(argv=None) -> int:
               f'({len(files)} files, {_human(nbytes)})')
         for rel, sz in files:
             print(f'      {b["dest"]}/{rel}  ({_human(sz)})')
+    for src, dest, sz in extras:
+        print(f'  [extra] {src}  ->  {dest}   ({_human(sz)})')
     print(f'== total: {grand_files} files, {_human(grand_bytes)} ==')
 
     if args.dry_run:
@@ -261,6 +296,18 @@ def main(argv=None) -> int:
             uploaded.append(name)
         except Exception as e:  # noqa: BLE001 — report and continue with next bundle
             print(f'[upload] FAILED {name}: {e}', file=sys.stderr)
+
+    for src, dest, _sz in extras:
+        try:
+            api.upload_file(
+                repo_id=args.repo_id, repo_type='dataset',
+                path_or_fileobj=str(src), path_in_repo=dest,
+                commit_message=f'{args.commit_message} [{dest}]',
+            )
+            print(f'[upload] DONE extra -> {dest}')
+            uploaded.append(dest)
+        except Exception as e:  # noqa: BLE001
+            print(f'[upload] FAILED extra {dest}: {e}', file=sys.stderr)
 
     if not uploaded:
         print('BLOCKED no bundle uploaded successfully')
