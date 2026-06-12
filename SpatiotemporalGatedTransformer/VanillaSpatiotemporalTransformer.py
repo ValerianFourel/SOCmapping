@@ -39,9 +39,11 @@ class VanillaSpatiotemporalTransformer(nn.Module):
     """SimpleSGT minus the Gated Residual Network."""
 
     def __init__(self, input_channels=20, height=5, width=5, time_steps=5,
-                 d_model=128, num_heads=2, num_layers=1, dropout=0.3):
+                 d_model=128, num_heads=2, num_layers=1, dropout=0.3,
+                 use_linear_skip=True):
         super().__init__()
         self.time_steps = time_steps
+        self.use_linear_skip = use_linear_skip
 
         # SAME as SimpleSGT
         self.spatial_encoder = nn.Sequential(
@@ -70,11 +72,17 @@ class VanillaSpatiotemporalTransformer(nn.Module):
         )
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer,
                                                           num_layers=num_layers)
+        # Head: linear-skip baseline + MLP residual (matched to SimpleSGT so the
+        # gate ablation differs ONLY by the GRN). The linear skip restores
+        # dynamic range for a crisper, less mean-biased production map.
+        feat_dim = time_steps * d_model
+        self.head_norm = nn.LayerNorm(feat_dim)
         self.head = nn.Sequential(
-            nn.Linear(time_steps * d_model, 64),
+            nn.Linear(feat_dim, 64),
             nn.ReLU(),
             nn.Linear(64, 1),
         )
+        self.linear_skip = nn.Linear(feat_dim, 1) if use_linear_skip else None
 
     def forward(self, x):
         """x: (B, C, H, W, T) — matches the project-wide dataloader output."""
@@ -95,9 +103,11 @@ class VanillaSpatiotemporalTransformer(nn.Module):
         x = x + self.pos_embedding                    # (B, T, d_model)
         x = x.permute(1, 0, 2)                        # (T, B, d_model)
         x = self.transformer_encoder(x)               # (T, B, d_model)
-        x = x.permute(1, 0, 2).reshape(B, -1)         # (B, T * d_model)
-        x = self.head(x)
-        return x.squeeze()
+        feat = x.permute(1, 0, 2).reshape(B, -1)      # (B, T * d_model)
+        out = self.head(self.head_norm(feat))
+        if self.linear_skip is not None:
+            out = out + self.linear_skip(feat)
+        return out.squeeze()
 
     def count_parameters(self):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)

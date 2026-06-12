@@ -44,9 +44,11 @@ class LightweightTransformer(nn.Module):
     """Transformer-only spatiotemporal regressor. NO CNN frontend."""
 
     def __init__(self, input_channels=20, height=5, width=5, time_steps=5,
-                 d_model=128, num_heads=4, num_layers=1, dropout=0.3):
+                 d_model=128, num_heads=4, num_layers=1, dropout=0.3,
+                 use_linear_skip=True):
         super().__init__()
         self.time_steps = time_steps
+        self.use_linear_skip = use_linear_skip
         self.flat_dim = input_channels * height * width   # e.g. 20*5*5 = 500
 
         # Single linear "embedding" — direct projection from the flattened
@@ -83,6 +85,9 @@ class LightweightTransformer(nn.Module):
             nn.ReLU(),
             nn.Linear(64, 1),
         )
+        # linear-skip baseline (crispness / dynamic range), default ON
+        self.linear_skip = nn.Linear(time_steps * d_model, 1) \
+            if use_linear_skip else None
 
     def forward(self, x):
         """x: (B, C, H, W, T) — matches the project-wide dataloader output."""
@@ -106,10 +111,12 @@ class LightweightTransformer(nn.Module):
         x = x.permute(1, 0, 2)                 # (B, T, d_model)
         x = self.head_norm(x)
 
-        # Flatten and predict
-        x = x.reshape(B, -1)                   # (B, T * d_model)
-        x = self.head(x)
-        return x.squeeze()
+        # Flatten and predict (linear skip + MLP residual)
+        feat = x.reshape(B, -1)                # (B, T * d_model)
+        out = self.head(feat)
+        if self.linear_skip is not None:
+            out = out + self.linear_skip(feat)
+        return out.squeeze()
 
     def count_parameters(self):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)

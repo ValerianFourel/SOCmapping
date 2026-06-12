@@ -203,6 +203,8 @@ def _build_model(args):
                     d_model=args.hidden_size,
                     num_heads=args.num_heads,
                     dropout=args.dropout_rate,
+                    use_linear_skip=getattr(args, 'linear_skip', True),
+                    spatial_pool=getattr(args, 'spatial_pool', 'avg'),
                 )
             else:
                 from EnhancedSGT import EnhancedSGT
@@ -261,6 +263,7 @@ def _build_model(args):
             num_heads=args.num_heads,
             num_layers=args.num_layers,
             dropout_rate=args.dropout_rate,
+            use_linear_skip=getattr(args, 'linear_skip', True),
         ))
 
     if family == 'vanilla_transformer':
@@ -278,6 +281,7 @@ def _build_model(args):
             num_heads=args.num_heads,
             num_layers=args.num_layers,
             dropout=args.dropout_rate,
+            use_linear_skip=getattr(args, 'linear_skip', True),
         ))
 
     if family == 'lightweight_transformer':
@@ -297,6 +301,7 @@ def _build_model(args):
             num_heads=args.num_heads,
             num_layers=args.num_layers,
             dropout=args.dropout_rate,
+            use_linear_skip=getattr(args, 'linear_skip', True),
         ))
 
     raise ValueError(f'Unknown --model-family: {family!r}. '
@@ -1052,6 +1057,8 @@ def write_results(fold_results: list[dict], args):
             'model_size': getattr(args, 'model_size', None),
             'hidden_size': getattr(args, 'hidden_size', None),
             'dropout_rate': getattr(args, 'dropout_rate', None),
+            'spatial_pool': getattr(args, 'spatial_pool', 'avg'),
+            'use_linear_skip': getattr(args, 'linear_skip', True),
             'seed_base': getattr(args, 'seed_base', None),
             'lr': args.lr, 'loss_type': args.loss_type,
             'target_transform': args.target_transform,
@@ -1291,6 +1298,22 @@ def parse_args():
                         '43-band runs from blowing up SimpleTransformer\'s '
                         'd_model and to give the new Tier 1/2/3 bands a '
                         'dedicated representation pathway.')
+    p.add_argument('--spatial-pool', type=str, default='avg',
+                   choices=['avg', 'max', 'avgmax'],
+                   help='[sgt/small flagship] spatial pooling in the CNN '
+                        'front end. "avg" (default) = smooth (original). "max" '
+                        '= sharp local features. "avgmax" = concat both (more '
+                        'crispness, ~+50k params). Crispness lever for the '
+                        'production map; gate any gain on spatial-CV R2.')
+    p.add_argument('--linear-skip', dest='linear_skip', action='store_true',
+                   default=True,
+                   help='[sgt/small, vanilla, simpletransformer, lightweight] '
+                        'head emits a direct linear baseline + MLP residual '
+                        '(default ON). Restores dynamic range -> crisper, less '
+                        'mean-biased map, the same mechanism EnhancedSGT uses.')
+    p.add_argument('--no-linear-skip', dest='linear_skip', action='store_false',
+                   help='disable the linear-skip head (original plain-MLP head; '
+                        'for the A/B crispness ablation).')
     p.add_argument('--ext-reduced', type=int, default=8,
                    help='[--band-arch two_path only] Channel-count after '
                         'compressing the extended (non-core) bands. Default 8.')

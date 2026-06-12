@@ -3,8 +3,9 @@ import torch.nn as nn
 from config import NUM_LAYERS, NUM_HEADS
 
 class SimpleTransformerV2(nn.Module):
-    def __init__(self, input_channels=6, input_height=33, input_width=33, input_time=4, num_heads=16, num_layers=6, dropout_rate=0.3):
+    def __init__(self, input_channels=6, input_height=33, input_width=33, input_time=4, num_heads=16, num_layers=6, dropout_rate=0.3, use_linear_skip=True):
         super(SimpleTransformerV2, self).__init__()
+        self.use_linear_skip = use_linear_skip
 
         # Calculate d_model ensuring it is divisible by num_heads
         self.d_model = input_channels * input_height * input_width
@@ -35,6 +36,9 @@ class SimpleTransformerV2(nn.Module):
         self.fc2 = nn.Linear(512, 256)
         self.fc3 = nn.Linear(256, 128)
         self.fc4 = nn.Linear(128, 1)
+        # direct linear-skip baseline (crispness / dynamic range), default ON
+        self.linear_skip = nn.Linear(self.d_model * 2 * input_time, 1) \
+            if use_linear_skip else None
 
         # Activation and dropout
         self.relu = nn.ReLU()
@@ -66,8 +70,8 @@ class SimpleTransformerV2(nn.Module):
         x = x.transpose(0, 1)
         x = x.reshape(batch_size, -1)
 
-        # Fully connected layers with dropout and residual connections
-        residual = x
+        # Fully connected head (MLP residual) + direct linear-skip baseline
+        feat = x
         x = self.fc1(x)
         x = self.relu(x)
         x = self.dropout(x)
@@ -81,6 +85,8 @@ class SimpleTransformerV2(nn.Module):
         x = self.dropout(x)
 
         x = self.fc4(x)
+        if self.linear_skip is not None:
+            x = x + self.linear_skip(feat)
 
         return x.squeeze()
 

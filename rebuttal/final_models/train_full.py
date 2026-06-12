@@ -90,6 +90,13 @@ def parse():
     p.add_argument('--model-family', type=str, default='sgt',
                    choices=['sgt', '3dcnn', 'cnnlstm', 'simpletransformer',
                             'vanilla_transformer', 'lightweight_transformer'])
+    # crispness controls for the sgt/small flagship (consumed by
+    # run_kfold._build_model; default ON = crisp linear-skip head).
+    p.add_argument('--spatial-pool', type=str, default='avg',
+                   choices=['avg', 'max', 'avgmax'])
+    p.add_argument('--linear-skip', dest='linear_skip', action='store_true',
+                   default=True)
+    p.add_argument('--no-linear-skip', dest='linear_skip', action='store_false')
     p.add_argument('--per-gpu-batch-size', type=int, default=256)
     p.add_argument('--effective-batch-size', type=int, default=256)
     p.add_argument('--accum-steps', type=int, default=0)
