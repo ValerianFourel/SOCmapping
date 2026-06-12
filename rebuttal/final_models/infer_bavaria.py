@@ -313,7 +313,13 @@ def predict_tree(args, run_dir: Path, grid_df: pd.DataFrame) -> np.ndarray:
         time_before=time_before,
     )
     n = len(ds)
-    X = np.empty((n, 80), dtype=np.float32)
+    # Per-band {mean, std, min, max}. The 1mil mapping dataset serves the
+    # full bands_list_order stack (43 bands in the extended setup), so
+    # _aggregate_cube returns 4*len(bands_list_order) features; we slice down
+    # to the tree's band subset below. Hardcoding 80 assumed a 20-band cube
+    # and made every point fail the X[i] broadcast on the 43-band grid.
+    n_feat = 4 * len(bands_list_order)
+    X = np.empty((n, n_feat), dtype=np.float32)
     n_missing = 0
     first_errors: list[str] = []   # collect first few exceptions for diagnosis
     t0 = time.time()
@@ -347,8 +353,9 @@ def predict_tree(args, run_dir: Path, grid_df: pd.DataFrame) -> np.ndarray:
                 'predictions on X=zeros would be a meaningless constant. '
                 'Diagnose the dataset error above before re-running.\n')
 
-    # If the trained tree was on a band subset, slice the 80-d feature
-    # vector down to its matching columns before prediction.
+    # If the trained tree was on a band subset, slice the full per-band
+    # feature vector (4*len(bands_list_order)) down to its matching columns
+    # before prediction — e.g. full_20 → first 80 cols, original_6 → 24 cols.
     bands_used = cfg.get('bands_list', 'full_20')
     band_indices = get_band_indices(bands_used, list(bands_list_order))
     if len(band_indices) < len(bands_list_order):
