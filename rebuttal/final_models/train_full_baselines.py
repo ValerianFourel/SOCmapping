@@ -66,9 +66,11 @@ def parse():
     p.add_argument('--rf-max-depth', type=int, default=0,
                    help='0 = unbounded')
     p.add_argument('--bands-list', type=str, default='full_20',
-                   choices=['full_20', 'original_6'],
+                   choices=['full_20', 'original_6', 'full_extended'],
                    help='Covariate subset (default full_20). Run-name '
-                        'auto-appends "_6band" or "_20band".')
+                        'auto-appends "_6band" / "_20band" / "_extband". '
+                        'full_extended keeps all 43 bands → 172 features '
+                        '(no slice); predict_tree handles the 172-wide cube.')
     p.add_argument('--sampler-mode', type=str, default='none',
                    choices=['none', 'kde'],
                    help='Training sample weighting. "none" (default): each '
@@ -127,6 +129,18 @@ def main():
         X = X[:, col_indices]
         print(f'[baseline-final] --bands-list={args.bands_list}: sliced X '
               f'to {X.shape} ({len(band_indices)} bands × 4 stats)', flush=True)
+
+    # Guard against a stale feature cache: full_extended needs all 172 columns
+    # (43 bands × 4). An old cache extracted at 80 (20-band) would silently
+    # train on the wrong width and fail at inference, so fail loudly here.
+    expected_feats = 4 * len(band_indices)
+    if X.shape[1] != expected_feats:
+        raise SystemExit(
+            f'\n[ERROR] feature width {X.shape[1]} != expected {expected_feats} '
+            f'for --bands-list={args.bands_list}. The cached feature matrix is '
+            f'likely a stale 20-band (80-col) extraction. Delete it and re-run '
+            f'so it re-extracts all {len(bands_list_order)} bands:\n'
+            f'  rm {cache_path}\n')
 
     # Target transform — log/normalize/none. Targets are tracked in train
     # space; predictions inverse-transformed before any reporting.
