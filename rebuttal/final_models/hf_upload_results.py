@@ -40,7 +40,10 @@ import sys
 from pathlib import Path
 
 REPO_ID_DEFAULT = 'ValerianFourel/SOCrebuttal'
-ROOT_DEFAULT = Path('/home/valerian/SGTPublication/SOCmapping/rebuttal')
+# Derive the rebuttal/ root from this script's location (this file lives at
+# rebuttal/final_models/hf_upload_results.py) so it works on any machine —
+# laptop, HoreKa, JUPITER — not just the original hardcoded laptop path.
+ROOT_DEFAULT = Path(__file__).resolve().parent.parent
 
 
 # --------------------------------------------------------------------------
