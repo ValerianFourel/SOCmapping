@@ -58,11 +58,18 @@ def _s2_mask_scl(img):
     return img.updateMask(keep)
 
 
-def s2_bare_soil_swir(aoi, y0, y1, cloud_max):
+def s2_bare_soil_swir(aoi, y0, y1, cloud_max, target_scale_m=20):
     """Multi-year bare-soil composite of B11/B12 (+ ExposureCount), 3 bands.
 
     SR scaled to reflectance (x1e-4); bare soil via NDVI in [min,max] AND NBR2 <
     max (same thresholds as the Landsat SRC); median over the masked stack.
+
+    The bare-soil composite is SPARSE at 20 m (only exposed-soil pixels survive
+    the mask). Exporting that 20 m image coarser than native with nearest-neighbor
+    sampling lands most output pixels on a masked 20 m pixel -> all-NaN. So when
+    target_scale_m > 20 we area-mean-aggregate (reduceResolution) the 20 m grid
+    into the target grid first, matching the Landsat SRC's _to_250m. At 20 m
+    (sentinel native) the sparse grid is exported as-is.
     """
     def prep(img):
         sr = img.select(["B4", "B8", "B11", "B12"]).multiply(1e-4)
@@ -85,8 +92,14 @@ def s2_bare_soil_swir(aoi, y0, y1, cloud_max):
                 .rename(["S2SRC_SWIR1", "S2SRC_SWIR2"]))
     count = (coll.select("S2SRC_SWIR1").reduce(ee.Reducer.count(), parallelScale=8)
                  .rename("S2SRC_ExposureCount"))
-    out = comp.addBands(count).toFloat().clip(aoi)
-    return out.setDefaultProjection(ref_proj)
+    out = comp.addBands(count).toFloat().setDefaultProjection(ref_proj)
+    if target_scale_m > 20:
+        # area-mean the sparse 20 m bare-soil grid into the export grid so each
+        # coarse pixel = mean of the bare-soil 20 m pixels within it (not a
+        # single nearest, usually-masked one).
+        out = (out.reduceResolution(ee.Reducer.mean(), maxPixels=1024)
+                  .reproject(crs="EPSG:4326", scale=target_scale_m))
+    return out.clip(aoi)
 
 
 def main():
@@ -105,7 +118,7 @@ def main():
 
     aoi = ee.Geometry.Rectangle(g.BAVARIA_BBOX)
     y0, y1 = args.years
-    img = s2_bare_soil_swir(aoi, y0, y1, args.cloud_max)
+    img = s2_bare_soil_swir(aoi, y0, y1, args.cloud_max, target_scale_m=args.scale)
     desc = f"s2_swir_baresoil_{y0}_{y1}"
     bands = img.bandNames().getInfo()
     print(f"[s2-swir] composite {desc}  bands={bands}  scale={args.scale} m  "
