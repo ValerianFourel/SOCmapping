@@ -231,6 +231,7 @@ def _build_model(args):
             input_width=ws,
             input_time=time_before,
             dropout_rate=args.dropout_rate,
+            use_linear_skip=getattr(args, 'linear_skip', True),
         ))
 
     if family == 'cnnlstm':
@@ -248,6 +249,7 @@ def _build_model(args):
             lstm_hidden_size=args.hidden_size,
             num_layers=args.num_layers,
             dropout=args.dropout_rate,
+            use_linear_skip=getattr(args, 'linear_skip', True),
         ))
 
     if family == 'simpletransformer':
@@ -1307,10 +1309,11 @@ def parse_args():
                         'production map; gate any gain on spatial-CV R2.')
     p.add_argument('--linear-skip', dest='linear_skip', action='store_true',
                    default=True,
-                   help='[sgt/small, vanilla, simpletransformer, lightweight] '
-                        'head emits a direct linear baseline + MLP residual '
-                        '(default ON). Restores dynamic range -> crisper, less '
-                        'mean-biased map, the same mechanism EnhancedSGT uses.')
+                   help='[all NN families: sgt/small, vanilla, simpletransformer, '
+                        'lightweight, cnnlstm, 3dcnn] head emits a direct linear '
+                        'baseline + MLP residual (default ON). Restores dynamic '
+                        'range -> crisper, less mean-biased map, the same '
+                        'mechanism EnhancedSGT uses.')
     p.add_argument('--no-linear-skip', dest='linear_skip', action='store_false',
                    help='disable the linear-skip head (original plain-MLP head; '
                         'for the A/B crispness ablation).')

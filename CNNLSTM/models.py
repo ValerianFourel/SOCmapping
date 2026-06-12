@@ -10,8 +10,8 @@ class RefittedCovLSTM(nn.Module):
     Combines CNN for spatial feature extraction and LSTM for temporal sequence processing
     Optimized for CUDA 11.8 compatibility"""
     
-    def __init__(self, num_channels, lstm_input_size, lstm_hidden_size, 
-                 num_layers=1, dropout=0.25):
+    def __init__(self, num_channels, lstm_input_size, lstm_hidden_size,
+                 num_layers=1, dropout=0.25, use_linear_skip=True):
         """
         Initialize the RefittedCovLSTM model
         
@@ -64,6 +64,11 @@ class RefittedCovLSTM(nn.Module):
         self.fc_lstm = nn.Linear(lstm_hidden_size, 64).to(dtype=torch.float32)
         self.fc_final = nn.Linear(128 + 64, 32).to(dtype=torch.float32)
         self.output = nn.Linear(32, 1).to(dtype=torch.float32)
+        # direct linear-skip baseline from the combined CNN+LSTM features
+        # (crispness / dynamic range), default ON
+        self.use_linear_skip = use_linear_skip
+        self.linear_skip = nn.Linear(128 + 64, 1).to(dtype=torch.float32) \
+            if use_linear_skip else None
 
         # Ensure all parameters are on the correct device
         self.cuda_compatible = torch.cuda.is_available()
@@ -110,7 +115,10 @@ class RefittedCovLSTM(nn.Module):
         # Combine CNN and LSTM outputs
         combined = torch.cat((x_cnn_last, x_lstm), dim=1)
         x = F.relu(self.fc_final(combined))
-        output = self.output(x).reshape(-1)
+        output = self.output(x)
+        if self.linear_skip is not None:
+            output = output + self.linear_skip(combined)
+        output = output.reshape(-1)
         
         return output
 

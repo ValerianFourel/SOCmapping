@@ -18,7 +18,7 @@ class Small3DCNN(nn.Module):
       influence SOC dynamics and need to be processed simultaneously
     """
 
-    def __init__(self, input_channels=6, input_height=10, input_width=10, input_time=4, dropout_rate=0.3):
+    def __init__(self, input_channels=6, input_height=10, input_width=10, input_time=4, dropout_rate=0.3, use_linear_skip=True):
         """
         Initialize the 3D CNN for SOC prediction.
 
@@ -68,6 +68,9 @@ class Small3DCNN(nn.Module):
 
         # Fully connected layers - final SOC prediction from extracted features
         self.fc1 = nn.Linear(self.flatten_size, 64)
+        # direct linear-skip baseline (crispness / dynamic range), default ON
+        self.use_linear_skip = use_linear_skip
+        self.linear_skip = nn.Linear(self.flatten_size, 1) if use_linear_skip else None
         # Dense layer combines all spatiotemporal features for SOC estimation
 
         self.fc2 = nn.Linear(64, 1)
@@ -131,13 +134,15 @@ class Small3DCNN(nn.Module):
         x = self.pool(x)            # Final spatial/temporal pooling
 
         # Flatten spatiotemporal features for final SOC prediction
-        x = x.view(x.size(0), -1)   # Convert 3D features to 1D vector
+        feat = x.view(x.size(0), -1)   # Convert 3D features to 1D vector
 
-        # Fully connected layers for final SOC estimation
-        x = self.fc1(x)             # Dense layer to combine all features
+        # Fully connected layers for final SOC estimation (+ linear-skip)
+        x = self.fc1(feat)          # Dense layer to combine all features
         x = self.relu(x)            # Non-linear activation
         x = self.dropout_fc(x)      # Final regularization
         x = self.fc2(x)             # Output layer: predicted SOC value
+        if self.linear_skip is not None:
+            x = x + self.linear_skip(feat)
 
         return x.squeeze()          # Remove extra dimensions, return SOC prediction
 
