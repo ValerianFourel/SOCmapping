@@ -119,7 +119,7 @@ def main():
     aoi = ee.Geometry.Rectangle(g.BAVARIA_BBOX)
     y0, y1 = args.years
     img = s2_bare_soil_swir(aoi, y0, y1, args.cloud_max, target_scale_m=args.scale)
-    desc = f"s2_swir_baresoil_{y0}_{y1}"
+    desc = f"s2_swir_baresoil_{y0}_{y1}_{args.scale}m"
     bands = img.bandNames().getInfo()
     print(f"[s2-swir] composite {desc}  bands={bands}  scale={args.scale} m  "
           f"cloud<{args.cloud_max}%")
