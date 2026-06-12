@@ -918,6 +918,7 @@ def _resolve_categories_and_bands(category_arg):
 
 
 def main():
+    global EXPORT_SCALE_M   # declared first: --scale follows the export grid (see below)
     ap = argparse.ArgumentParser()
     ap.add_argument('--category', default='curated',
                     help='curated (default — 20-band SOC set) | extended '
@@ -947,7 +948,7 @@ def main():
     # sentinel-mode `--scale 20` would still aggregate fine bands to 250 m and
     # THEN export at 20 m. Setting it here keeps source grid == export grid, so
     # `--scale 20` produces a true 20 m ("sentinel size") raster for every band.
-    global EXPORT_SCALE_M
+    # (global declared at the top of main(), before --scale's default reads it.)
     EXPORT_SCALE_M = args.scale
 
     # Pipeline state — resumable submission. Skips tasks already submitted in a previous run.
