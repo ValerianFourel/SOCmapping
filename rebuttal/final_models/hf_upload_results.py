@@ -253,9 +253,16 @@ def main(argv=None) -> int:
     token = (args.token or os.environ.get('HF_TOKEN')
              or os.environ.get('HUGGING_FACE_HUB_TOKEN'))
     if not token:
-        print('BLOCKED no HF token (pass --token or set HF_TOKEN / '
-              'HUGGING_FACE_HUB_TOKEN); re-run with --dry-run to preview',
-              file=sys.stderr)
+        # Fall back to the token cached by `hf auth login` / `huggingface-cli
+        # login` so being logged in is enough (no env var needed).
+        try:
+            from huggingface_hub import get_token
+            token = get_token()
+        except Exception:
+            token = None
+    if not token:
+        print('BLOCKED no HF token (run `hf auth login`, or pass --token / set '
+              'HF_TOKEN); re-run with --dry-run to preview', file=sys.stderr)
         return 1
 
     try:
