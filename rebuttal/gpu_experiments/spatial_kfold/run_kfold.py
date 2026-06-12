@@ -299,9 +299,26 @@ def _build_model(args):
             dropout=args.dropout_rate,
         ))
 
+    if family == 'resaware':
+        # Resolution-aware multi-branch net: process bands by native-resolution
+        # group (fine spatial patch / medium centre-MLP / coarse centre-MLP),
+        # fuse late. NOT two-path-wrapped — it does its own channel grouping.
+        from ResolutionAwareNet import ResolutionAwareNet  # noqa: E402
+        from _bands import resolution_groups               # noqa: E402
+        cube_bands = [bands_list_order[i] for i in band_indices]
+        fine, med, coarse = resolution_groups(cube_bands)
+        return ResolutionAwareNet(
+            input_channels=n_bands, height=ws, width=ws, time_steps=time_before,
+            d_model=args.hidden_size, num_heads=args.num_heads,
+            dropout=args.dropout_rate,
+            fine_idx=fine, med_idx=med, coarse_idx=coarse,
+            branches=getattr(args, 'branches', 'fine_med_coarse'),
+            ablate_group=getattr(args, 'ablate_group', None),
+        )
+
     raise ValueError(f'Unknown --model-family: {family!r}. '
                      f'Choose from: sgt, 3dcnn, cnnlstm, simpletransformer, '
-                     f'vanilla_transformer, lightweight_transformer.')
+                     f'vanilla_transformer, lightweight_transformer, resaware.')
 
 
 # ----- Output paths -------------------------------------------------------
@@ -706,6 +723,13 @@ def train_one_fold(args, fold: dict, df: pd.DataFrame,
     fold_id = fold['fold_id']
     seed = args.seed_base + fold_id
     torch.manual_seed(seed); np.random.seed(seed)
+    import random as _random
+    _random.seed(seed)
+    if getattr(args, 'deterministic', False):
+        import os as _os
+        _os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        torch.backends.cudnn.benchmark = False
 
     _where = (f'centroid ({fold["centroid_lat"]:.3f}, {fold["centroid_lon"]:.3f})'
               if fold["split_axis"] == 'cluster'
@@ -1270,9 +1294,22 @@ def parse_args():
                         'data crop consistent.')
     p.add_argument('--model-size', type=str, default='big',
                    choices=['small', 'big'])
+    p.add_argument('--branches', type=str, default='fine_med_coarse',
+                   choices=['fine', 'fine_med', 'fine_med_coarse', 'all_flat'],
+                   help='[--model-family resaware] which branches to use; '
+                        '"all_flat" is the resolution-naive concat-MLP baseline.')
+    p.add_argument('--ablate-group', type=str, default=None,
+                   choices=['fine', 'medium', 'coarse'],
+                   help='[--model-family resaware] zero one resolution group to '
+                        'measure its marginal R² contribution.')
+    p.add_argument('--deterministic', action='store_true',
+                   help='torch.use_deterministic_algorithms(True, warn_only) + '
+                        'seed python/numpy/torch — for the reproducible '
+                        'resolution-aware comparison.')
     p.add_argument('--model-family', type=str, default='sgt',
                    choices=['sgt', '3dcnn', 'cnnlstm', 'simpletransformer',
-                            'vanilla_transformer', 'lightweight_transformer'],
+                            'vanilla_transformer', 'lightweight_transformer',
+                            'resaware'],
                    help='Architecture to train. "sgt" uses the EnhancedSGT/'
                         'SimpleSGT variants (selected by --model-size). The '
                         'other four are 20-channel ports of sibling models '

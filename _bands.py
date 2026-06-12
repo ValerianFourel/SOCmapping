@@ -94,6 +94,25 @@ SENTINEL_FINE_BANDS    = [b for b in FULL_EXTENDED_S2_BANDS if is_sentinel_fine(
 BROADCAST_COARSE_BANDS = [b for b in FULL_EXTENDED_S2_BANDS if not is_sentinel_fine(b)]
 
 
+def resolution_groups(bands) -> tuple[list[int], list[int], list[int]]:
+    """Split a band-name list into (fine, medium, coarse) channel-index lists by
+    native resolution, for the resolution-aware multi-branch network:
+        fine    : native <= 30 m   (S2 SWIR 20 m, Landsat SRC + SRTM/terrain 30 m)
+                  -> real spatial patch
+        medium  : native == 250 m  (MODIS NDVI/EVI + phenology, SoilGrids)
+                  -> centre value, MLP
+        coarse  : native >= 500 m  (MODIS LAI/NPP/ET/LST, ERA5 climate)
+                  -> centre value, MLP
+    Indices are into the GIVEN band order, so it works for full_extended (43),
+    full_extended_s2 (45), or any subset.
+    """
+    fine, med, coarse = [], [], []
+    for i, b in enumerate(bands):
+        m = BAND_NATIVE_M.get(b, 250)
+        (fine if m <= 30 else med if m <= 250 else coarse).append(i)
+    return fine, med, coarse
+
+
 def sentinel_mode() -> bool:
     """Whether the 20 m sentinel sampling mode is active (SGT_SENTINEL_MODE=1).
 
