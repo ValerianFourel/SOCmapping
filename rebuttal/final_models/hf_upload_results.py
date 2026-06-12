@@ -273,9 +273,32 @@ def main(argv=None) -> int:
         return 1
 
     api = HfApi(token=token)
-    # Create the dataset repo if absent (idempotent).
-    api.create_repo(repo_id=args.repo_id, repo_type='dataset', exist_ok=True)
-    print(f'[upload] repo datasets/{args.repo_id} ready')
+    # Confirm the token actually has write access before doing anything, and
+    # give an actionable message instead of a raw 401 from deep in the stack.
+    try:
+        who = api.whoami()
+        name = who.get('name') if isinstance(who, dict) else who
+        perm = (who.get('auth', {}).get('accessToken', {}).get('role')
+                if isinstance(who, dict) else None)
+        print(f'[upload] authenticated as {name}'
+              + (f' (token role: {perm})' if perm else ''))
+    except Exception as e:
+        print(f'[upload] WARNING whoami failed ({e})', file=sys.stderr)
+    # Create the dataset repo if absent. It usually already exists, so a 401/403
+    # here is almost always a read-only/wrong-account token — surface that
+    # clearly rather than aborting on an exist_ok create.
+    try:
+        api.create_repo(repo_id=args.repo_id, repo_type='dataset', exist_ok=True)
+        print(f'[upload] repo datasets/{args.repo_id} ready')
+    except Exception as e:
+        print(f'[upload] create_repo failed: {e}', file=sys.stderr)
+        print('[upload] -> your HF token lacks WRITE access to '
+              f'{args.repo_id}. Fix with a write token:\n'
+              '         hf auth login --force        # paste a WRITE token\n'
+              '         (token from https://huggingface.co/settings/tokens, '
+              'role "write")\n'
+              '         or: export HF_TOKEN=hf_yourWriteToken', file=sys.stderr)
+        return 1
 
     uploaded = []
     for name in names:
