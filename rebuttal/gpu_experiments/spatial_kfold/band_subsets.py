@@ -44,9 +44,26 @@ FULL_20_BANDS = ORIGINAL_6_BANDS + [
 ]
 
 
-_EXT_NAMES  = {'full_extended', 'extended', 'full_all', 'all', 'ext', 'extband'}
-_FULL_NAMES = {'full', 'full_20', '20', '20band'}
-_ORIG_NAMES = {'original', 'original_6', 'orig', 'orig_6', '6', '6band'}
+# Pinned-by-name 43-band extended stack (mirrors _bands.FULL_EXTENDED_BANDS) so
+# `full_extended` resolves to exactly these 43 even after Tier-4 S2 SWIR extends
+# bands_list_order to 45 — i.e. existing 43-band runs/checkpoints are unchanged.
+_TIER_EXTENDED_BANDS = [
+    'SRC_Blue', 'SRC_Green', 'SRC_Red', 'SRC_NIR', 'SRC_SWIR1', 'SRC_SWIR2',
+    'SRC_RCC', 'SRC_BCC', 'SRC_NBR2', 'SRC_BSI', 'SRC_ExposureCount',
+    'TPI_90', 'TPI_300', 'TPI_1000', 'TRI', 'Roughness',
+    'ClimaticWaterBalance', 'SoilTemperature_layer1', 'FrostDays',
+    'GrowingDegreeDays', 'NDVI_Amplitude', 'NDVI_Integral', 'EVI_Amplitude',
+]
+FULL_EXTENDED_BANDS = FULL_20_BANDS + _TIER_EXTENDED_BANDS
+# Tier 4 — Sentinel-2 SWIR bare-soil composite (static); 45-band superset.
+_TIER4_S2SWIR_BANDS = ['S2SRC_SWIR1', 'S2SRC_SWIR2']
+FULL_EXTENDED_S2_BANDS = FULL_EXTENDED_BANDS + _TIER4_S2SWIR_BANDS
+
+
+_EXT_NAMES   = {'full_extended', 'extended', 'full_all', 'all', 'ext', 'extband'}
+_EXTS2_NAMES = {'full_extended_s2', 'extended_s2', 'exts2', 'exts2band', 's2band'}
+_FULL_NAMES  = {'full', 'full_20', '20', '20band'}
+_ORIG_NAMES  = {'original', 'original_6', 'orig', 'orig_6', '6', '6band'}
 
 
 def get_band_indices(bands_list_name: str, full_bands_list: list[str]) -> list[int]:
@@ -60,7 +77,23 @@ def get_band_indices(bands_list_name: str, full_bands_list: list[str]) -> list[i
     """
     n = bands_list_name.lower().strip().replace('-', '_')
     if n in _EXT_NAMES:
-        return list(range(len(full_bands_list)))
+        # Pinned to the 43 named bands (NOT range(len)) so the S2-extended
+        # 45-band bands_list_order does not silently grow `full_extended`.
+        missing = [b for b in FULL_EXTENDED_BANDS if b not in full_bands_list]
+        if missing:
+            raise ValueError(
+                f'full_extended bands {missing!r} not present in current '
+                f'bands_list_order {full_bands_list!r}; cannot subset.')
+        return [full_bands_list.index(b) for b in FULL_EXTENDED_BANDS]
+    if n in _EXTS2_NAMES:
+        missing = [b for b in FULL_EXTENDED_S2_BANDS if b not in full_bands_list]
+        if missing:
+            raise ValueError(
+                f'full_extended_s2 bands {missing!r} not present in '
+                f'bands_list_order; the Sentinel-2 SWIR bands are opt-in — set '
+                f'SGT_BANDS_S2=1 (and ensure the S2 rasters are downloaded) so '
+                f'config.py appends them. Present: {full_bands_list!r}.')
+        return [full_bands_list.index(b) for b in FULL_EXTENDED_S2_BANDS]
     if n in _FULL_NAMES:
         missing = [b for b in FULL_20_BANDS if b not in full_bands_list]
         if missing:
@@ -85,6 +118,8 @@ def get_band_indices(bands_list_name: str, full_bands_list: list[str]) -> list[i
 def band_suffix(bands_list_name: str) -> str:
     """Return the run-tag suffix corresponding to --bands-list."""
     n = bands_list_name.lower().strip().replace('-', '_')
+    if n in _EXTS2_NAMES:
+        return '_exts2band'
     if n in _EXT_NAMES:
         return '_extband'
     if n in _FULL_NAMES:
@@ -95,8 +130,10 @@ def band_suffix(bands_list_name: str) -> str:
 
 
 def normalize_name(bands_list_name: str) -> str:
-    """Canonicalize to either 'full_20' or 'original_6'."""
+    """Canonicalize to a known bands-list name."""
     n = bands_list_name.lower().strip().replace('-', '_')
+    if n in _EXTS2_NAMES:
+        return 'full_extended_s2'
     if n in _EXT_NAMES:
         return 'full_extended'
     if n in _FULL_NAMES:

@@ -585,7 +585,7 @@ def main():
     p.add_argument('--chi2-weight', type=float, default=0.1,
                    help='Weight on the chi-square term in composite losses (default 0.1).')
     p.add_argument('--bands-list', type=str, default='full_20',
-                   choices=['full_20', 'original_6', 'full_extended'],
+                   choices=['full_20', 'original_6', 'full_extended', 'full_extended_s2'],
                    help='Covariate subset (full_20 = revision expansion; '
                         'original_6 = original-paper subset). Auto-appends '
                         '"_6band" to the sweep-name namespace so 6-band and '

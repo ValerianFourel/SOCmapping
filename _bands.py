@@ -37,10 +37,21 @@ TIER3_DERIVED_BANDS = [
 TIER_EXTENDED_BANDS = TIER1_SRC_BANDS + TIER2_TERRAIN_BANDS + TIER3_DERIVED_BANDS
 FULL_EXTENDED_BANDS = FULL_20_BANDS + TIER_EXTENDED_BANDS
 
+# Tier 4 — Sentinel-2 SWIR bare-soil composite (B11 ~1.61 um, B12 ~2.19 um;
+# COPERNICUS/S2_SR_HARMONIZED, 20 m native — the Zepp/Broeg/Tziolas exposed-soil
+# SWIR signal for SOC). Sentinel-2 SR only covers ~2017+, so unlike the per-year
+# Landsat SRC these are a MULTI-YEAR STATIC bare-soil composite (full spatial
+# coverage, no 2002-2016 gap), materialized as the same value for every year
+# window. Appended AFTER the 43-band stack so `full_extended` keeps its
+# 43-channel meaning; the 45-channel superset is `full_extended_s2`. Opt-in via
+# the SGT_BANDS_S2=1 env flag in the per-model config.py.
+TIER4_S2SWIR_BANDS = ['S2SRC_SWIR1', 'S2SRC_SWIR2']
+FULL_EXTENDED_S2_BANDS = FULL_EXTENDED_BANDS + TIER4_S2SWIR_BANDS
+
 # Bands stored under StaticValue/<band>/ in the config path lists. Everything
 # else is YearlyValue/<band>/ — including materialized-as-yearly statics
-# (soil properties, terrain). Only Elevation uses StaticValue in the configs.
-STATIC_BANDS = {'Elevation'}
+# (soil properties, terrain). Elevation and the S2 SWIR composite use StaticValue.
+STATIC_BANDS = {'Elevation', 'S2SRC_SWIR1', 'S2SRC_SWIR2'}
 
 
 def _tier(band: str) -> str:

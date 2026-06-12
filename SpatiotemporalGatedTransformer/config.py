@@ -201,13 +201,21 @@ DataSeasonally = [elevationTensorData, LAITensorDataSeasonally, LSTTensorDataSea
 # path lists; the 1mil / Seasonally lists are intentionally left as-is (they
 # were never extended past the original 6). Single source: SOCmapping/_bands.py.
 # ---------------------------------------------------------------------------
+import os as _os  # noqa: E402
 from _bands import (  # noqa: E402
     TIER_EXTENDED_BANDS as _TIER_EXT,
+    TIER4_S2SWIR_BANDS as _TIER_S2,
     build_yearly_paths as _build_yearly_paths,
     build_1mil_coords as _build_1mil_coords,
 )
-bands_list_order = bands_list_order + _TIER_EXT
-_ext_coords, _ext_data = _build_yearly_paths(_TIER_EXT, base_path_data)
+# Tier 4 — Sentinel-2 SWIR (B11/B12) bare-soil static composite. Opt-in: only
+# appended when SGT_BANDS_S2=1 AND the S2 rasters exist on disk, taking the
+# stack from 43 to 45 bands (--bands-list full_extended_s2). Default OFF so the
+# 43-band runs/checkpoints stay byte-identical.
+_with_s2 = _os.environ.get('SGT_BANDS_S2', '0') == '1'
+_appended = _TIER_EXT + (_TIER_S2 if _with_s2 else [])
+bands_list_order = bands_list_order + _appended
+_ext_coords, _ext_data = _build_yearly_paths(_appended, base_path_data)
 SamplesCoordinates_Yearly = SamplesCoordinates_Yearly + _ext_coords
 DataYearly = DataYearly + _ext_data
 # 1.3 M-grid map inference: rebuild MatrixCoordinates_1mil_Yearly for the FULL

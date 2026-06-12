@@ -66,7 +66,7 @@ def parse():
     p.add_argument('--rf-max-depth', type=int, default=0,
                    help='0 = unbounded')
     p.add_argument('--bands-list', type=str, default='full_20',
-                   choices=['full_20', 'original_6', 'full_extended'],
+                   choices=['full_20', 'original_6', 'full_extended', 'full_extended_s2'],
                    help='Covariate subset (default full_20). Run-name '
                         'auto-appends "_6band" / "_20band" / "_extband". '
                         'full_extended keeps all 43 bands → 172 features '

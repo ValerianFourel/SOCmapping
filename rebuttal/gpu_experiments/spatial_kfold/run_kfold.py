@@ -1295,7 +1295,7 @@ def parse_args():
                    help='[--band-arch two_path only] Channel-count after '
                         'compressing the extended (non-core) bands. Default 8.')
     p.add_argument('--bands-list', type=str, default='full_20',
-                   choices=['full_20', 'original_6', 'full_extended'],
+                   choices=['full_20', 'original_6', 'full_extended', 'full_extended_s2'],
                    help='Covariate-stack subset. "full_20" = the 20 revision '
                         'bands (default). "full_extended" = 20 + Tier 1/2/3 '
                         'covariates (Landsat SRC, multi-scale terrain, '
