@@ -942,6 +942,14 @@ def main():
                          'before you commit to a 140-task batch.')
     args = ap.parse_args()
 
+    # Make the source-resampling target follow --scale. _to_250m() (and the
+    # scale_native_m defaults) read this module global, so without this a
+    # sentinel-mode `--scale 20` would still aggregate fine bands to 250 m and
+    # THEN export at 20 m. Setting it here keeps source grid == export grid, so
+    # `--scale 20` produces a true 20 m ("sentinel size") raster for every band.
+    global EXPORT_SCALE_M
+    EXPORT_SCALE_M = args.scale
+
     # Pipeline state — resumable submission. Skips tasks already submitted in a previous run.
     state = None
     if not args.no_state:

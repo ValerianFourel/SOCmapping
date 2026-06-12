@@ -50,10 +50,15 @@ except ImportError:
 # Tile grid — exact reproduction of the existing Elevation layout.
 # Each tile spans TILE_DEG° in both lat and lon. Edges abut without gap.
 # ---------------------------------------------------------------------------
+import os as _os  # noqa: E402
 TILE_LAT_NORTH = [48.5095, 50.3062, 52.1028]
 TILE_LON_WEST  = [7.1864, 8.9831, 10.7797, 12.5763]
 TILE_DEG       = 1.7986
-TILE_PX        = 979
+# Pixels per tile. 979 == the 250 m grid. For the sentinel 20 m regeneration set
+# SGT_TILE_PX=12238 (= round(979 * 250/20)) so each TILE_DEG° tile is sampled at
+# ~20 m; the (lat,lon) abutting layout is unchanged, only the pixel density.
+# Keep this consistent with the gee_download_all_bands.py --scale used to export.
+TILE_PX        = int(_os.environ.get('SGT_TILE_PX', '979'))
 
 
 def tile_bbox(tile_id: int) -> tuple[float, float, float, float]:
