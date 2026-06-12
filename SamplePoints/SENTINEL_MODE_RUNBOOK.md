@@ -79,9 +79,13 @@ export SGT_TILE_PX=12238
 #   must index the 20 m pixel grid (pixel i,j of each point changes with TILE_PX).
 #   Regenerate with the existing coordinate-builder against the 20 m tiles.
 
-# 4) Publish the 20 m variant to a DISTINCT HF path so the 250 m -large is intact:
-#   e.g. ValerianFourel/sgt-bavaria-soc-2002-2023-large  under a  20m/  prefix
-#   (or a sibling dataset -large-20m). Same dtype/grid/NoData convention.
+# 4) Publish to the NEW sentinel dataset (sibling of -large, 250 m one intact):
+#      ValerianFourel/sgt-bavaria-soc-2002-2023-large-sentinel
+#    Resumable upload_large_folder + dataset card, mirroring hf_publish_large:
+huggingface-cli login
+bash scripts/hf_sentinel_complete_loop.sh /path/to/Data_sentinel_20m
+#   (or one pass: python scripts/hf_publish_sentinel.py --src /path/to/Data_sentinel_20m
+#    --dry-run to preview). Same float32 / NoData=NaN convention as -large.
 
 # 5) Train / map at sentinel resolution:
 export SGT_BANDS_S2=1
