@@ -42,9 +42,12 @@ run_one() {  # tag branches ablate
   echo ">>> $tag : python train_resaware_windowed.py ${args[*]}"
   case "$CLUSTER" in
     horeka)
+      # HoreKa has no single runtime env script (horeka_setup.sh is one-time);
+      # load modules + venv inside the job. Override SGT_VENV if your layout differs.
+      HK_VENV="${SGT_VENV:-$WORK/SGT/venv}"
       sbatch -p accelerated -A hk-project-p0026831 --gres=gpu:1 \
              --cpus-per-task 12 --time 08:00:00 -J "rsaw_$tag" \
-             --wrap "cd $HERE && python train_resaware_windowed.py ${args[*]}" ;;
+             --wrap "module purge && module load compiler/gnu/13 devel/cuda/12.4 && source $HK_VENV/bin/activate && cd $HERE && python train_resaware_windowed.py ${args[*]}" ;;
     jupiter)
       sbatch -p booster -A scifi --gres=gpu:1 --cpus-per-task 4 --time 08:00:00 \
              -J "rsaw_$tag" \
