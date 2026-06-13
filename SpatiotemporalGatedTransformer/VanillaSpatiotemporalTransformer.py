@@ -40,21 +40,26 @@ class VanillaSpatiotemporalTransformer(nn.Module):
 
     def __init__(self, input_channels=20, height=5, width=5, time_steps=5,
                  d_model=128, num_heads=2, num_layers=1, dropout=0.3,
-                 use_linear_skip=True, use_static_head=True):
+                 use_linear_skip=True, use_static_head=True,
+                 spatial_pool='avg', head_hidden=64, use_film=False):
         super().__init__()
         self.time_steps = time_steps
         self.use_linear_skip = use_linear_skip
         self.use_static_head = use_static_head
+        self.spatial_pool = spatial_pool
+        self.use_film = use_film
 
-        # SAME as SimpleSGT
-        self.spatial_encoder = nn.Sequential(
+        # CNN (matched to SimpleSGT) with selectable pooling (avg/max/avgmax).
+        self.conv = nn.Sequential(
             nn.Conv2d(input_channels, 16, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.Conv2d(16, 32, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.AdaptiveAvgPool2d((4, 4)),
         )
-        self.feature_dim = 32 * 4 * 4  # 512
+        self.avg_pool = nn.AdaptiveAvgPool2d((4, 4))
+        self.max_pool = nn.AdaptiveMaxPool2d((4, 4))
+        pool_mult = 2 if spatial_pool == 'avgmax' else 1
+        self.feature_dim = 32 * 4 * 4 * pool_mult
 
         # ABLATION: replace SimpleSGT's gated block (lines 23-36 in
         # SimpleSGT.py) with a single Linear + LayerNorm. No gate, no
@@ -79,9 +84,10 @@ class VanillaSpatiotemporalTransformer(nn.Module):
         feat_dim = time_steps * d_model
         self.head_norm = nn.LayerNorm(feat_dim)
         self.head = nn.Sequential(
-            nn.Linear(feat_dim, 64),
+            nn.Linear(feat_dim, head_hidden),
             nn.ReLU(),
-            nn.Linear(64, 1),
+            nn.Dropout(dropout),
+            nn.Linear(head_hidden, 1),
         )
         self.linear_skip = nn.Linear(feat_dim, 1) if use_linear_skip else None
         # Sharp static-covariate head (centre-pixel terrain/soil -> output),
@@ -90,6 +96,16 @@ class VanillaSpatiotemporalTransformer(nn.Module):
         self.static_head = nn.Sequential(
             nn.Linear(input_channels, 48), nn.ReLU(), nn.Linear(48, 1),
         ) if use_static_head else None
+        # FiLM: terrain/soil covariates modulate the feature (scale, shift).
+        self.film = nn.Linear(input_channels, 2 * feat_dim) if use_film else None
+
+    def _spatial(self, x):
+        x = self.conv(x)
+        if self.spatial_pool == 'avgmax':
+            return torch.cat([self.avg_pool(x), self.max_pool(x)], dim=1)
+        if self.spatial_pool == 'max':
+            return self.max_pool(x)
+        return self.avg_pool(x)
 
     def forward(self, x):
         """x: (B, C, H, W, T) — matches the project-wide dataloader output."""
@@ -100,7 +116,7 @@ class VanillaSpatiotemporalTransformer(nn.Module):
 
         # Per-timestep CNN feature extraction (identical to SimpleSGT)
         x = x.permute(0, 4, 1, 2, 3).reshape(B * T, C, H, W)
-        x = self.spatial_encoder(x)
+        x = self._spatial(x)
         x = x.view(B, T, -1)                          # (B, T, feature_dim)
 
         # ----- ABLATION: plain projection in place of the GRN -----
@@ -113,6 +129,9 @@ class VanillaSpatiotemporalTransformer(nn.Module):
         x = x.permute(1, 0, 2)                        # (T, B, d_model)
         x = self.transformer_encoder(x)               # (T, B, d_model)
         feat = x.permute(1, 0, 2).reshape(B, -1)      # (B, T * d_model)
+        if self.film is not None:                     # FiLM terrain modulation
+            g, b = self.film(centre).chunk(2, dim=-1)
+            feat = feat * (1.0 + torch.tanh(g)) + b
         out = self.head(self.head_norm(feat))
         if self.linear_skip is not None:
             out = out + self.linear_skip(feat)

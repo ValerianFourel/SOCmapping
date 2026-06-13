@@ -21,13 +21,15 @@ class SimpleSGT(nn.Module):
 
     def __init__(self, input_channels=6, height=5, width=5, time_steps=5,
                  d_model=128, num_heads=2, dropout=0.3, use_linear_skip=True,
-                 spatial_pool='avg', use_static_head=True):
+                 spatial_pool='avg', use_static_head=True, head_hidden=64,
+                 use_film=False):
         super(SimpleSGT, self).__init__()
 
         self.time_steps = time_steps
         self.use_linear_skip = use_linear_skip
         self.spatial_pool = spatial_pool
         self.use_static_head = use_static_head
+        self.use_film = use_film
 
         # CNN to extract spatial features per timestep
         self.conv = nn.Sequential(
@@ -70,10 +72,16 @@ class SimpleSGT(nn.Module):
         feat_dim = time_steps * d_model
         self.head_norm = nn.LayerNorm(feat_dim)
         self.head_mlp = nn.Sequential(
-            nn.Linear(feat_dim, 64),
+            nn.Linear(feat_dim, head_hidden),
             nn.ReLU(),
-            nn.Linear(64, 1)
+            nn.Dropout(dropout),
+            nn.Linear(head_hidden, 1)
         )
+        # FiLM: static terrain/soil covariates predict a (scale, shift) that
+        # MODULATES the spatiotemporal feature before the head — lets terrain
+        # gate the whole prediction (mountain vs plain regime) multiplicatively,
+        # far more expressive than the additive static head.
+        self.film = nn.Linear(input_channels, 2 * feat_dim) if use_film else None
         # Direct linear baseline from the pooled temporal features. Lets the
         # network emit a high-dynamic-range linear regression and learn only the
         # residual via the MLP — keeps sharp high-SOC predictions instead of
@@ -133,6 +141,9 @@ class SimpleSGT(nn.Module):
 
         # Flatten temporal features and predict (linear skip + MLP residual)
         feat = x.permute(1, 0, 2).reshape(B, -1)  # (B, T*d_model)
+        if self.film is not None:                 # FiLM terrain modulation
+            g, b = self.film(centre).chunk(2, dim=-1)
+            feat = feat * (1.0 + torch.tanh(g)) + b
         out = self.head_mlp(self.head_norm(feat))
         if self.linear_skip is not None:
             out = out + self.linear_skip(feat)

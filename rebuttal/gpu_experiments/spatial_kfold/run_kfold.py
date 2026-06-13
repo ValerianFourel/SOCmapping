@@ -206,6 +206,8 @@ def _build_model(args):
                     use_linear_skip=getattr(args, 'linear_skip', True),
                     spatial_pool=getattr(args, 'spatial_pool', 'avg'),
                     use_static_head=getattr(args, 'static_head', True),
+                    head_hidden=getattr(args, 'head_hidden', 64),
+                    use_film=getattr(args, 'film', False),
                 )
             else:
                 from EnhancedSGT import EnhancedSGT
@@ -286,6 +288,9 @@ def _build_model(args):
             dropout=args.dropout_rate,
             use_linear_skip=getattr(args, 'linear_skip', True),
             use_static_head=getattr(args, 'static_head', True),
+            spatial_pool=getattr(args, 'spatial_pool', 'avg'),
+            head_hidden=getattr(args, 'head_hidden', 64),
+            use_film=getattr(args, 'film', False),
         ))
 
     if family == 'lightweight_transformer':
@@ -1064,6 +1069,8 @@ def write_results(fold_results: list[dict], args):
             'spatial_pool': getattr(args, 'spatial_pool', 'avg'),
             'use_linear_skip': getattr(args, 'linear_skip', True),
             'use_static_head': getattr(args, 'static_head', True),
+            'head_hidden': getattr(args, 'head_hidden', 64),
+            'use_film': getattr(args, 'film', False),
             'seed_base': getattr(args, 'seed_base', None),
             'lr': args.lr, 'loss_type': args.loss_type,
             'target_transform': args.target_transform,
@@ -1329,6 +1336,17 @@ def parse_args():
                         '(crisper map). Default ON. ~+2k params.')
     p.add_argument('--no-static-head', dest='static_head', action='store_false',
                    help='disable the sharp static-covariate head (A/B).')
+    p.add_argument('--head-hidden', type=int, default=64,
+                   help='[sgt/small, vanilla] width of the output-head hidden '
+                        'layer. 64 = original (narrow); 256 = more expressive '
+                        'output mapping so the model can span the full SOC range.')
+    p.add_argument('--film', dest='film', action='store_true', default=False,
+                   help='[sgt/small, vanilla] FiLM modulation: the centre-pixel '
+                        'terrain/soil covariates predict a (scale, shift) that '
+                        'MODULATES the spatiotemporal feature before the head — '
+                        'terrain gates the whole prediction (mountain/plain '
+                        'regime), the most expressive variant.')
+    p.add_argument('--no-film', dest='film', action='store_false')
     p.add_argument('--ext-reduced', type=int, default=8,
                    help='[--band-arch two_path only] Channel-count after '
                         'compressing the extended (non-core) bands. Default 8.')

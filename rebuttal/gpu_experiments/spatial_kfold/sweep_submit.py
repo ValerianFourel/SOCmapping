@@ -258,7 +258,9 @@ def build_sbatch(tag: str, variant: str, d: int, h: int, L: int, args) -> str:
         '-- '
         f'--model-size {variant} '
         f'--hidden_size {d} --num_heads {h} --num_layers {L} '
-        '--dropout_rate 0.5 '
+        f'--dropout_rate {args.dropout} '
+        f'--head-hidden {args.head_hidden} '
+        + ('--film ' if args.film else '') +
         f'--lr {args.lr} --lr-scheduler cosine --lr-min 1e-6 '
         f'--loss_type {args.loss_type} '
         f'--loss-alpha {args.loss_alpha} --chi2-weight {args.chi2_weight} '
@@ -329,7 +331,9 @@ def build_family_sbatch(tag: str, family: str, d: int, h: int, L: int,
         '--model-size small '
         f'--model-family {family} '
         f'--hidden_size {d} --num_heads {h} --num_layers {L} '
-        f'--dropout_rate {dropout} '
+        f'--dropout_rate {args.dropout} '
+        f'--head-hidden {args.head_hidden} '
+        + ('--film ' if args.film else '') +
         f'--lr {args.lr} --lr-scheduler cosine --lr-min 1e-6 '
         f'--loss_type {args.loss_type} '
         f'--loss-alpha {args.loss_alpha} --chi2-weight {args.chi2_weight} '
@@ -584,6 +588,15 @@ def main():
     p.add_argument('--spatial-pool', type=str, default='avg',
                    choices=['avg', 'max', 'avgmax'],
                    help='[sgt/small] CNN pooling: max/avgmax sharpen the map.')
+    p.add_argument('--dropout', type=float, default=0.5,
+                   help='dropout rate. 0.5 = original (heavy, compresses '
+                        'range); 0.2-0.3 = more expressive.')
+    p.add_argument('--head-hidden', type=int, default=64,
+                   help='[sgt/small, vanilla] output-head width (64 orig, '
+                        '256 more expressive).')
+    p.add_argument('--film', dest='film', action='store_true', default=False,
+                   help='[sgt/small, vanilla] FiLM terrain modulation (most '
+                        'expressive variant).')
     p.add_argument('--loss-type', type=str, default='l1',
                    choices=['l1', 'mse', 'chi2', 'composite_l1', 'composite_l2'],
                    help='Training loss for neural-network configs (SGT + families). '

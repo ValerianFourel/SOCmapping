@@ -100,6 +100,9 @@ def parse():
     p.add_argument('--static-head', dest='static_head', action='store_true',
                    default=True)
     p.add_argument('--no-static-head', dest='static_head', action='store_false')
+    p.add_argument('--head-hidden', type=int, default=64)
+    p.add_argument('--film', dest='film', action='store_true', default=False)
+    p.add_argument('--no-film', dest='film', action='store_false')
     p.add_argument('--per-gpu-batch-size', type=int, default=256)
     p.add_argument('--effective-batch-size', type=int, default=256)
     p.add_argument('--accum-steps', type=int, default=0)
