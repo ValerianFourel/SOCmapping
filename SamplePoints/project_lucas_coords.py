@@ -95,6 +95,12 @@ def load_tile_index(raster_dir: Path) -> tuple[list[dict], cKDTree]:
         tiles.append(meta)
     if len(tiles) == 0:
         raise FileNotFoundError(f"No ID*.npy tiles in {raster_dir}")
+    # Tile pixel size is resolution-dependent (979 @250m, 8158 @30m, 12238 @20m).
+    # Read it from the actual tile (mmap → no full load) instead of assuming 979,
+    # so coords index the native grid the tiles were cut on.
+    tpx = int(np.load(tiles[0]['path'], mmap_mode='r').shape[0])
+    for t in tiles:
+        t['tile_px'] = tpx
     centres = np.array([[t['center_lon'], t['center_lat']] for t in tiles])
     tree = cKDTree(centres)
     return tiles, tree
@@ -108,7 +114,7 @@ def project_point(lon: float, lat: float, tiles: list[dict], tree: cKDTree) -> t
         t = tiles[ci]
         if t['w'] <= lon <= t['e'] and t['s'] <= lat <= t['n']:
             n, s, w, e = t['n'], t['s'], t['w'], t['e']
-            tile_px = 979
+            tile_px = t.get('tile_px', 979)
             col = int(round((lon - w) / (e - w) * (tile_px - 1)))
             row = int(round((n - lat) / (n - s) * (tile_px - 1)))
             col = max(0, min(tile_px - 1, col))
@@ -159,7 +165,7 @@ def project_all(raster_dir: Path, lon_lat: np.ndarray) -> np.ndarray:
     if knn_idx.shape[0] == 1 and knn_idx.size != n_points:
         knn_idx = knn_idx.T  # k=1 edge case
 
-    tile_px = 979
+    tile_px = tiles[0].get('tile_px', 979)
     unassigned = np.ones(n_points, dtype=bool)
 
     for ki in range(k):
