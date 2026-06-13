@@ -21,12 +21,13 @@ class SimpleSGT(nn.Module):
 
     def __init__(self, input_channels=6, height=5, width=5, time_steps=5,
                  d_model=128, num_heads=2, dropout=0.3, use_linear_skip=True,
-                 spatial_pool='avg'):
+                 spatial_pool='avg', use_static_head=True):
         super(SimpleSGT, self).__init__()
 
         self.time_steps = time_steps
         self.use_linear_skip = use_linear_skip
         self.spatial_pool = spatial_pool
+        self.use_static_head = use_static_head
 
         # CNN to extract spatial features per timestep
         self.conv = nn.Sequential(
@@ -79,6 +80,21 @@ class SimpleSGT(nn.Module):
         # collapsing toward the mean.
         self.linear_skip = nn.Linear(feat_dim, 1) if use_linear_skip else None
 
+        # === SHARP static-covariate head =================================
+        # The mountain-high / plain-low SOC differential is driven by the
+        # static topographic + soil covariates (Elevation, Slope, Aspect, TWI,
+        # TPI, TRI, Roughness, Clay/Sand/pH/BulkDensity/CEC). The CNN avg-pools
+        # them (smooths) and the transformer treats them as temporal. This head
+        # reads the covariate vector at the EXACT location (centre pixel,
+        # un-pooled) and adds its contribution directly to the output, so the
+        # terrain/soil drivers hit the prediction sharply -> a crisper map with
+        # a stronger high/low differential.
+        self.static_head = nn.Sequential(
+            nn.Linear(input_channels, 48),
+            nn.ReLU(),
+            nn.Linear(48, 1),
+        ) if use_static_head else None
+
     def _spatial(self, x):
         x = self.conv(x)
         if self.spatial_pool == 'avgmax':
@@ -91,6 +107,10 @@ class SimpleSGT(nn.Module):
         # x: [B, C, H, W, T]
         B, C, H, W, T = x.shape
         assert T == self.time_steps
+
+        # centre-pixel covariate vector (un-pooled, time-averaged) for the sharp
+        # static head — the exact location's terrain/soil signature.
+        centre = x[:, :, H // 2, W // 2, :].mean(dim=-1)  # (B, C)
 
         # Move time to front and reshape for CNN: (B*T, C, H, W)
         x = x.permute(0, 4, 1, 2, 3).reshape(B * T, C, H, W)
@@ -116,6 +136,8 @@ class SimpleSGT(nn.Module):
         out = self.head_mlp(self.head_norm(feat))
         if self.linear_skip is not None:
             out = out + self.linear_skip(feat)
+        if self.static_head is not None:
+            out = out + self.static_head(centre)   # sharp terrain/soil term
 
         return out.squeeze()
 

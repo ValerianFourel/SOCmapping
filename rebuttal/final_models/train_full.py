@@ -97,6 +97,9 @@ def parse():
     p.add_argument('--linear-skip', dest='linear_skip', action='store_true',
                    default=True)
     p.add_argument('--no-linear-skip', dest='linear_skip', action='store_false')
+    p.add_argument('--static-head', dest='static_head', action='store_true',
+                   default=True)
+    p.add_argument('--no-static-head', dest='static_head', action='store_false')
     p.add_argument('--per-gpu-batch-size', type=int, default=256)
     p.add_argument('--effective-batch-size', type=int, default=256)
     p.add_argument('--accum-steps', type=int, default=0)

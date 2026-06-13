@@ -205,6 +205,7 @@ def _build_model(args):
                     dropout=args.dropout_rate,
                     use_linear_skip=getattr(args, 'linear_skip', True),
                     spatial_pool=getattr(args, 'spatial_pool', 'avg'),
+                    use_static_head=getattr(args, 'static_head', True),
                 )
             else:
                 from EnhancedSGT import EnhancedSGT
@@ -1061,6 +1062,7 @@ def write_results(fold_results: list[dict], args):
             'dropout_rate': getattr(args, 'dropout_rate', None),
             'spatial_pool': getattr(args, 'spatial_pool', 'avg'),
             'use_linear_skip': getattr(args, 'linear_skip', True),
+            'use_static_head': getattr(args, 'static_head', True),
             'seed_base': getattr(args, 'seed_base', None),
             'lr': args.lr, 'loss_type': args.loss_type,
             'target_transform': args.target_transform,
@@ -1317,6 +1319,15 @@ def parse_args():
     p.add_argument('--no-linear-skip', dest='linear_skip', action='store_false',
                    help='disable the linear-skip head (original plain-MLP head; '
                         'for the A/B crispness ablation).')
+    p.add_argument('--static-head', dest='static_head', action='store_true',
+                   default=True,
+                   help='[sgt/small] sharp static-covariate head: reads the '
+                        'centre-pixel (un-pooled) terrain/soil covariates and '
+                        'adds them straight to the output, so the topography-'
+                        'driven high/low SOC differential is predicted sharply '
+                        '(crisper map). Default ON. ~+2k params.')
+    p.add_argument('--no-static-head', dest='static_head', action='store_false',
+                   help='disable the sharp static-covariate head (A/B).')
     p.add_argument('--ext-reduced', type=int, default=8,
                    help='[--band-arch two_path only] Channel-count after '
                         'compressing the extended (non-core) bands. Default 8.')
