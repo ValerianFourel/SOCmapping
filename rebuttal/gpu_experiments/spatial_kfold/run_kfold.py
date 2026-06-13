@@ -1529,8 +1529,32 @@ def harvest_residuals_one_fold(args, fold, df, accelerator,
     test_ds = make_dataset(test_df, fmeans, fstds,
                            band_indices=_bi, window_size=hargs.window_size)
 
+    # Match the saved head/flags: older checkpoints may lack static_head/film and
+    # place head_mlp's final Linear at index 2 (no Dropout) instead of 3. Detect
+    # from the keys and remap; the inserted Dropout is a no-op in eval(), so the
+    # forward output reproduces the original model exactly.
+    sd = ckpt['model_state_dict']
+    has = lambda p: any(p in k for k in sd)
+    hargs.static_head = has('static_head')
+    hargs.film = has('.film.')
+    hargs.linear_skip = has('linear_skip')
     model = _build_model(hargs)
-    model.load_state_dict(ckpt['model_state_dict'])
+    msd = model.state_dict()
+    adapted = {}
+    for k, v in sd.items():
+        if k in msd and msd[k].shape == v.shape:
+            adapted[k] = v
+            continue
+        alt = k.replace('head_mlp.2.', 'head_mlp.3.')   # Dropout inserted -> shift
+        adapted[alt if (alt in msd and msd[alt].shape == v.shape) else k] = v
+    missing, unexpected = model.load_state_dict(adapted, strict=False)
+    crit = [k for k in missing if 'num_batches_tracked' not in k]
+    if crit:
+        raise RuntimeError(f'fold {fold_id}: weights failed to load '
+                           f'(missing={crit[:6]} unexpected={unexpected[:6]})')
+    print(f'[harvest] fold {fold_id}: loaded ckpt '
+          f'(static_head={hargs.static_head}, film={hargs.film}, '
+          f'remap_head={has("head_mlp.2.")})', flush=True)
     model = accelerator.prepare(model)
     model.eval()
 
