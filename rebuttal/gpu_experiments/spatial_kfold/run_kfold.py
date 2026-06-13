@@ -1558,23 +1558,29 @@ def harvest_residuals_one_fold(args, fold, df, accelerator,
     model = accelerator.prepare(model)
     model.eval()
 
+    def _to_np(t):
+        if hasattr(t, 'detach'):
+            t = t.detach().cpu()
+        return np.atleast_1d(np.asarray(t, dtype=float))
+
     def _predict(ds):
-        loader = accelerator.prepare(
-            DataLoader(ds, batch_size=args.per_gpu_batch_size, shuffle=False,
-                       num_workers=0, pin_memory=True))
+        # plain loader (no accelerator.prepare): keeps lon/lat/y on CPU; only x
+        # is moved to the GPU. model is already on-device + in eval().
+        loader = DataLoader(ds, batch_size=args.per_gpu_batch_size, shuffle=False,
+                            num_workers=0, pin_memory=True)
         P, LO, LA, AC = [], [], [], []
         with torch.no_grad():
             for lon, lat, x, y in loader:
                 x = x.to(accelerator.device, non_blocking=True)
-                p = np.atleast_1d(model(x).float().cpu().numpy())
+                p = np.atleast_1d(model(x).float().detach().cpu().numpy())
                 if ttf == 'log':
                     p = np.exp(p)
                 elif ttf == 'normalize':
                     p = p * tstd + tmean
                 P.append(p)
-                LO.append(np.atleast_1d(np.asarray(lon, dtype=float)))
-                LA.append(np.atleast_1d(np.asarray(lat, dtype=float)))
-                AC.append(np.atleast_1d(np.asarray(y, dtype=float)))
+                LO.append(_to_np(lon))
+                LA.append(_to_np(lat))
+                AC.append(_to_np(y))
         return (np.concatenate(P), np.concatenate(LO),
                 np.concatenate(LA), np.concatenate(AC))
 
