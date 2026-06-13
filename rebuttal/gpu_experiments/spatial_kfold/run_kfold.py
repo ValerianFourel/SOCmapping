@@ -1386,6 +1386,11 @@ def parse_args():
     p.add_argument('--fold', type=int, default=None,
                    help='Run a single fold by ID (0..num_folds-1). '
                         'Default: run all folds sequentially.')
+    p.add_argument('--harvest-residuals', action='store_true',
+                   help='Do NOT train. Load each fold_<i>_best.pth and harvest '
+                        'BOTH in-fold (TRAIN) and out-of-fold (TEST) residuals, '
+                        'writing residuals_train_test.parquet for the train-vs-test '
+                        'Q-Q. Use the SAME flags as the original run so folds match.')
     p.add_argument('--seed-base', type=int, default=42,
                    help='Per-fold seed = seed_base + fold_id.')
     # ----- Modeling-domain cap (the rebuttal anchor) -----
@@ -1487,6 +1492,80 @@ def aggregate_from_disk(args) -> int:
 # --------------------------------------------------------------------------
 # Main — sequential, single GPU, one Accelerator for all folds
 # --------------------------------------------------------------------------
+def harvest_residuals_one_fold(args, fold, df, accelerator,
+                               feature_means, feature_stds,
+                               target_mean, target_std):
+    """No training: load fold_<i>_best.pth and harvest BOTH in-fold (TRAIN) and
+    out-of-fold (TEST) predictions, reusing the EXACT fold geometry / dataset /
+    model / inverse-transform as train_one_fold. Returns {'train': df, 'test':
+    df} with columns (split, GPS_LONG, GPS_LAT, OC_actual, OC_predicted,
+    residual, fold_id); everything is read from the loader, so no df-schema
+    assumptions are made. TRAIN here is each fold-model evaluated on its own
+    training split — pooling all folds gives the in-fold residual distribution
+    (every sample appears in the 9 folds that trained on it)."""
+    fold_id = fold['fold_id']
+    pth_path = OUT_DIR / f'fold_{fold_id}_best.pth'
+    if not pth_path.exists():
+        print(f'[harvest] fold {fold_id}: missing {pth_path.name}; skip', flush=True)
+        return None
+    ckpt = torch.load(pth_path, map_location='cpu')
+    fmeans = ckpt.get('feature_means', feature_means)
+    fstds = ckpt.get('feature_stds', feature_stds)
+    tmean = ckpt.get('target_mean', target_mean)
+    tstd = ckpt.get('target_std', target_std)
+    ttf = ckpt.get('target_transform', getattr(args, 'target_transform', 'log'))
+
+    # Build model + dataset from the SAVED args (authoritative architecture /
+    # bands / window), so the caller only needs the FOLD flags to match.
+    import argparse as _ap
+    hargs = _ap.Namespace(**{**vars(args), **(ckpt.get('args') or {})})
+
+    train_df_raw = df.loc[fold['train_idx']].reset_index(drop=True)
+    test_df = df.loc[fold['test_idx']].reset_index(drop=True)
+    _bi = get_band_indices(getattr(hargs, 'bands_list', 'full_20'),
+                           list(bands_list_order))
+    train_ds = make_dataset(train_df_raw, fmeans, fstds,
+                            band_indices=_bi, window_size=hargs.window_size)
+    test_ds = make_dataset(test_df, fmeans, fstds,
+                           band_indices=_bi, window_size=hargs.window_size)
+
+    model = _build_model(hargs)
+    model.load_state_dict(ckpt['model_state_dict'])
+    model = accelerator.prepare(model)
+    model.eval()
+
+    def _predict(ds):
+        loader = accelerator.prepare(
+            DataLoader(ds, batch_size=args.per_gpu_batch_size, shuffle=False,
+                       num_workers=0, pin_memory=True))
+        P, LO, LA, AC = [], [], [], []
+        with torch.no_grad():
+            for lon, lat, x, y in loader:
+                x = x.to(accelerator.device, non_blocking=True)
+                p = np.atleast_1d(model(x).float().cpu().numpy())
+                if ttf == 'log':
+                    p = np.exp(p)
+                elif ttf == 'normalize':
+                    p = p * tstd + tmean
+                P.append(p)
+                LO.append(np.atleast_1d(np.asarray(lon, dtype=float)))
+                LA.append(np.atleast_1d(np.asarray(lat, dtype=float)))
+                AC.append(np.atleast_1d(np.asarray(y, dtype=float)))
+        return (np.concatenate(P), np.concatenate(LO),
+                np.concatenate(LA), np.concatenate(AC))
+
+    def _frame(ds, split):
+        p, lo, la, ac = _predict(ds)
+        return pd.DataFrame({'split': split, 'GPS_LONG': lo, 'GPS_LAT': la,
+                             'OC_actual': ac, 'OC_predicted': p,
+                             'residual': p - ac, 'fold_id': fold_id})
+
+    out = {'train': _frame(train_ds, 'train'), 'test': _frame(test_ds, 'test')}
+    print(f"[harvest] fold {fold_id}: train n={len(out['train'])} "
+          f"test n={len(out['test'])}  (transform={ttf})", flush=True)
+    return out
+
+
 def main():
     global OUT_DIR
     args = parse_args()
@@ -1537,6 +1616,42 @@ def main():
             raise SystemExit(f'--fold {args.fold} out of range [0, {args.num_folds - 1}]')
     else:
         folds_to_run = folds_meta
+
+    # ----- Harvest-only mode: load saved weights, dump train+test residuals ----
+    if getattr(args, 'harvest_residuals', False):
+        parts = [harvest_residuals_one_fold(
+                     args, f, df, accelerator,
+                     feature_means, feature_stds, target_mean, target_std)
+                 for f in folds_to_run]
+        parts = [p for p in parts if p is not None]
+        if not parts:
+            raise SystemExit('[harvest] no fold_*_best.pth under '
+                             f'{OUT_DIR} — run with the SAME flags as training.')
+        train_pool = pd.concat([p['train'] for p in parts], ignore_index=True)
+        test_all = pd.concat([p['test'] for p in parts], ignore_index=True)
+        # AVERAGE each sample's in-fold prediction across the (≤9) folds that
+        # trained on it -> ONE train residual per point, matching the per-point
+        # out-of-fold test set. Key on location + actual (stable across folds).
+        key = ['GPS_LONG', 'GPS_LAT', 'OC_actual']
+        train_avg = (train_pool.groupby(key, as_index=False)
+                     .agg(OC_predicted=('OC_predicted', 'mean'),
+                          n_train_folds=('OC_predicted', 'size')))
+        train_avg['residual'] = train_avg['OC_predicted'] - train_avg['OC_actual']
+        train_avg['split'] = 'train'
+        test_all = test_all.copy()
+        test_all['split'] = 'test'
+        cols = ['split', 'GPS_LONG', 'GPS_LAT', 'OC_actual', 'OC_predicted', 'residual']
+        out_path = OUT_DIR / 'residuals_train_test.parquet'
+        pd.concat([train_avg[cols], test_all[cols]], ignore_index=True).to_parquet(out_path)
+        print(f'[harvest] wrote {out_path}', flush=True)
+        print(f'[harvest] TRAIN (per-point avg over '
+              f'{train_avg.n_train_folds.mean():.1f} folds) n={len(train_avg)} '
+              f'resid mean={train_avg.residual.mean():+.3f} '
+              f'sd={train_avg.residual.std():.3f} | '
+              f'TEST n={len(test_all)} '
+              f'resid mean={test_all.residual.mean():+.3f} '
+              f'sd={test_all.residual.std():.3f}', flush=True)
+        return
 
     t_start = time.time()
     fold_results = []
