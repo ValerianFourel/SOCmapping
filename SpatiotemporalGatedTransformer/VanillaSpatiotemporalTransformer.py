@@ -40,10 +40,11 @@ class VanillaSpatiotemporalTransformer(nn.Module):
 
     def __init__(self, input_channels=20, height=5, width=5, time_steps=5,
                  d_model=128, num_heads=2, num_layers=1, dropout=0.3,
-                 use_linear_skip=True):
+                 use_linear_skip=True, use_static_head=True):
         super().__init__()
         self.time_steps = time_steps
         self.use_linear_skip = use_linear_skip
+        self.use_static_head = use_static_head
 
         # SAME as SimpleSGT
         self.spatial_encoder = nn.Sequential(
@@ -83,11 +84,19 @@ class VanillaSpatiotemporalTransformer(nn.Module):
             nn.Linear(64, 1),
         )
         self.linear_skip = nn.Linear(feat_dim, 1) if use_linear_skip else None
+        # Sharp static-covariate head (centre-pixel terrain/soil -> output),
+        # matched to SimpleSGT: expresses the topography-driven high/low SOC
+        # differential directly, so the model spans the full SOC range.
+        self.static_head = nn.Sequential(
+            nn.Linear(input_channels, 48), nn.ReLU(), nn.Linear(48, 1),
+        ) if use_static_head else None
 
     def forward(self, x):
         """x: (B, C, H, W, T) — matches the project-wide dataloader output."""
         B, C, H, W, T = x.shape
         assert T == self.time_steps
+
+        centre = x[:, :, H // 2, W // 2, :].mean(dim=-1)  # (B, C) sharp static term
 
         # Per-timestep CNN feature extraction (identical to SimpleSGT)
         x = x.permute(0, 4, 1, 2, 3).reshape(B * T, C, H, W)
@@ -107,6 +116,8 @@ class VanillaSpatiotemporalTransformer(nn.Module):
         out = self.head(self.head_norm(feat))
         if self.linear_skip is not None:
             out = out + self.linear_skip(feat)
+        if self.static_head is not None:
+            out = out + self.static_head(centre)
         return out.squeeze()
 
     def count_parameters(self):

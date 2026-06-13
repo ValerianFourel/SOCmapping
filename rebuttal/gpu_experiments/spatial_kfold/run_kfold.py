@@ -285,6 +285,7 @@ def _build_model(args):
             num_layers=args.num_layers,
             dropout=args.dropout_rate,
             use_linear_skip=getattr(args, 'linear_skip', True),
+            use_static_head=getattr(args, 'static_head', True),
         ))
 
     if family == 'lightweight_transformer':

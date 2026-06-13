@@ -262,7 +262,8 @@ def build_sbatch(tag: str, variant: str, d: int, h: int, L: int, args) -> str:
         f'--lr {args.lr} --lr-scheduler cosine --lr-min 1e-6 '
         f'--loss_type {args.loss_type} '
         f'--loss-alpha {args.loss_alpha} --chi2-weight {args.chi2_weight} '
-        '--target_transform log '
+        f'--target_transform {args.target_transform} '
+        f'--spatial-pool {args.spatial_pool} '
         '--per-gpu-batch-size 256 --effective-batch-size 256 '
         f'--num-epochs {args.epochs} --seed-base {args.seed_base} '
         f'--max-oc {args.max_oc} '
@@ -332,7 +333,8 @@ def build_family_sbatch(tag: str, family: str, d: int, h: int, L: int,
         f'--lr {args.lr} --lr-scheduler cosine --lr-min 1e-6 '
         f'--loss_type {args.loss_type} '
         f'--loss-alpha {args.loss_alpha} --chi2-weight {args.chi2_weight} '
-        '--target_transform log '
+        f'--target_transform {args.target_transform} '
+        f'--spatial-pool {args.spatial_pool} '
         '--per-gpu-batch-size 256 --effective-batch-size 256 '
         f'--num-epochs {args.epochs} --seed-base {args.seed_base} '
         f'--max-oc {args.max_oc} '
@@ -574,6 +576,14 @@ def main():
     p.add_argument('--lightweight-transformer-only', action='store_true',
                    help='Submit ONLY the LightweightTransformer grid, '
                         'skip SGT/families/vanilla/simpletransformer/baselines.')
+    p.add_argument('--target-transform', type=str, default='log',
+                   choices=['log', 'none', 'normalize'],
+                   help='SOC target transform. log (default) compresses high '
+                        'SOC; none/normalize keep the full dynamic range so the '
+                        'high-OC mountains pop on a fixed scale.')
+    p.add_argument('--spatial-pool', type=str, default='avg',
+                   choices=['avg', 'max', 'avgmax'],
+                   help='[sgt/small] CNN pooling: max/avgmax sharpen the map.')
     p.add_argument('--loss-type', type=str, default='l1',
                    choices=['l1', 'mse', 'chi2', 'composite_l1', 'composite_l2'],
                    help='Training loss for neural-network configs (SGT + families). '
