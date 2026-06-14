@@ -37,9 +37,10 @@ YEARS = list(range(2002, 2024))
 
 class WindowedSentinel2Dataset(Dataset):
     def __init__(self, root, bands=None, time_before=5, window=11,
-                 standardize=True, fill=0.0):
+                 standardize=True, fill=0.0, preload=True):
         self.root = Path(root)
         self.T = int(time_before); self.W = int(window); self.fill = float(fill)
+        self.preload = bool(preload)
         self.bands = list(bands) if bands else [b for b in FULL if self._has(b)]
         self.labels = pd.read_parquet(self.root / '_labels.parquet').reset_index(drop=True)
         self.N = len(self.labels)
@@ -48,8 +49,15 @@ class WindowedSentinel2Dataset(Dataset):
         # resolution-group indices INTO self.bands (for ResolutionAwareNet)
         f, m, c = B.resolution_groups(self.bands)
         self.fine_idx, self.med_idx, self.coarse_idx = f, m, c
+        if self.preload:                       # load every band-array into RAM once
+            self._warm()                       # (~4 GB) — kills the per-sample np.load I/O
         if standardize:
             self._fit_stats()
+
+    def _warm(self):
+        for b in self.bands:
+            for y in (YEARS if self._yearly(b) else [YEARS[0]]):
+                self._arr(b, y)
 
     # --- file helpers -------------------------------------------------------
     def _yearly(self, band):
@@ -64,9 +72,10 @@ class WindowedSentinel2Dataset(Dataset):
     def _arr(self, band, year):
         key = f"{band}_{year}" if self._yearly(band) else f"{band}_static"
         a = self._cache.get(key)
-        if a is None:
+        if a is None and key not in self._cache:
             p = self._path(band, year)
-            a = np.load(p, mmap_mode='r') if p.exists() else None
+            # preload → full array in RAM (fast per-sample); else mmap (lazy)
+            a = (np.load(p) if self.preload else np.load(p, mmap_mode='r')) if p.exists() else None
             self._cache[key] = a
         return a
 

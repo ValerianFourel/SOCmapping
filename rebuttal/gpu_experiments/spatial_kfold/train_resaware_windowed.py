@@ -89,29 +89,49 @@ def set_determinism(seed):
         pass
 
 
-def train_eval_fold(ds, tr_idx, te_idx, args, dev):
-    C = len(ds.bands)
+def _fit_inv(y_tr, transform):
+    """Return (fwd, inv) for the target transform, fit on the TRAIN OC values.
+    fwd: OC->model space; inv: model space->SOC. R^2 is always computed in SOC."""
+    if transform == 'log':
+        return (lambda y: torch.log(y.clamp_min(1e-3)),
+                lambda p: torch.exp(p.clamp(-3.0, 9.0)))
+    if transform == 'normalize':
+        m, s = float(y_tr.mean()), float(y_tr.std() + 1e-10)
+        return (lambda y: (y - m) / s, lambda p: p * s + m)
+    return (lambda y: y, lambda p: p)                       # 'none'
+
+
+def train_eval_fold(X, y_oc, tr, te, args, dev, dims):
+    """Train ResolutionAwareNet on the PRECOMPUTED cube tensor X (no per-epoch
+    assembly). Target transformed per --target-transform (default log); R^2 kept
+    in ORIGINAL SOC space at the BEST epoch (canonical recipe)."""
+    fine_idx, med_idx, coarse_idx, C = dims
     net = ResolutionAwareNet(C, height=args.window_size, width=args.window_size,
                              time_steps=args.time_before, branches=args.branches,
-                             ablate_group=args.ablate_group, fine_idx=ds.fine_idx,
-                             med_idx=ds.med_idx, coarse_idx=ds.coarse_idx).to(dev)
+                             ablate_group=args.ablate_group, fine_idx=fine_idx,
+                             med_idx=med_idx, coarse_idx=coarse_idx).to(dev)
     opt = torch.optim.Adam(net.parameters(), lr=args.lr)
     lossf = torch.nn.L1Loss() if args.loss == 'l1' else torch.nn.MSELoss()
-    tl = DataLoader(Subset(ds, tr_idx), batch_size=args.batch_size, shuffle=True,
-                    num_workers=args.workers, drop_last=False)
-    net.train()
-    for _ in range(args.epochs):
-        for x, y in tl:
-            x, y = x.to(dev).float(), y.to(dev).float()
-            opt.zero_grad(); loss = lossf(net(x), y); loss.backward(); opt.step()
-    net.eval(); preds, gts = [], []
-    with torch.no_grad():
-        for x, y in DataLoader(Subset(ds, te_idx), batch_size=args.batch_size,
-                               num_workers=args.workers):
-            preds.append(net(x.to(dev).float()).cpu().numpy()); gts.append(y.numpy())
-    p = np.concatenate(preds); g = np.concatenate(gts)
-    return {'r2': r2_score(g, p), 'rmse': float(np.sqrt(((g - p) ** 2).mean())),
-            'n_test': int(len(g))}, net.count_parameters()
+    tr = torch.as_tensor(tr, dtype=torch.long); te = torch.as_tensor(te, dtype=torch.long)
+    fwd, inv = _fit_inv(y_oc[tr], args.target_transform)
+    g = y_oc[te].to(dev)                                    # SOC ground truth (test)
+    best = {'r2': -float('inf'), 'rmse': float('nan'), 'best_epoch': -1, 'n_test': int(len(te))}
+    bs = args.batch_size
+    for ep in range(args.epochs):
+        net.train(); perm = tr[torch.randperm(len(tr))]
+        for s in range(0, len(perm), bs):
+            b = perm[s:s + bs]
+            xb = X[b].to(dev).float(); yb = fwd(y_oc[b].to(dev))
+            opt.zero_grad(); lossf(net(xb), yb).backward(); opt.step()
+        net.eval(); P = []
+        with torch.no_grad():
+            for s in range(0, len(te), bs):
+                P.append(inv(net(X[te[s:s + bs]].to(dev).float())))
+        p = torch.cat(P)
+        r = float(1 - ((g - p) ** 2).sum() / (((g - g.mean()) ** 2).sum() + 1e-12))
+        if r > best['r2']:
+            best.update(r2=r, rmse=float(((g - p) ** 2).mean().sqrt()), best_epoch=ep)
+    return best, net.count_parameters()
 
 
 def main():
@@ -130,15 +150,25 @@ def main():
     ap.add_argument('--batch-size', type=int, default=64)
     ap.add_argument('--lr', type=float, default=1e-3)
     ap.add_argument('--loss', default='l1', choices=['l1', 'mse'])
+    ap.add_argument('--target-transform', default='log', choices=['log', 'normalize', 'none'],
+                    help='Target transform; R^2 always reported in original SOC space.')
     ap.add_argument('--workers', type=int, default=4)
     ap.add_argument('--seed', type=int, default=42)
+    ap.add_argument('--limit', type=int, default=0, help='cap to first N points (sanity runs).')
     ap.add_argument('--out', required=True, help='output dir for kfold_results_summary.json')
     args = ap.parse_args()
     set_determinism(args.seed)
     dev = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+    import time
+    # preload=False: with the precompute pass we touch each band once via mmap
+    # (OS page cache), so we never hold the 4 GB band cache + the 3.3 GB cube
+    # simultaneously — peak RAM is just the cube.
     ds = WindowedSentinel2Dataset(args.data_root, time_before=args.time_before,
-                                  window=args.window_size)
+                                  window=args.window_size, preload=False)
+    if args.limit:
+        ds.labels = ds.labels.iloc[:args.limit].reset_index(drop=True); ds.N = len(ds.labels)
+    dims = (ds.fine_idx, ds.med_idx, ds.coarse_idx, len(ds.bands))
     lab = ds.labels.copy()
     keep = (lab['oc'] > 0) & (lab['oc'] <= args.max_oc) & np.isfinite(lab['lat']) & np.isfinite(lab['lon'])
     cap = lab[keep].reset_index().rename(columns={'index': 'orig_idx', 'lat': 'GPS_LAT', 'lon': 'GPS_LONG'})
@@ -146,13 +176,23 @@ def main():
     print(f"dataset N={len(ds)}  after oc<= {args.max_oc}: {len(cap)}  bands={len(ds.bands)} "
           f"(fine={len(ds.fine_idx)} med={len(ds.med_idx)} coarse={len(ds.coarse_idx)})  dev={dev}", flush=True)
 
+    # Precompute EVERY sample's cube ONCE (~3.3 GB) so the per-epoch Python
+    # assembly disappears — training becomes pure GPU compute on a tiny net.
+    t0 = time.time(); C, W, T = len(ds.bands), args.window_size, args.time_before
+    X = torch.empty((len(ds), C, W, W, T), dtype=torch.float32)
+    for i in range(len(ds)):
+        X[i] = ds[i][0]
+    y_oc = torch.tensor(ds.labels['oc'].to_numpy(float), dtype=torch.float32)
+    ds._cache.clear()                                       # free the ~4 GB band arrays
+    print(f"precomputed cubes X={tuple(X.shape)} ({X.element_size()*X.nelement()/1e9:.1f} GB) in {time.time()-t0:.0f}s", flush=True)
+
     folds = build_folds_spatial_deciles(cap, n_folds=args.num_folds, buffer_km=args.buffer_km,
                                         axis=args.split_axis, seed=args.seed)
-    results = []
+    results = []; nparam = 0
     for f in folds:
-        tr = cap.loc[f['train_idx'], 'orig_idx'].to_numpy().tolist()
-        te = cap.loc[f['test_idx'], 'orig_idx'].to_numpy().tolist()
-        res, nparam = train_eval_fold(ds, tr, te, args, dev)
+        tr = cap.loc[f['train_idx'], 'orig_idx'].to_numpy()
+        te = cap.loc[f['test_idx'], 'orig_idx'].to_numpy()
+        res, nparam = train_eval_fold(X, y_oc, tr, te, args, dev, dims)
         res.update({'fold_id': f['fold_id'], 'lon_lo': f.get('edge_lo'), 'lon_hi': f.get('edge_hi')})
         results.append(res)
         print(f"  fold {f['fold_id']}: r2={res['r2']:+.4f} rmse={res['rmse']:.3f} n_test={res['n_test']}", flush=True)
@@ -161,8 +201,9 @@ def main():
             'split_axis': args.split_axis, 'n_folds': args.num_folds, 'fold_geometry': 'lon-deciles',
             'distance_threshold_km': args.buffer_km,
             'recipe': {'model_family': 'resaware', 'max_oc': args.max_oc, 'loss_type': args.loss,
-                       'window_size': args.window_size, 'time_before': args.time_before,
-                       'n_bands': len(ds.bands), 'n_params': nparam, 'native_windowed': True},
+                       'target_transform': args.target_transform, 'window_size': args.window_size,
+                       'time_before': args.time_before, 'n_bands': len(ds.bands),
+                       'n_params': nparam, 'native_windowed': True},
             'across_folds': {'r2_mean': float(r2s.mean()), 'r2_std': float(r2s.std(ddof=1)),
                              'rmse_mean': float(np.mean([r['rmse'] for r in results]))},
             'fold_results': results}

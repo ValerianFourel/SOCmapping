@@ -19,6 +19,7 @@ DATAROOT="${WINDOWS:-$HOME/sgt-sentinel2}"          # override with WINDOWS=...
 WINDOWS_DIR="$DATAROOT/windows/lucas"
 OUTROOT="${OUTROOT:-$HERE/runs/resaware_native}"
 EPOCHS="${EPOCHS:-100}"; FOLDS="${FOLDS:-10}"; WIN="${WIN:-11}"; TB="${TB:-5}"; OC="${OC:-150}"
+BATCH="${BATCH:-256}"; TT="${TT:-log}"   # big batch (tiny net) + log target
 
 # --- the ablation: 4 branch modes + 3 group ablations of the full model -------
 #   tag                 branches            ablate-group
@@ -36,8 +37,8 @@ run_one() {  # tag branches ablate
   local tag="$1" br="$2" abl="$3"
   local args=(--data-root "$WINDOWS_DIR" --branches "$br" --max-oc "$OC"
               --num-folds "$FOLDS" --split-axis lon --window-size "$WIN"
-              --time-before "$TB" --epochs "$EPOCHS" --seed 42
-              --out "$OUTROOT/$tag")
+              --time-before "$TB" --epochs "$EPOCHS" --batch-size "$BATCH"
+              --target-transform "$TT" --seed 42 --out "$OUTROOT/$tag")
   [ "$abl" != "-" ] && args+=(--ablate-group "$abl")
   echo ">>> $tag : python train_resaware_windowed.py ${args[*]}"
   case "$CLUSTER" in
