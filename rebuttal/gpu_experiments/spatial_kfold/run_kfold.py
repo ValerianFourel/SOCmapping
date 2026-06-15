@@ -1398,6 +1398,12 @@ def parse_args():
                    help='Upper OC cap in g/kg applied after loading the parquet. '
                         '120 = WRB histosol threshold (default; non-histosol soils only). '
                         'Pass 150 for the legacy no-cap behavior.')
+    p.add_argument('--landuse', type=str, default=None,
+                   help='Comma-separated ESA-WorldCover class(es) to KEEP, filtering '
+                        'samples by land use BEFORE fold-building so the whole '
+                        'spatial-CV trains+tests on that land use only. '
+                        '40=cropland, 30=grassland, 10=tree/forest, 50=built-up. '
+                        'Needs rebuttal/sample_landcover.parquet (POINTID->class).')
     # ----- Sampler / rebalancing -----
     p.add_argument('--sampler-mode', type=str, default='kde',
                    choices=['kde', 'qcut'],
@@ -1617,6 +1623,23 @@ def main():
         print(f'Applied --max-oc {args.max_oc:.1f} g/kg: kept {len(df):,}/{n_before:,} '
               f'({100*len(df)/n_before:.2f}%)  '
               f'OC max in set = {df["OC"].max():.1f}', flush=True)
+    if getattr(args, 'landuse', None):
+        keep = {int(x) for x in str(args.landuse).split(',') if x.strip()}
+        lc_path = SOC_REBUTTAL_DIR / 'sample_landcover.parquet'
+        if not lc_path.exists():
+            raise SystemExit(f'--landuse needs {lc_path} (pull/commit it first)')
+        lc = pd.read_parquet(lc_path)[['POINTID', 'landcover']]
+        n_before = len(df)
+        df = df.merge(lc, on='POINTID', how='left')
+        n_unmatched = int(df['landcover'].isna().sum())
+        df = (df[df['landcover'].isin(keep)]
+              .drop(columns=['landcover']).reset_index(drop=True))
+        print(f'Applied --landuse {sorted(keep)} (ESA WorldCover): kept '
+              f'{len(df):,}/{n_before:,} samples ({n_unmatched} unmatched)',
+              flush=True)
+        if len(df) < args.num_folds * 5:
+            raise SystemExit(f'too few samples ({len(df)}) for '
+                             f'{args.num_folds} folds')
     folds_meta = build_folds_spatial_deciles(
         df, n_folds=args.num_folds, buffer_km=args.fold_buffer_km,
         axis=args.split_axis, seed=args.seed_base)

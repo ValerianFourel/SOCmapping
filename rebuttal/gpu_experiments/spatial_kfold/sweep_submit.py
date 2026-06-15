@@ -269,6 +269,7 @@ def build_sbatch(tag: str, variant: str, d: int, h: int, L: int, args) -> str:
         '--per-gpu-batch-size 256 --effective-batch-size 256 '
         f'--num-epochs {args.epochs} --seed-base {args.seed_base} '
         f'--max-oc {args.max_oc} '
+        + (f'--landuse {args.landuse} ' if getattr(args, 'landuse', None) else '') +
         f'--split-axis {args.split_axis} --window-size {args.window_size} '
         '--sampler-mode qcut --rebalance-min-ratio 0 '
         '--augment-train '
@@ -342,6 +343,7 @@ def build_family_sbatch(tag: str, family: str, d: int, h: int, L: int,
         '--per-gpu-batch-size 256 --effective-batch-size 256 '
         f'--num-epochs {args.epochs} --seed-base {args.seed_base} '
         f'--max-oc {args.max_oc} '
+        + (f'--landuse {args.landuse} ' if getattr(args, 'landuse', None) else '') +
         f'--split-axis {args.split_axis} --window-size {args.window_size} '
         '--sampler-mode qcut --rebalance-min-ratio 0 '
         '--augment-train '
@@ -462,6 +464,10 @@ def main():
                    help='Default 90 matches the known-good manual run. '
                         'Sweep this separately (try 80, 90, 100, 120) once an '
                         'architecture is locked in.')
+    p.add_argument('--landuse', type=str, default=None,
+                   help='Forwarded to run_kfold: comma-separated ESA-WorldCover '
+                        'class(es) to train+CV on only (40=cropland, 30=grassland, '
+                        '10=tree). Needs rebuttal/sample_landcover.parquet.')
     p.add_argument('--seed-base', type=int, default=42)
     p.add_argument('--num-folds', type=int, default=10,
                    help='Number of spatial folds per config (e.g. 5 or 10), '
