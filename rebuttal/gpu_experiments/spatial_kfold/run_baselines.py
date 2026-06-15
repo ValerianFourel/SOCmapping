@@ -319,6 +319,10 @@ def parse():
                         'stays 80 (20 bands × 4 stats); only the stats change.')
     p.add_argument('--max-oc', type=float, default=90.0,
                    help='Match the SGT sweep default (90).')
+    p.add_argument('--landuse', type=str, default=None,
+                   help='Comma-separated ESA-WorldCover class(es) to keep '
+                        '(40=cropland, 30=grassland, 10=tree). Filters by POINTID '
+                        'via sample_landcover.parquet before fold-building.')
     p.add_argument('--target-transform', type=str, default='log',
                    choices=['none', 'log', 'normalize'])
     p.add_argument('--device', type=str, default='cuda',
@@ -368,6 +372,19 @@ def main():
         df = df[df['OC'] <= args.max_oc].reset_index(drop=True)
         print(f'Applied --max-oc {args.max_oc:.1f}: '
               f'kept {len(df):,}/{n_before:,}', flush=True)
+
+    if getattr(args, 'landuse', None):
+        keep = {int(x) for x in str(args.landuse).split(',') if x.strip()}
+        lc_path = MODEL_READY.parent / 'sample_landcover.parquet'
+        if not lc_path.exists():
+            raise SystemExit(f'--landuse needs {lc_path} (pull/commit it first)')
+        lc = pd.read_parquet(lc_path)[['POINTID', 'landcover']]
+        n_before = len(df)
+        df = df.merge(lc, on='POINTID', how='left')
+        df = (df[df['landcover'].isin(keep)]
+              .drop(columns=['landcover']).reset_index(drop=True))
+        print(f'Applied --landuse {sorted(keep)}: kept {len(df):,}/{n_before:,}',
+              flush=True)
 
     folds_meta = build_folds_spatial_deciles(
         df, n_folds=args.num_folds, buffer_km=args.fold_buffer_km,

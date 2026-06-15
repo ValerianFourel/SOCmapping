@@ -413,7 +413,9 @@ def build_baseline_sbatch(args) -> str:
             f'WANDB_MODE=disabled PYTHONUNBUFFERED=1 '
             f'python rebuttal/gpu_experiments/spatial_kfold/run_baselines.py '
             f'--models {model} --tag-suffix {suffix} --num-folds {args.num_folds} '
-            f'--max-oc {args.max_oc} --target-transform log --device cuda '
+            f'--max-oc {args.max_oc} '
+            + (f'--landuse {args.landuse} ' if getattr(args, 'landuse', None) else '')
+            + f'--target-transform log --device cuda '
             f'--split-axis {args.split_axis} --window-size {args.window_size} '
             f'--seed-base {args.seed_base} '
             f'--output-subdir {shlex.quote(output_subdir)} '
