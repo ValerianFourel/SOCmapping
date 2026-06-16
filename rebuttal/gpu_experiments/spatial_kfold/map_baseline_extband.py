@@ -87,7 +87,10 @@ def main():
     ap.add_argument('--target-transform', default='log', choices=['log', 'none'])
     ap.add_argument('--device', default='cuda')
     ap.add_argument('--batch-size', type=int, default=512)
-    ap.add_argument('--num-workers', type=int, default=4)
+    ap.add_argument('--num-workers', type=int, default=0,
+                    help='0 = single process (avoids each worker copying the '
+                         'raster-tile cache → host-RAM OOM on the 1.3M grid). '
+                         'Bump only if the node has plenty of RAM.')
     ap.add_argument('--out', required=True, help='output run dir (parquet written inside)')
     ap.add_argument('--grid-csv', default=None,
                     help='1-mil grid coords CSV (default: SOC_DATA_DIR/Coordinates1Mil/coordinates_Bavaria_1mil.csv)')
