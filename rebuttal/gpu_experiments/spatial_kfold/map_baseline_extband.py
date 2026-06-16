@@ -57,22 +57,24 @@ def build_model(kind, a):
 
 def load_grid():
     """Return a torch DataLoader over the 43-band 1-mil grid yielding
-    (lon, lat, features[B, C, H, W, T] or [B, C, T, H, W]). Uses the SGT-dir
-    mapping infra the NN extband maps used."""
+    (lon, lat, features). Mirrors rebuttal/final_models/infer_bavaria.py exactly:
+    MultiRasterDataset1MilMultiYears + the 2-tuple separate_and_add_data_1mil_
+    inference() + the Coordinates1Mil CSV for the grid coordinates."""
+    from dataloader.dataloaderMapping import MultiRasterDataset1MilMultiYears
     from dataloader.dataframe_loader import separate_and_add_data_1mil_inference
-    from dataloader.dataloaderMapping import MultiRasterDatasetMapping
     from config import time_before
-    # separate_and_add_data_1mil_inference() returns the 1-mil coord-subfolder
-    # lists, the raster-data subfolder lists, and the coord dataframe. (If your
-    # NN driver unpacks a different arity, adjust here.)
-    res = separate_and_add_data_1mil_inference()
-    if len(res) == 3:
-        coords, data, dfg = res
-    else:                       # (coords, data) + separate coord-df load
-        coords, data = res
-        from config import file_path_coordinates_Bavaria_1mil
-        dfg = pd.read_csv(file_path_coordinates_Bavaria_1mil)
-    ds = MultiRasterDatasetMapping(coords, data, dfg, time_before=time_before)
+    from _paths import SOC_DATA_DIR
+    grid_csv = (Path(ARGS.grid_csv) if ARGS.grid_csv else
+                SOC_DATA_DIR / 'Coordinates1Mil' / 'coordinates_Bavaria_1mil.csv')
+    df = pd.read_csv(grid_csv)
+    cols = {c.lower(): c for c in df.columns}
+    lon_col = cols.get('gps_long') or cols.get('lon') or cols.get('longitude') or df.columns[0]
+    lat_col = cols.get('gps_lat') or cols.get('lat') or cols.get('latitude') or df.columns[1]
+    df = df.rename(columns={lon_col: 'longitude', lat_col: 'latitude'})[['longitude', 'latitude']].copy()
+    df['GPS_LONG'] = df['longitude']; df['GPS_LAT'] = df['latitude']
+    print(f'[map] grid: {len(df):,} locations from {grid_csv}', flush=True)
+    sample_paths, data_paths = separate_and_add_data_1mil_inference()
+    ds = MultiRasterDataset1MilMultiYears(sample_paths, data_paths, df, time_before)
     return DataLoader(ds, batch_size=ARGS.batch_size, shuffle=False,
                       num_workers=ARGS.num_workers)
 
@@ -87,6 +89,8 @@ def main():
     ap.add_argument('--batch-size', type=int, default=512)
     ap.add_argument('--num-workers', type=int, default=4)
     ap.add_argument('--out', required=True, help='output run dir (parquet written inside)')
+    ap.add_argument('--grid-csv', default=None,
+                    help='1-mil grid coords CSV (default: SOC_DATA_DIR/Coordinates1Mil/coordinates_Bavaria_1mil.csv)')
     ap.add_argument('--xgb-n-estimators', type=int, default=2000)
     ap.add_argument('--xgb-max-depth', type=int, default=6)
     ap.add_argument('--xgb-lr', type=float, default=0.05)
