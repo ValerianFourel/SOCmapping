@@ -512,12 +512,13 @@ def main():
                         'on HoreKa). On JUPITER booster the scifi QOS rejects '
                         'ntasks(4)xcpus(12)=48 with "More processors requested '
                         'than permitted" — pass a lower value there (e.g. 4 → 16).')
-    p.add_argument('--band-arch', type=str, default='none',
+    p.add_argument('--band-arch', type=str, default='two_path',
                    choices=['none', 'two_path'],
-                   help='Forwarded to run_kfold. "two_path" wraps the inner '
-                        'model with a small Conv2d that reduces the extended '
-                        'bands (idx 20..) — only active when --bands-list '
-                        'full_extended is also set.')
+                   help='Forwarded to run_kfold. "two_path" (DEFAULT) wraps the '
+                        'inner model with a small Conv2d that reduces the '
+                        'extended Tier 1/2/3 bands — active whenever the '
+                        'bands-list carries extended channels (full_extended / '
+                        'full_extended_nosoil).')
     p.add_argument('--ext-reduced', type=int, default=8,
                    help='Forwarded to run_kfold; channels after the extended-'
                         'band reduction when --band-arch two_path is active. '
@@ -615,13 +616,16 @@ def main():
                    help='Weight on the base term in composite losses (default 1.0).')
     p.add_argument('--chi2-weight', type=float, default=0.1,
                    help='Weight on the chi-square term in composite losses (default 0.1).')
-    p.add_argument('--bands-list', type=str, default='full_20',
-                   choices=['full_20', 'original_6', 'full_extended'],
-                   help='Covariate subset (full_20 = revision expansion; '
-                        'original_6 = original-paper subset). Auto-appends '
-                        '"_6band" to the sweep-name namespace so 6-band and '
-                        '20-band runs do not collide. Passed through to '
-                        'run_kfold.py / run_baselines.py.')
+    p.add_argument('--bands-list', type=str, default='full_extended',
+                   choices=['full_20', 'original_6', 'full_extended',
+                            'full_extended_nosoil'],
+                   help='Covariate subset. "full_extended" (DEFAULT) = canonical '
+                        '43-band stack; "full_extended_nosoil" = same minus the 5 '
+                        'co-measured soil properties (38 bands, the circularity '
+                        'ablation); "full_20" / "original_6" = smaller legacy '
+                        'subsets. Auto-appends an "_extband"/"_extband_nosoil"/… '
+                        'suffix to the sweep-name namespace so variants do not '
+                        'collide. Passed through to run_kfold.py / run_baselines.py.')
     a = p.parse_args()
 
     SBATCH_DIR.mkdir(parents=True, exist_ok=True)

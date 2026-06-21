@@ -43,8 +43,21 @@ FULL_20_BANDS = ORIGINAL_6_BANDS + [
     'Slope', 'Aspect', 'TWI',
 ]
 
+# The 5 co-measured soil properties behind the SOC "circularity" the reviewers
+# flagged: each is lab-measured from the SAME soil samples as the SOC target, so
+# feeding them to the model leaks the answer. The single `full_extended_nosoil`
+# ablation is the canonical 43-band stack with exactly these dropped (-> 38 bands).
+SOIL_PROPERTY_BANDS = [
+    'ClayContent_0_10cm', 'SandContent_0_10cm', 'pH_H2O_0_10cm',
+    'BulkDensity_0_10cm', 'CEC_0_10cm',
+]
+
 
 _EXT_NAMES  = {'full_extended', 'extended', 'full_all', 'all', 'ext', 'extband'}
+_EXT_NOSOIL_NAMES = {
+    'full_extended_nosoil', 'extended_nosoil', 'ext_nosoil',
+    'full_extended_no_soil', 'extband_nosoil', 'nosoil', 'no_soil',
+}
 _FULL_NAMES = {'full', 'full_20', '20', '20band'}
 _ORIG_NAMES = {'original', 'original_6', 'orig', 'orig_6', '6', '6band'}
 
@@ -61,6 +74,16 @@ def get_band_indices(bands_list_name: str, full_bands_list: list[str]) -> list[i
     n = bands_list_name.lower().strip().replace('-', '_')
     if n in _EXT_NAMES:
         return list(range(len(full_bands_list)))
+    if n in _EXT_NOSOIL_NAMES:
+        # Canonical 43-band stack minus the 5 co-measured soil properties.
+        missing = [b for b in SOIL_PROPERTY_BANDS if b not in full_bands_list]
+        if missing:
+            raise ValueError(
+                f'full_extended_nosoil expected soil bands {missing!r} to be '
+                f'present so they can be dropped, but they are absent from '
+                f'bands_list_order {full_bands_list!r}.')
+        drop = set(SOIL_PROPERTY_BANDS)
+        return [i for i, b in enumerate(full_bands_list) if b not in drop]
     if n in _FULL_NAMES:
         missing = [b for b in FULL_20_BANDS if b not in full_bands_list]
         if missing:
@@ -85,6 +108,8 @@ def get_band_indices(bands_list_name: str, full_bands_list: list[str]) -> list[i
 def band_suffix(bands_list_name: str) -> str:
     """Return the run-tag suffix corresponding to --bands-list."""
     n = bands_list_name.lower().strip().replace('-', '_')
+    if n in _EXT_NOSOIL_NAMES:
+        return '_extband_nosoil'
     if n in _EXT_NAMES:
         return '_extband'
     if n in _FULL_NAMES:
@@ -97,6 +122,8 @@ def band_suffix(bands_list_name: str) -> str:
 def normalize_name(bands_list_name: str) -> str:
     """Canonicalize to either 'full_20' or 'original_6'."""
     n = bands_list_name.lower().strip().replace('-', '_')
+    if n in _EXT_NOSOIL_NAMES:
+        return 'full_extended_nosoil'
     if n in _EXT_NAMES:
         return 'full_extended'
     if n in _FULL_NAMES:

@@ -173,21 +173,27 @@ def _build_model(args):
     # window_size; --window-size overrides it (and the dataset crop) per run.
     ws = getattr(args, 'window_size', window_size)
 
-    # Two-path 43-band encoder — only active when explicitly requested AND
-    # the band stack actually has more than the 20 core bands.
+    # Two-path band encoder — only active when explicitly requested AND the
+    # band stack actually carries extended (Tier 1/2/3) channels. The split is
+    # computed from the SURVIVING bands so it stays correct even when the
+    # --bands-list subset drops core bands: the core path = the full_20 bands
+    # that survived (idx < N_CORE_BANDS in bands_list_order), the ext path = the
+    # rest. e.g. full_extended_nosoil drops the 5 soil props -> 15 core + 23 ext
+    # (NOT a hardcoded 20/23, which would shove 5 ext bands into the raw path).
     band_arch = getattr(args, 'band_arch', 'none')
-    use_two_path = (band_arch == 'two_path' and n_bands > N_CORE_BANDS)
+    n_core = sum(1 for i in band_indices if i < N_CORE_BANDS)
+    n_ext = n_bands - n_core
+    use_two_path = (band_arch == 'two_path' and n_ext > 0)
     if use_two_path:
         n_ext_reduced = int(getattr(args, 'ext_reduced', 8))
-        eff_in_channels = N_CORE_BANDS + n_ext_reduced
+        eff_in_channels = n_core + n_ext_reduced
     else:
         n_ext_reduced = 0
         eff_in_channels = n_bands
 
     def _wrap(inner: nn.Module) -> nn.Module:
         if use_two_path:
-            return _TwoPathBandWrapper(
-                inner, N_CORE_BANDS, n_bands - N_CORE_BANDS, n_ext_reduced)
+            return _TwoPathBandWrapper(inner, n_core, n_ext, n_ext_reduced)
         return inner
 
     if family == 'sgt':
@@ -1298,12 +1304,13 @@ def parse_args():
                         'at the same (5×5×5) spatiotemporal window. '
                         '"vanilla_transformer" is the SimpleSGT-minus-GRN '
                         'fair-comparison ablation.')
-    p.add_argument('--band-arch', type=str, default='none',
+    p.add_argument('--band-arch', type=str, default='two_path',
                    choices=['none', 'two_path'],
-                   help='Optional band-input wrapper. "none" = feed all '
-                        'channels straight into the inner model (default, '
-                        'matches every prior run). "two_path" = only active '
-                        'when len(bands) > 20: keep the 20 core bands raw '
+                   help='Band-input wrapper. "two_path" (DEFAULT, for the '
+                        'canonical 43-band stack) is active whenever the stack '
+                        'carries extended (Tier 1/2/3) bands; "none" feeds all '
+                        'channels straight in. two_path keeps the surviving core '
+                        '(full_20) bands raw '
                         'and learn a Conv2d that reduces the remaining '
                         '(--ext-reduced default 8) extended bands per time '
                         'step; concat → 28-channel input. Designed to keep '
@@ -1350,17 +1357,21 @@ def parse_args():
     p.add_argument('--ext-reduced', type=int, default=8,
                    help='[--band-arch two_path only] Channel-count after '
                         'compressing the extended (non-core) bands. Default 8.')
-    p.add_argument('--bands-list', type=str, default='full_20',
-                   choices=['full_20', 'original_6', 'full_extended'],
-                   help='Covariate-stack subset. "full_20" = the 20 revision '
-                        'bands (default). "full_extended" = 20 + Tier 1/2/3 '
+    p.add_argument('--bands-list', type=str, default='full_extended',
+                   choices=['full_20', 'original_6', 'full_extended',
+                            'full_extended_nosoil'],
+                   help='Covariate-stack subset. "full_extended" (DEFAULT) = the '
+                        'canonical 43-band stack: 20 revision bands + Tier 1/2/3 '
                         'covariates (Landsat SRC, multi-scale terrain, '
-                        'climate/phenology). "original_6" restricts to the 6 bands '
-                        'used in the original submission '
+                        'climate/phenology). "full_extended_nosoil" = the same 43 '
+                        'stack with the 5 co-measured soil properties removed '
+                        '(Clay/Sand/pH/BulkDensity/CEC -> 38 bands) — the '
+                        'circularity ablation. "full_20" = the 20 revision bands; '
+                        '"original_6" = the 6 original-submission bands '
                         '(Elevation, LAI, LST, MODIS_NPP, SoilEvaporation, '
-                        'TotalEvapotranspiration) for direct comparison. '
-                        'The dataset still fetches all 20 bands; the wrapper '
-                        'slices the channel dim after normalization.')
+                        'TotalEvapotranspiration). The dataset still fetches all '
+                        'channels; the wrapper slices the channel dim after '
+                        'normalization.')
     p.add_argument('--per-gpu-batch-size', type=int, default=256)
     p.add_argument('--effective-batch-size', type=int, default=2048)
     p.add_argument('--accum-steps', type=int, default=0)

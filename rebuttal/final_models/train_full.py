@@ -127,12 +127,23 @@ def parse():
                         '--monitor-frac, so e.g. --monitor-n 300 fits on '
                         'all-but-300 samples. Monitoring only (not spatial); '
                         'the saved model is for production mapping.')
-    p.add_argument('--bands-list', type=str, default='full_20',
-                   choices=['full_20', 'original_6', 'full_extended'],
-                   help='Covariate subset (default full_20). Run-name '
-                        'auto-appends "_6band" or "_20band" so the two '
-                        'variants do not overwrite each other under '
-                        'checkpoints/<run-name>/.')
+    p.add_argument('--bands-list', type=str, default='full_extended',
+                   choices=['full_20', 'original_6', 'full_extended',
+                            'full_extended_nosoil'],
+                   help='Covariate subset (default full_extended, the canonical '
+                        '43-band stack). "full_extended_nosoil" drops the 5 '
+                        'co-measured soil properties (circularity ablation). '
+                        'Run-name auto-appends a band suffix so variants do not '
+                        'overwrite each other under checkpoints/<run-name>/.')
+    p.add_argument('--band-arch', type=str, default='two_path',
+                   choices=['none', 'two_path'],
+                   help='Band-input wrapper forwarded to the shared _build_model. '
+                        '"two_path" (DEFAULT) reduces the extended Tier 1/2/3 '
+                        'bands so the canonical 43-band final model matches the '
+                        'spatial-CV sweep recipe; "none" feeds all channels raw.')
+    p.add_argument('--ext-reduced', type=int, default=8,
+                   help='[--band-arch two_path] channels after extended-band '
+                        'reduction (default 8).')
     p.add_argument('--sampler-mode', type=str, default='none',
                    choices=['none', 'kde'],
                    help='Training-time sampler. "none" (default): plain '
