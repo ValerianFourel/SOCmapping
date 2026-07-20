@@ -101,9 +101,9 @@ def build_figure(sgt_p, van_p):
     neutral = '#EDEDED'
     cnn_col = '#D9E8F2'
 
-    fig = plt.figure(figsize=(7.4, 5.6))
+    fig = plt.figure(figsize=(9.0, 6.2))
     # main flagship pipeline panel (top, wide) + contrast panel (bottom)
-    gs = fig.add_gridspec(2, 1, height_ratios=[2.55, 1.0], hspace=0.22)
+    gs = fig.add_gridspec(2, 1, height_ratios=[2.6, 1.0], hspace=0.34)
     ax = fig.add_subplot(gs[0]); ax.set_axis_off()
     ax.set_xlim(0, 1); ax.set_ylim(0, 1)
     axc = fig.add_subplot(gs[1]); axc.set_axis_off()
@@ -117,50 +117,51 @@ def build_figure(sgt_p, van_p):
                  fontsize=10.5, color=sgt_col, fontweight='bold', loc='left',
                  pad=2)
 
-    yc = 0.50
+    yc = 0.52
     # input tensor
-    b_in = block(ax, 0.085, yc, 0.135, 0.40, 'Input',
+    b_in = block(ax, 0.075, yc, 0.115, 0.34, 'Input',
                  neutral, sub=f'{C} bands\n{WS}x{WS} window\n{T} years',
-                 fontsize=7.6)
+                 fontsize=7.4)
     # per-timestep CNN spatial encoder
-    b_cnn = block(ax, 0.285, yc, 0.165, 0.46,
+    b_cnn = block(ax, 0.245, yc, 0.150, 0.42,
                   'Per-timestep\nCNN encoder', cnn_col,
                   sub='2x Conv2d\n+ AdaptiveAvgPool\n(shared over t)',
-                  fontsize=7.5)
+                  fontsize=7.3)
     # GRN gate — the focal block
-    b_grn = block(ax, 0.50, yc, 0.155, 0.50, 'GRN\nGATE', sgt_col,
+    b_grn = block(ax, 0.430, yc, 0.140, 0.46, 'GRN\nGATE', sgt_col,
                   sub='Gated Residual\nNetwork', fontsize=8.6,
                   fontweight='bold', text_color='white', fc_alpha=0.95)
-    # positional embedding (small, feeding into transformer)
-    b_pos = block(ax, 0.685, yc + 0.255, 0.135, 0.16,
+    # positional embedding (small) — placed clearly ABOVE the transformer
+    b_pos = block(ax, 0.660, 0.85, 0.155, 0.15,
                   'Positional\nembedding', '#FBE9D0', fontsize=7.3)
-    # transformer encoder over the 5 timesteps
-    b_tr = block(ax, 0.685, yc - 0.045, 0.150, 0.40,
+    # transformer encoder over the 5 timesteps (lowered, leaving a clear gap)
+    b_tr = block(ax, 0.660, 0.40, 0.155, 0.36,
                  '1-layer\nTransformer', '#F4D9B8',
-                 sub=f'encoder over\n{T} timesteps\n(h2)', fontsize=7.5)
+                 sub=f'encoder over\n{T} timesteps\n(h2)', fontsize=7.4)
     # regression head
-    b_head = block(ax, 0.885, yc - 0.045, 0.125, 0.30,
+    b_head = block(ax, 0.890, 0.40, 0.115, 0.28,
                    'Regression\nhead', neutral, sub='SOC (g/kg)',
-                   fontsize=7.5)
+                   fontsize=7.4)
 
     arrow(ax, right_of(b_in), left_of(b_cnn))
     arrow(ax, right_of(b_cnn), left_of(b_grn))
-    # GRN feeds both pos-embed and transformer
-    arrow(ax, top_of(b_grn), (b_pos[0] - 0.05, b_pos[1] - b_pos[3] / 2),
+    # GRN feeds the transformer (mid-height, clean horizontal-ish run)...
+    arrow(ax, right_of(b_grn), left_of(b_tr), color=sgt_col, lw=1.5)
+    # ...and the positional embedding (diagonal up-right to its left edge)
+    arrow(ax, (b_grn[0] + 0.02, top_of(b_grn)[1]), left_of(b_pos),
           color=sgt_col, lw=1.5)
-    arrow(ax, right_of(b_grn), (b_tr[0] - b_tr[2] / 2, b_tr[1]),
-          color=sgt_col, lw=1.5)
-    arrow(ax, bottom_of(b_pos), (b_tr[0], b_tr[1] + b_tr[3] / 2),
-          color='#B07A2E', lw=1.2)
+    # positional embedding drops straight down into the transformer top
+    arrow(ax, bottom_of(b_pos), top_of(b_tr), color='#B07A2E', lw=1.2)
     arrow(ax, right_of(b_tr), left_of(b_head))
 
-    # GRN gate callout — make the gate prominent
+    # GRN gate callout — point to the gate's LEFT edge so it clears the arrows
     ax.annotate('learned gate selects\ninformative features\n(live + ablation)',
-                xy=(b_grn[0], b_grn[1] - b_grn[3] / 2),
-                xytext=(b_grn[0], 0.045),
+                xy=left_of(b_grn),
+                xytext=(0.205, 0.085),
                 ha='center', va='bottom', fontsize=7.2, color=sgt_col,
                 fontweight='bold',
-                arrowprops=dict(arrowstyle='-|>', color=sgt_col, lw=1.3))
+                arrowprops=dict(arrowstyle='-|>', color=sgt_col, lw=1.3,
+                                connectionstyle='arc3,rad=-0.2'))
 
     # ============ BOTTOM PANEL: Vanilla contrast ==========================
     axc.set_title(f'Vanilla contrast (d64, h2, L1) — {van_str}: '

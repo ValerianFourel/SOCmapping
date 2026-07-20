@@ -37,6 +37,7 @@ import matplotlib.pyplot as plt
 
 import figstyle as fs
 import figdata as fd
+import figparams as fp
 
 fs.setup()
 
@@ -45,59 +46,31 @@ NAME = 'figFB_family_ranking'
 
 # Display order: attention block, tree block, weak/failed block.
 ORDER = ['sgt', 'vanilla', 'simpletransformer', 'lightweight',
-         'rf', 'xgb', 'cnnlstm', '3dcnn']
+         'rf', 'xgb', 'cnnlstm']
 GROUP_OF = {
     'sgt': 'attention', 'vanilla': 'attention',
     'simpletransformer': 'attention', 'lightweight': 'attention',
     'rf': 'trees', 'xgb': 'trees',
-    'cnnlstm': 'weak/failed', '3dcnn': 'weak/failed',
+    'cnnlstm': 'weak/failed',
 }
 TREE_FAMILIES = {'rf', 'xgb'}
-
-# canonical family key -> param_counts.build() family name.
-# 'simpletransformer' is the pure-transformer (no-CNN) class; in param_counts
-# the buildable pure-transformer family is 'lightweight_transformer', which is
-# the same constructor signature, so we map both there for a budget estimate.
-_PC_FAMILY = {
-    'sgt': 'sgt',
-    'vanilla': 'vanilla_transformer',
-    'simpletransformer': 'lightweight_transformer',
-    'lightweight': 'lightweight_transformer',
-    'cnnlstm': 'cnnlstm',
-    '3dcnn': '3dcnn',
-}
-
 
 def _param_count(fam, row, C, ws, T):
     """Trainable param count for a NN family/config, or None if not derivable.
 
-    Trees return None (annotated '-'). NN families build the actual torch model
-    via param_counts; any build failure (e.g. a module not importable in this
-    env) degrades to None rather than a fabricated number.
+    Delegates to the shared figparams.params_for so every figure annotates the
+    SAME count. Trees return None (annotated '-'); a build failure degrades to
+    None rather than a fabricated number. Crucially 'simpletransformer' is the
+    real SimpleTransformerV2 (45.1M @ 43 bands), NOT the lightweight stand-in.
     """
     if fam in TREE_FAMILIES:
-        return None
-    pc_fam = _PC_FAMILY.get(fam)
-    if pc_fam is None:
-        return None
-    try:
-        import param_counts as pc
-    except Exception as e:
-        print(f'[warn] param_counts import failed ({type(e).__name__}); '
-              f'param annotations disabled', file=sys.stderr)
         return None
     d = int(row.get('d_model') or 0) or 128
     h = int(row.get('num_heads') or 0) or 4
     L = int(row.get('num_layers') or 0) or 1
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
-            m = pc.build(pc_fam, C, d, h, L, ws, T)
-            return int(pc.n_params(m))
-    except Exception as e:
-        print(f'[warn] param build failed for {fam} ({pc_fam}) '
-              f'd{d}_h{h}_L{L}: {type(e).__name__}: {e}', file=sys.stderr)
-        return None
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        return fp.params_for(fam, C, d, h, L, ws, T)
 
 
 def _fmt_params(n):
@@ -179,10 +152,8 @@ def build_figure(rows, axis, bands, max_oc, C, ws, T, manifest):
                 fontweight='bold' if is_flag else 'normal',
                 color='#111111')
 
-    # Emphasize the 0 line.
+    # Emphasize the 0 line (no "R²=0 / predicts the mean" caption — removed).
     ax.axvline(0.0, color='black', linewidth=1.4, zorder=2)
-    ax.text(0.0, ys.max() + 0.85, 'R² = 0\n(predicts the mean)',
-            ha='center', va='bottom', fontsize=7.0, color='#555555')
 
     ax.set_yticks(ys)
     ax.set_yticklabels(labels, fontsize=8.2)
@@ -204,8 +175,7 @@ def build_figure(rows, axis, bands, max_oc, C, ws, T, manifest):
 
     prot = (f'axis={axis} · {bands}-band · max_oc={max_oc:g} · '
             f'{items[0]["row"].get("n_folds")}-fold')
-    ax.set_title('Best configuration per model family (matched protocol)',
-                 fontsize=10.5, pad=18)
+    # Title removed for the paper (caption carries it); keep the protocol line.
     ax.text(0.5, 1.012, prot, transform=ax.transAxes, ha='center',
             va='bottom', fontsize=7.6, color='#555555')
 

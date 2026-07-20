@@ -181,7 +181,7 @@ def main():
         return 1
 
     cd = Path(flag['config_dir'])
-    df = fd.load_fold_predictions(cd)
+    df = fd.load_pooled_predictions(flag)   # 3-seed ensemble for the seed-avg flagship
     if df is None:
         reason = 'load_fold_predictions returned None (no fold parquet)'
         man.block('fig12_spatial_autocorr', reason, str(cd))
@@ -240,7 +240,9 @@ def main():
     ax.set_xlabel(f'Separation distance $h$ (km, {proj_label})')
     ax.set_ylabel('Semivariance $\\gamma(h)$ (g/kg)$^2$')
     ax.set_title('Residual semivariogram', fontsize=10)
-    ax.legend(loc='lower right', fontsize=8)
+    # legend goes to the empty upper-left; the nugget/sill box keeps the
+    # lower-right corner, so the two no longer overlap.
+    ax.legend(loc='upper left', fontsize=8, framealpha=0.9)
 
     # Moran's I bar with permutation null band
     ax2.axhline(0.0, color='k', lw=1.0)

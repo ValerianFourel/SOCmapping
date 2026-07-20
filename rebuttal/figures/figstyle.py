@@ -161,7 +161,8 @@ def save(fig, out_dir, name: str, *, script: str = '', commit: str = '',
         provenance(fig, script, commit, note='draft')
     pdf = out_dir / f'{name}.pdf'
     png = out_dir / f'{name}.png'
-    fig.savefig(pdf)
-    fig.savefig(png, dpi=300)
+    fig.savefig(pdf)                       # vector (sharpest for line art)
+    fig.savefig(png, dpi=600)              # publication-grade raster
+
     plt.close(fig)
     return pdf, png

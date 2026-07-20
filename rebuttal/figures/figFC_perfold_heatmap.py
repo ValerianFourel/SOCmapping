@@ -35,7 +35,7 @@ from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.colors import TwoSlopeNorm
+from matplotlib.colors import Normalize
 
 import figstyle as fs
 import figdata as fd
@@ -48,7 +48,7 @@ NAME = 'figFC_perfold_heatmap'
 # All families we try to include, in a fixed candidate order. Final row order
 # is by mean R2 (best on top), so this only governs which families are sought.
 CANDIDATES = ['sgt', 'vanilla', 'simpletransformer', 'lightweight',
-              'rf', 'xgb', 'cnnlstm', '3dcnn']
+              'rf', 'xgb', 'cnnlstm']
 
 
 def collect_perfold(rows, axis, bands, max_oc, manifest):
@@ -93,49 +93,50 @@ def build_figure(items, N, axis, bands, max_oc):
     M = len(items)
     data = np.vstack([it['pf'] for it in items])  # M x N
 
-    # Diverging norm centered at 0; symmetric range from the data extent.
+    # Sequential norm from 0 (R²=0 = no better than predicting the mean) up to
+    # the data max. 3D-CNN — the only negative-R² family — is dropped, so every
+    # cell is ≥0; a diverging-at-0 map would shove all cells into one half and
+    # read "all red". vmin pinned at 0 per request (R² minimum is 0).
     finite = data[np.isfinite(data)]
-    amax = float(np.nanmax(np.abs(finite))) if finite.size else 1.0
-    amax = max(amax, 0.1)
-    norm = TwoSlopeNorm(vmin=-amax, vcenter=0.0, vmax=amax)
-    cmap = plt.get_cmap('RdBu_r')   # red = positive R2 (good), blue = negative
+    vmax = float(np.nanmax(finite)) if finite.size else 0.5
+    vmax = max(vmax, 0.1)
+    norm = Normalize(vmin=0.0, vmax=vmax)
+    cmap = plt.get_cmap('viridis')   # 0 = dark, higher R² = brighter
 
-    fig_w = max(7.4, 0.62 * N + 3.2)
+    fig_w = max(9.5, 0.62 * N + 5.5)
     fig_h = max(3.0, 0.55 * M + 1.8)
     fig, ax = plt.subplots(figsize=(fig_w, fig_h))
 
     im = ax.imshow(data, aspect='auto', cmap=cmap, norm=norm,
                    interpolation='nearest')
 
-    # annotate each cell
+    # annotate each cell with its R² value (adaptive text colour for contrast)
     for i in range(M):
         for j in range(N):
             v = data[i, j]
             if not np.isfinite(v):
-                ax.text(j, i, '—', ha='center', va='center', fontsize=7,
+                ax.text(j, i, '—', ha='center', va='center', fontsize=8,
                         color='#888888')
                 continue
-            # white text on saturated cells, dark on pale ones
             rgba = cmap(norm(v))
             lum = 0.299 * rgba[0] + 0.587 * rgba[1] + 0.114 * rgba[2]
-            tc = 'white' if lum < 0.5 else '#111111'
-            ax.text(j, i, f'{v:.2f}', ha='center', va='center', fontsize=7.2,
-                    color=tc)
+            ax.text(j, i, f'{v:.2f}', ha='center', va='center', fontsize=8.5,
+                    color='white' if lum < 0.5 else '#111111')
 
     # worst fold (lowest mean across families) — detected, not assumed
     col_mean = np.nanmean(data, axis=0)
     worst = int(np.nanargmin(col_mean))
 
     ax.set_xticks(range(N))
-    ax.set_xticklabels([f'F{j}' for j in range(N)], fontsize=8.2)
+    ax.set_xticklabels([f'F{j}' for j in range(N)], fontsize=10)
     ax.set_yticks(range(M))
-    ax.set_yticklabels([fs.fam_label(f) for f in fams], fontsize=8.0)
-    ax.set_xlabel('Spatial fold (hold-out block)')
+    ax.set_yticklabels([fs.fam_label(f) for f in fams], fontsize=10)
+    ax.set_xlabel('Spatial fold (hold-out block)', fontsize=11)
 
     # highlight the worst column
     ax.add_patch(plt.Rectangle((worst - 0.5, -0.5), 1, M, fill=False,
                                edgecolor='black', linewidth=2.0, zorder=5))
-    ax.text(worst, -0.62, 'worst', ha='center', va='bottom', fontsize=7.4,
+    ax.text(worst, -0.62, 'worst', ha='center', va='bottom', fontsize=9.5,
             fontweight='bold')
 
     # gridlines between cells
@@ -155,26 +156,23 @@ def build_figure(items, N, axis, bands, max_oc):
 
     # right-margin mean±SD column (as text, outside the heatmap)
     x_txt = N - 0.5 + 0.55
-    ax.text(x_txt, -0.78, 'mean ± SD', ha='left', va='bottom', fontsize=8.0,
+    ax.text(x_txt, -0.78, 'mean ± SD', ha='left', va='bottom', fontsize=10,
             fontweight='bold')
     for i, it in enumerate(items):
         ax.text(x_txt, i, f"{it['r2']:.3f} ± {it['sd']:.3f}",
-                ha='left', va='center', fontsize=8.0,
+                ha='left', va='center', fontsize=9.5,
                 fontweight='bold' if it['fam'] == fs.FLAGSHIP else 'normal')
 
+    # Give the mean±SD column its own room INSIDE the axes so the colorbar
+    # (placed beyond the axes) no longer overlaps it.
+    ax.set_xlim(-1.0, x_txt + 3.3)
+
     # colorbar
-    cb = fig.colorbar(im, ax=ax, fraction=0.035, pad=0.16)
-    cb.set_label('Hold-out R²  (white = 0; blue < 0 = worse than the mean)',
-                 fontsize=8.0)
-    cb.ax.axhline(0.0, color='black', linewidth=0.8)
+    cb = fig.colorbar(im, ax=ax, fraction=0.035, pad=0.04)
+    cb.ax.tick_params(labelsize=9)
+    # Vertical colorbar label removed (side text) — described in the caption.
 
-    prot = (f'axis={axis} · {bands}-band · max_oc={max_oc:g} · '
-            f'{N}-fold · best config per family')
-    ax.set_title('Per-fold R² by family  (rows sorted by mean R²)',
-                 fontsize=10.5, pad=34)
-    ax.text(0.5, 1.072, prot, transform=ax.transAxes, ha='center',
-            va='bottom', fontsize=7.6, color='#555555')
-
+    # Protocol header removed — moved to the caption.
     fig.tight_layout()
     return fig, worst
 

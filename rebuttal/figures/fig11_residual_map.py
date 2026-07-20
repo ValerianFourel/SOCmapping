@@ -74,7 +74,7 @@ def main():
         return 1
 
     cd = Path(flag['config_dir'])
-    df = fd.load_fold_predictions(cd)
+    df = fd.load_pooled_predictions(flag)   # 3-seed ensemble for the seed-avg flagship
     if df is None:
         reason = 'load_fold_predictions returned None (no fold parquet)'
         man.block('fig11_residual_map', reason, str(cd))
@@ -98,10 +98,15 @@ def main():
     if not np.isfinite(vlim) or vlim <= 0:
         vlim = float(np.max(np.abs(resid))) or 1.0
 
+    import figgeo as fg
     fig, ax = plt.subplots(figsize=(7.0, 7.6))
     sc = fs.bavaria_scatter(ax, lon, lat, resid, s=6,
                             vmin=-vlim, vmax=vlim, cmap=RESID_CMAP,
-                            scalebar=True, north=True, utm=True)
+                            scalebar=False, north=True, utm=False)
+    # show ALL hold-out points across the 10 folds (some fall just outside the
+    # simplified border — that is expected); draw the Bavaria border on top.
+    fg.plot_boundary(ax, lw=1.6, zorder=7)
+    fg.clip_axes_to_bavaria(ax)
     cbar = fig.colorbar(sc, ax=ax, fraction=0.046, pad=0.04)
     cbar.set_label('Residual (predicted - actual), g/kg')
 

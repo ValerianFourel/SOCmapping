@@ -68,7 +68,7 @@ def main():
         return 1
 
     cd = Path(flag['config_dir'])
-    df = fd.load_fold_predictions(cd)
+    df = fd.load_pooled_predictions(flag)   # 3-seed ensemble for the seed-avg flagship
     if df is None:
         reason = 'load_fold_predictions returned None (no fold parquet)'
         man.block('fig13_qq', reason, str(cd))
@@ -92,6 +92,13 @@ def main():
         nt_stat, nt_p = float(nt_stat), float(nt_p)
     except Exception:
         nt_stat, nt_p = float('nan'), float('nan')
+    # Anderson-Darling A² (tail-sensitive normality statistic; >> the ~0.79 5%
+    # critical value => strongly non-normal). Reported as an effect size instead
+    # of a p-value, which rejects trivially at this n.
+    try:
+        ad_a2 = float(stats.anderson(resid, dist='norm').statistic)
+    except Exception:
+        ad_a2 = float('nan')
 
     z = (resid - mu) / sd if (a.standardize and sd > 0) else resid
     unit = 'standardized residual' if a.standardize else 'residual (g/kg)'
@@ -108,21 +115,12 @@ def main():
     pts.set_linestyle('none')
     line.set_color('k'); line.set_linewidth(1.8); line.set_linestyle('--')
 
-    ax.set_title(f'{fs.fam_label(fs.FLAGSHIP)} — normal Q-Q of CV residuals',
-                 fontsize=10)
+    ax.set_title('')   # clear scipy.probplot's default "Probability Plot" title
     ax.set_xlabel('Theoretical quantiles (normal)')
     ax.set_ylabel(f'Sample quantiles — {unit}')
 
-    txt = (f'n = {n}\n'
-           f'mean = {mu:+.2f}  SD = {sd:.2f}\n'
-           f'skew = {skew:+.3f}\n'
-           f'excess kurtosis = {exkurt:+.3f}\n'
-           f'fit $R^2$ = {r**2:.3f}\n'
-           f"normaltest p = {nt_p:.1e}")
-    ax.text(0.04, 0.96, txt, transform=ax.transAxes, va='top', ha='left',
-            fontsize=8.5,
-            bbox=dict(boxstyle='round', fc='white', ec='#cccccc', alpha=0.9))
-
+    # No on-figure legend/box — skew, excess kurtosis and Anderson-Darling A²
+    # are recorded in the manifest (below) for the paper caption.
     fig.tight_layout()
     pdf, png = fs.save(fig, a.out_dir, a.name, script='fig13_qq.py')
 
@@ -131,7 +129,8 @@ def main():
         files=[str(pdf), str(png)],
         source=str(cd),
         numbers=(f'n={n} mean={mu:+.3f} sd={sd:.3f} skew={skew:+.3f} '
-                 f'exkurt={exkurt:+.3f} normaltest_p={nt_p:.2e} '
+                 f'exkurt={exkurt:+.3f} anderson_A2={ad_a2:.1f} '
+                 f'normaltest_p={nt_p:.2e} '
                  f'flagship={flag["tag"]} r2_mean={flag["r2_mean"]:.4f}'))
     man.write(Path(a.out_dir) / 'fig13_qq_manifest.md')
 

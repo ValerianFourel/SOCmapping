@@ -109,7 +109,7 @@ def build_figure(fb, df, *, axis, geom, buffer_km, n_folds, run_tag,
         handles.append(Line2D([0], [0], marker='s', linestyle='',
                               markerfacecolor=col, markeredgecolor='none',
                               markersize=7,
-                              label=f"fold {f['fold_id']}: R²={r2s}  (n={f.get('n_test')})"))
+                              label=f"fold {f['fold_id']}  (n={f.get('n_test')})"))
 
     # ----- overlay sample points coloured by fold (if predictions exist) ---
     pts_note = 'no fold-prediction parquet (strips only)'
@@ -121,30 +121,62 @@ def build_figure(fb, df, *, axis, geom, buffer_km, n_folds, run_tag,
                    rasterized=True, zorder=2)
         pts_note = f'{len(df):,} hold-out samples coloured by fold'
 
-    ax.set_aspect('equal', adjustable='box')
     if utm and fs._utm32n([10.0], [49.0]) is not None:
+        # Add the Bavaria cutoff: project the boundary rings to UTM 32N, clip the
+        # fold strips to the Bavaria shape (Bavaria-shaped bands, not a rectangle)
+        # and draw the outline on top. Sample points are NOT clipped (a few fall
+        # just outside the simplified border — expected).
+        import figgeo as fg
+        from matplotlib.path import Path as _MplPath
+        verts, codes, ring_xy = [], [], []
+        for r in fg._rings():
+            rx, ry = fs._utm32n(r[:, 0], r[:, 1])
+            ring_xy.append((np.asarray(rx), np.asarray(ry)))
+            pts = np.column_stack([rx, ry])
+            verts.extend(pts.tolist())
+            codes.append(_MplPath.MOVETO)
+            codes.extend([_MplPath.LINETO] * (len(pts) - 2))
+            codes.append(_MplPath.CLOSEPOLY)
+        bav_utm = _MplPath(np.asarray(verts), codes)
+        for art in ax.patches:                       # clip fold strips to Bavaria
+            art.set_clip_path(bav_utm, ax.transData)
+        for rx, ry in ring_xy:                        # outline on top
+            ax.plot(rx, ry, color='black', lw=fg.BORDER_LW, zorder=7,
+                    solid_joinstyle='round')
+        ax.set_aspect('equal', adjustable='box')
         ax.set_xlabel('Easting (UTM 32N, km)')
         ax.set_ylabel('Northing (km)')
         ax.xaxis.set_major_formatter(lambda v, _p: f'{v/1000:.0f}')
         ax.yaxis.set_major_formatter(lambda v, _p: f'{v/1000:.0f}')
+        ax_allx = np.concatenate([rx for rx, _ in ring_xy])
+        ax_ally = np.concatenate([ry for _, ry in ring_xy])
+        padx = 0.04 * (ax_allx.max() - ax_allx.min())
+        pady = 0.04 * (ax_ally.max() - ax_ally.min())
+        ax.set_xlim(ax_allx.min() - padx, ax_allx.max() + padx)
+        ax.set_ylim(ax_ally.min() - pady, ax_ally.max() + pady)
     else:
+        # clip only the fold STRIPS to the Bavaria outline (Bavaria-shaped
+        # bands), but show ALL sample points across the 10 folds — including
+        # the few that fall outside the simplified border — and draw the
+        # border on top, in lon/lat.
+        import figgeo as fg
+        clip_path, tr = fg.bavaria_path(), ax.transData
+        for art in ax.patches:
+            art.set_clip_path(clip_path, tr)
+        fg.plot_boundary(ax, lw=1.6, zorder=7)
+        fg.clip_axes_to_bavaria(ax)
         ax.set_xlabel('Longitude'); ax.set_ylabel('Latitude')
 
     bk = f'{buffer_km:g} km' if buffer_km is not None else 'n/a'
-    ax.set_title(f'Spatial-CV fold geometry ({axis}-split): {n} blocks, '
-                 f'buffer {bk}', fontsize=10.5)
+    # Title removed for the paper (caption carries it); bottom caption keeps geom.
 
-    # caption block: geometry + provenance
-    cap = (f'geometry: {geom or "n/a"}   |   split: {split_label.split(" (")[0]}'
-           f'   |   buffer = {bk}\n'
-           f'run: {run_tag}   |   {pts_note}')
-    fig.text(0.5, 0.005, cap, ha='center', va='bottom', fontsize=7.0,
-             color='#444444')
+    # Bottom caption removed for the paper (geometry / run / buffer go in the
+    # LaTeX caption instead).
 
-    ax.legend(handles=handles, loc='center left', bbox_to_anchor=(1.01, 0.5),
-              fontsize=6.6, title=f'{n} spatial folds', title_fontsize=7.4,
-              frameon=False, handletextpad=0.4, labelspacing=0.35)
-    fig.subplots_adjust(right=0.74, bottom=0.10)
+    # Right-side fold legend removed for the paper — the coloured strips/points
+    # are self-explanatory, and the per-fold n + geometry go in the LaTeX caption
+    # rather than as on-figure text.
+    fig.subplots_adjust(right=0.97, bottom=0.10)
     return fig
 
 

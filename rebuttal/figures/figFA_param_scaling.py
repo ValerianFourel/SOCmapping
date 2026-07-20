@@ -60,6 +60,7 @@ for _p in (SOC_ROOT, SOC_ROOT / 'SpatiotemporalGatedTransformer',
     if _ps not in sys.path:
         sys.path.insert(0, _ps)
 import param_counts as pc  # build(family,C,d,h,L,ws,T) + n_params(model)
+import figparams as fp      # shared param utility (same numbers across figures)
 
 # canonical SGT stack geometry (window 5x5, 5 years)
 WS, T = 5, 5
@@ -111,21 +112,9 @@ def _simpletransformer_params(C, h, L):
 
 def count_params(fam, C, d, h, L):
     """Trainable params for a sweep row's architecture, or None if the family
-    has no parameter coordinate (rf/xgb) or cannot be built."""
-    if fam in _NO_PARAM:
-        return None
-    try:
-        if fam == 'simpletransformer':
-            return _simpletransformer_params(C, h, L)
-        bname = _BUILD_NAME.get(fam)
-        if bname is None:
-            return None
-        m = pc.build(bname, C, d or 64, h or 4, L or 1, WS, T)
-        return pc.n_params(m)
-    except Exception as e:  # noqa: BLE001 — report, don't fabricate
-        print(f'[BLOCKED] param count for {fam} d{d}_h{h}_L{L}: '
-              f'{type(e).__name__}: {e}', file=sys.stderr)
-        return None
+    has no parameter coordinate (rf/xgb) or cannot be built. Delegates to the
+    shared figparams utility so figFA and figFB never disagree."""
+    return fp.params_for(fam, C, d, h, L, WS, T)
 
 
 def best_unique_configs(rows, axis, bands, max_oc):

@@ -95,7 +95,7 @@ def main():
 
     best = max(cand, key=lambda r: r['score'])
     cfg = Path(best['config_dir'])
-    df = fd.load_fold_predictions(cfg)
+    df = fd.load_pooled_predictions(best)   # 3-seed ensemble for the seed-avg flagship
     if df is None or df.empty:
         reason = 'no pooled fold predictions parquet'
         man.block(name, reason, str(cfg))
@@ -156,13 +156,16 @@ def main():
             fontsize=9, bbox=dict(boxstyle='round,pad=0.4', fc='white',
                                   ec='0.6', alpha=0.9))
 
-    # Honesty note: hold-out only; train-fit not stored.
-    ax.text(0.98, 0.04,
+    # Honesty note: hold-out only; train-fit not stored (top-right corner,
+    # the sparse high-actual/low-pred region — clear of the point cloud).
+    ax.text(0.97, 0.74,
             'Hold-out (out-of-fold) only;\ntrain-fit predictions not stored.',
-            transform=ax.transAxes, va='bottom', ha='right', fontsize=7.5,
+            transform=ax.transAxes, va='top', ha='right', fontsize=7.5,
             color='0.35', style='italic')
 
-    ax.legend(loc='lower right', bbox_to_anchor=(1.0, 0.13), fontsize=8)
+    # legend OUTSIDE the canvas (below the axes) so nothing sits over the data.
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.12), ncol=2,
+              fontsize=8.5, frameon=False)
 
     fig.tight_layout()
     pdf, png = fs.save(fig, args.out_dir, name, script='fig16_17_pred_vs_actual.py')
